@@ -63,7 +63,8 @@ export function Library({ onNew }: { onNew: () => void }) {
                     <div className="card-body">
                       <h3 title={c.title}>{c.title}</h3>
                       <p className="muted small">
-                        {displayName(c.sourceLang, uiLang)} → {displayName(c.targetLang, uiLang)} ·{' '}
+                        {c.sourceLang === 'auto' ? t('lang.detecting') : displayName(c.sourceLang, uiLang)}
+                        {c.autoSource ? ` (${t('lang.autoShort')})` : ''} → {displayName(c.targetLang, uiLang)} ·{' '}
                         {t('common.pages', { n: total })}
                       </p>
                     </div>

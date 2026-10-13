@@ -9,6 +9,7 @@ import { cancelChapter, startChapter, stopChapter, translateBubbles, useJob } fr
 import { useSettings } from '../lib/settings';
 import type { Box } from '../lib/text';
 import type { Bubble, Page, ReaderMode } from '../lib/types';
+import { displayName } from '../lib/languages';
 import { navigate } from '../router';
 import { BubbleSheet } from './BubbleSheet';
 import { Icon } from './Icon';
@@ -285,7 +286,7 @@ export function Reader({ id }: { id: string }) {
     setLangOpen(false);
     const sourceChanged = source !== chapter.sourceLang;
     await stopChapter(id);
-    await patchChapter(id, { sourceLang: source, targetLang: target });
+    await patchChapter(id, { sourceLang: source, targetLang: target, autoSource: false });
     if (sourceChanged) {
       for (const p of pages) await patchPage(p.id, { bubbles: [], status: 'pending', error: undefined });
       void startChapter(id, { pageIds: pages.map((p) => p.id) });
@@ -308,6 +309,7 @@ export function Reader({ id }: { id: string }) {
   const pending = pages?.filter((p) => p.status !== 'done').length ?? 0;
   const running = job?.running ?? false;
   const phaseKey: Record<string, MessageKey> = {
+    detect: 'reader.phase.detect',
     ocr: 'reader.phase.ocr',
     translate: 'reader.phase.translate',
     download: 'reader.phase.download',
@@ -347,7 +349,8 @@ export function Reader({ id }: { id: string }) {
           <strong title={chapter?.title}>{chapter?.title ?? '…'}</strong>
           {chapter && (
             <button className="link small" onClick={() => setLangOpen(true)}>
-              {chapter.sourceLang} → {chapter.targetLang}
+              {chapter.sourceLang === 'auto' ? t('lang.detecting') : displayName(chapter.sourceLang, settings.uiLang)}
+              {chapter.autoSource ? ` (${t('lang.autoShort')})` : ''} → {displayName(chapter.targetLang, settings.uiLang)}
             </button>
           )}
         </div>
@@ -408,7 +411,9 @@ export function Reader({ id }: { id: string }) {
             <span>
               {job.total === 0
                 ? t('reader.queued')
-                : job.phase === 'download' && job.message
+                : job.phase === 'detect'
+                  ? t('reader.phase.detect')
+                  : job.phase === 'download' && job.message
                   ? `${t('reader.phase.download')} · ${job.message}`
                   : t('reader.progress', {
                       page: (job.pageIndex ?? 0) + 1,

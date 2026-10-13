@@ -2,12 +2,18 @@ import { useSyncExternalStore } from 'react';
 import { getChapter, getPages, patchChapter, patchPage, uid } from './db';
 import { bitmapPixels, createCanvas, context2d } from './image';
 import { detectBubbles, innerBox, sampleBackground } from './imageproc';
-import { ocrPage, setOcrStatusListener, type DetectedText } from './ocr';
+import {
+  detectPageLanguage,
+  finishLanguageDetection,
+  ocrPage,
+  setOcrStatusListener,
+  type DetectedText,
+} from './ocr';
 import { LLM_PRESETS, getSettings } from './settings';
 import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
 import { visionTranslate } from './translate/llm';
-import { sourceLanguage } from './languages';
+import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
 import type { Bubble, Chapter, Page } from './types';
 
 // --- job state store ----------------------------------------------------------
@@ -19,7 +25,7 @@ export interface JobState {
   done: number;
   failed: number;
   pageIndex: number | null;
-  phase: 'ocr' | 'translate' | 'download' | 'idle';
+  phase: 'detect' | 'ocr' | 'translate' | 'download' | 'idle';
   message?: string;
   engine?: string;
 }
@@ -124,7 +130,15 @@ async function visionPage(bitmap: ImageBitmap, chapter: Chapter, signal: AbortSi
     const c = context2d(canvas);
     c.imageSmoothingQuality = 'high';
     c.drawImage(bitmap, 0, top, W, h, 0, 0, canvas.width, canvas.height);
-    const found = await visionTranslate(canvas.toDataURL('image/jpeg', 0.88), chapter.sourceLang, chapter.targetLang, signal);
+    const result = await visionTranslate(canvas.toDataURL('image/jpeg', 0.88), chapter.sourceLang, chapter.targetLang, signal);
+    const found = result.bubbles;
+    const detected = normaliseSourceCode(result.sourceLanguage);
+    if (chapter.sourceLang === AUTO && detected) {
+      // The model told us the language: remember it for edits and retranslations.
+      chapter.sourceLang = detected;
+      chapter.autoSource = true;
+      await patchChapter(chapter.id, { sourceLang: detected, autoSource: true });
+    }
     const ownTop = top === 0 ? 0 : top + overlap / 2;
     const ownBottom = top + h >= H ? H : top + h - overlap / 2;
     for (const f of found) {
@@ -162,14 +176,44 @@ async function visionPage(bitmap: ImageBitmap, chapter: Chapter, signal: AbortSi
   return bubbles;
 }
 
-async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): Promise<string | undefined> {
+function visionEnabled(): boolean {
   const settings = getSettings();
   const preset = LLM_PRESETS.find((p) => p.id === settings.llm.preset);
   // Without a key for a hosted provider the AI mode cannot work: use local OCR.
-  const useVision =
+  return (
     settings.ocrEngine === 'vision' &&
     settings.llm.baseUrl.trim() !== '' &&
-    (settings.llm.apiKey.trim() !== '' || !preset?.needsKey);
+    (settings.llm.apiKey.trim() !== '' || !preset?.needsKey)
+  );
+}
+
+/** Pages read to find the language when the first ones have no text (cover, credits…). */
+const DETECTION_PAGES = 6;
+const DETECTION_FALLBACK = 'ko';
+
+/** Finds the language of a chapter from its first pages with text. */
+async function detectChapterLanguage(chapter: Chapter, pages: Page[], signal: AbortSignal): Promise<string> {
+  setJob(chapter.id, { phase: 'detect', pageIndex: null, message: undefined });
+  try {
+    for (const page of pages.slice(0, DETECTION_PAGES)) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const bitmap = await createImageBitmap(page.blob);
+      try {
+        const code = await detectPageLanguage(bitmap);
+        if (code) return code;
+      } finally {
+        bitmap.close();
+      }
+    }
+    return DETECTION_FALLBACK;
+  } finally {
+    await finishLanguageDetection();
+  }
+}
+
+async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): Promise<string | undefined> {
+  const settings = getSettings();
+  const useVision = visionEnabled();
   setJob(chapter.id, { pageIndex: page.index, phase: 'ocr' });
   await patchPage(page.id, { status: 'ocr', error: undefined });
   const bitmap = await createImageBitmap(page.blob);
@@ -251,6 +295,13 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         message: progress !== undefined ? `${message} ${Math.round(progress * 100)}%` : message,
       }),
     );
+    // Local OCR needs the language up front; the AI vision mode reports it itself.
+    if (chapter.sourceLang === AUTO && todo.length > 0 && !visionEnabled() && !opts.translateOnly) {
+      const code = await detectChapterLanguage(chapter, pages, controller.signal);
+      chapter.sourceLang = code;
+      chapter.autoSource = true;
+      await patchChapter(chapterId, { sourceLang: code, autoSource: true });
+    }
     let done = 0;
     let failed = 0;
     for (const page of todo) {

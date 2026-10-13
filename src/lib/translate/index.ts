@@ -79,7 +79,7 @@ export async function translateTexts(
  */
 export function warmUpTranslator(source: string, target: string, onProgress?: (ratio: number) => void): void {
   const { provider } = getSettings();
-  if ((provider === 'auto' || provider === 'chrome') && hasBuiltinTranslator()) {
+  if ((provider === 'auto' || provider === 'chrome') && hasBuiltinTranslator() && source !== 'auto') {
     // Start the creation right now, while the gesture is still active. An
     // unsupported pair simply rejects and the engine chain falls back.
     prepareBuiltin(source, target, onProgress).catch(() => undefined);

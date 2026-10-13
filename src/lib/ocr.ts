@@ -3,11 +3,14 @@ import { bitmapPixels, pixelsToCanvas } from './image';
 import { detectBubbles, innerBox, maskedCrop, sampleBackground, type BubbleRegion, type Pixels } from './imageproc';
 import { sourceLanguage, type SourceLanguage } from './languages';
 import {
+  classifyScript,
   cleanLine,
   dedupeBlocks,
   groupLines,
+  guessLatinLanguage,
   isMeaningful,
   joinLines,
+  scriptStats,
   type Box,
   type LangRules,
   type OcrLine,
@@ -68,6 +71,15 @@ function recognize(lang: string, image: HTMLCanvasElement, psm: string) {
   });
   entry.queue = job.catch(() => undefined);
   return job;
+}
+
+/** Stops a worker that is no longer needed (frees its memory). */
+async function releaseWorker(lang: string): Promise<void> {
+  const entry = workers.get(lang);
+  if (!entry) return;
+  workers.delete(lang);
+  await entry.queue;
+  (await entry.worker.catch(() => null))?.terminate();
 }
 
 export async function terminateOcr(): Promise<void> {
@@ -335,4 +347,72 @@ function clampBox(b: Box, W: number, H: number): Box {
 function slicePixels(px: Pixels, top: number, height: number): Pixels {
   const start = top * px.width * 4;
   return { data: px.data.slice(start, start + height * px.width * 4), width: px.width, height };
+}
+
+// --- source language detection ---------------------------------------------------
+
+/**
+ * Models loaded together only to identify the script. They also read Latin
+ * letters well enough; adding `eng` makes Tesseract fail to load a bogus
+ * sub-language when combined with jpn / chi_sim.
+ */
+const DETECT_LANGS = 'kor+jpn+chi_sim';
+
+function letterCount(text: string): number {
+  return Object.values(scriptStats(text)).reduce((a, b) => a + b, 0);
+}
+
+function sampleText(result: Awaited<ReturnType<typeof recognize>>): string {
+  return linesOf(result, 1, 0, 0)
+    .filter((l) => l.confidence >= 50)
+    .map((l) => l.text.trim())
+    .join(' ');
+}
+
+/** Simplified or traditional: whichever model reads the samples with more confidence. */
+async function chooseChinese(samples: HTMLCanvasElement[]): Promise<string> {
+  let simplified = 0;
+  let traditional = 0;
+  for (const canvas of samples.slice(0, 3)) {
+    const vertical = canvas.height > canvas.width * 1.15;
+    const s = await recognizeBlock(canvas, sourceLanguage('zh-Hans'), vertical, 30, 1, 0, 0);
+    const t = await recognizeBlock(canvas, sourceLanguage('zh-Hant'), vertical, 30, 1, 0, 0);
+    simplified += s ? s.confidence * s.text.length : 0;
+    traditional += t ? t.confidence * t.text.length : 0;
+  }
+  return traditional > simplified ? 'zh-Hant' : 'zh-Hans';
+}
+
+/**
+ * Guesses the language of a page from its biggest speech bubbles (or from
+ * the top of the page when there are none). Returns null if there is too
+ * little text to decide.
+ */
+export async function detectPageLanguage(bitmap: ImageBitmap): Promise<string | null> {
+  const scale = Math.min(1, Math.sqrt(MAX_PIXELS / (bitmap.width * bitmap.height)));
+  const px = bitmapPixels(bitmap, scale);
+  const samples = detectBubbles(px)
+    .sort((a, b) => b.ink - a.ink)
+    .slice(0, 5)
+    .map((r) => pixelsToCanvas(maskedCrop(px, r).pixels));
+  let text = '';
+  for (const canvas of samples) {
+    text += ' ' + sampleText(await recognize(DETECT_LANGS, canvas, '6'));
+    if (classifyScript(text) && letterCount(text) >= 20) break;
+  }
+  if (!classifyScript(text)) {
+    // No usable bubble: read the top of the page as sparse text.
+    const tile = pixelsToCanvas(slicePixels(px, 0, Math.min(px.height, Math.round(TILE * scale))));
+    text += ' ' + sampleText(await recognize(DETECT_LANGS, tile, '11'));
+  }
+  const script = classifyScript(text);
+  if (!script) return null;
+  if (script === 'latin') return guessLatinLanguage(text);
+  if (script === 'zh') return chooseChinese(samples);
+  return script;
+}
+
+/** Frees the multi-language model once the language of a chapter is known. */
+export function finishLanguageDetection(): Promise<void> {
+  return releaseWorker(DETECT_LANGS);
 }

@@ -6,7 +6,10 @@ export interface Chapter {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** Source language code, or 'auto' until it has been detected. */
   sourceLang: string;
+  /** The source language was detected automatically. */
+  autoSource?: boolean;
   targetLang: string;
   pageIds: string[];
   /** Small JPEG data URL used by the library grid. */
@@ -78,6 +81,8 @@ export interface LlmSettings {
 }
 
 export interface Settings {
+  /** Settings schema version (used for one-off migrations). */
+  v?: number;
   uiLang: 'fr' | 'en';
   sourceLang: string;
   targetLang: string;

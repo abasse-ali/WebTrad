@@ -192,3 +192,79 @@ export function dedupeBlocks<T extends Box>(blocks: T[]): T[] {
   }
   return kept.sort((a, b) => a.y - b.y || a.x - b.x);
 }
+
+// --- language detection -----------------------------------------------------------
+
+export interface ScriptStats {
+  hangul: number;
+  kana: number;
+  han: number;
+  latin: number;
+  cyrillic: number;
+  thai: number;
+}
+
+export function scriptStats(text: string): ScriptStats {
+  const s: ScriptStats = { hangul: 0, kana: 0, han: 0, latin: 0, cyrillic: 0, thai: 0 };
+  for (const ch of text) {
+    if (/[가-힯ᄀ-ᇿ㄰-㆏]/u.test(ch)) s.hangul++;
+    else if (/[぀-ヿㇰ-ㇿｦ-ﾟ]/u.test(ch)) s.kana++;
+    else if (/[一-鿿㐀-䶿豈-﫿]/u.test(ch)) s.han++;
+    else if (/[A-Za-zÀ-ɏḀ-ỿ]/u.test(ch)) s.latin++;
+    else if (/[Ѐ-ӿ]/u.test(ch)) s.cyrillic++;
+    else if (/[฀-๿]/u.test(ch)) s.thai++;
+  }
+  return s;
+}
+
+export type Script = 'ko' | 'ja' | 'zh' | 'latin' | 'ru' | 'th';
+
+/** Dominant writing system of an OCR sample, or null when there is too little text. */
+export function classifyScript(text: string): Script | null {
+  const s = scriptStats(text);
+  const total = s.hangul + s.kana + s.han + s.latin + s.cyrillic + s.thai;
+  if (total < 4) return null;
+  const cjk = s.hangul + s.kana + s.han;
+  // Korean comics may contain a few hanja, Japanese ones a lot of kanji:
+  // Hangul or kana are the reliable markers.
+  if (s.hangul >= Math.max(3, cjk * 0.3)) return 'ko';
+  if (s.kana >= Math.max(2, cjk * 0.1)) return 'ja';
+  if (s.han >= Math.max(3, total * 0.4)) return 'zh';
+  if (s.cyrillic >= total * 0.5) return 'ru';
+  if (s.thai >= total * 0.5) return 'th';
+  if (s.latin >= total * 0.5) return 'latin';
+  return null;
+}
+
+const STOPWORDS: Record<string, string[]> = {
+  en: ['the', 'you', 'and', 'is', 'to', 'what', 'are', 'it', 'this', 'that', 'i', 'me', 'my', 'of', 'do', "don't", 'we', 'for', 'have', 'was'],
+  fr: ['le', 'la', 'les', 'de', 'des', 'et', 'est', 'je', 'tu', 'vous', 'pas', 'que', 'qui', 'un', 'une', 'ce', 'mais', 'moi', 'toi', 'nous', "c'est", 'pour'],
+  es: ['el', 'la', 'los', 'las', 'de', 'que', 'y', 'es', 'yo', 'tú', 'no', 'por', 'qué', 'un', 'una', 'estoy', 'pero', 'eso', 'para', 'con', 'está'],
+  pt: ['o', 'a', 'os', 'as', 'de', 'que', 'e', 'é', 'eu', 'você', 'não', 'um', 'uma', 'isso', 'mas', 'para', 'com', 'está', 'meu', 'em'],
+  it: ['il', 'lo', 'la', 'gli', 'di', 'che', 'e', 'è', 'io', 'tu', 'non', 'un', 'una', 'ma', 'per', 'sono', 'questo', 'cosa', 'mi', 'ti'],
+  de: ['der', 'die', 'das', 'und', 'ist', 'ich', 'du', 'nicht', 'ein', 'eine', 'was', 'wir', 'sie', 'es', 'mit', 'zu', 'mir', 'dich', 'aber', 'sein'],
+  id: ['yang', 'dan', 'aku', 'kamu', 'tidak', 'ini', 'itu', 'apa', 'di', 'ke', 'ada', 'saya', 'dia', 'kita', 'akan', 'sudah', 'bisa', 'juga'],
+};
+
+/** Guesses the language of Latin-script text from frequent words and diacritics. */
+export function guessLatinLanguage(text: string): string {
+  const lower = text.toLowerCase();
+  // Vietnamese has letters no other supported language uses.
+  if ((lower.match(/[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/g) ?? []).length >= 3) return 'vi';
+  const words = lower.match(/[\p{L}']+/gu) ?? [];
+  let best = 'en';
+  let bestScore = 0;
+  for (const [lang, list] of Object.entries(STOPWORDS)) {
+    const set = new Set(list);
+    let score = words.filter((w) => set.has(w)).length;
+    if (lang === 'fr') score += (lower.match(/[àâçèéêëîïôûù]/g) ?? []).length * 0.3;
+    if (lang === 'es') score += (lower.match(/[ñ¿¡áíóú]/g) ?? []).length * 0.3;
+    if (lang === 'pt') score += (lower.match(/[ãõç]/g) ?? []).length * 0.5;
+    if (lang === 'de') score += (lower.match(/[äöüß]/g) ?? []).length * 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = lang;
+    }
+  }
+  return best;
+}

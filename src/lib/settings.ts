@@ -91,8 +91,9 @@ const defaultLlm: LlmSettings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
+  v: 2,
   uiLang: browserUiLang(),
-  sourceLang: 'ko',
+  sourceLang: 'auto',
   targetLang: defaultTarget(),
   provider: 'auto',
   ocrEngine: 'tesseract',
@@ -109,7 +110,9 @@ function load(): Settings {
     const raw = localStorage.getItem(KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<Settings>;
-    return { ...DEFAULT_SETTINGS, ...parsed, llm: { ...defaultLlm, ...(parsed.llm ?? {}) } };
+    // v2: the source language is detected automatically by default.
+    if ((parsed.v ?? 1) < 2) parsed.sourceLang = 'auto';
+    return { ...DEFAULT_SETTINGS, ...parsed, v: 2, llm: { ...defaultLlm, ...(parsed.llm ?? {}) } };
   } catch {
     return DEFAULT_SETTINGS;
   }

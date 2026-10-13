@@ -18,6 +18,8 @@ const fr = {
   'common.to': 'Vers',
   'common.loading': 'Chargement…',
   'common.free': '100 % gratuit',
+  'lang.detecting': 'Langue à détecter',
+  'lang.autoShort': 'auto',
 
   'hero.title': 'Lisez n’importe quel webtoon, manhwa ou manga dans votre langue.',
   'hero.text':
@@ -27,7 +29,7 @@ const fr = {
   'how.1.title': 'Importez le chapitre',
   'how.1.text': 'Glissez vos images, un dossier, une archive .zip/.cbz ou collez des liens.',
   'how.2.title': 'Choisissez la langue',
-  'how.2.text': 'Coréen, japonais, chinois, anglais… vers plus de 60 langues.',
+  'how.2.text': 'La langue d’origine (coréen, japonais, chinois, anglais…) est détectée automatiquement. Choisissez la vôtre parmi plus de 60.',
   'how.3.title': 'Traduction automatique',
   'how.3.text': 'Détection des bulles, OCR et traduction directement dans votre navigateur.',
   'how.4.title': 'Lisez et retouchez',
@@ -86,6 +88,7 @@ const fr = {
   'reader.delete': 'Supprimer le chapitre',
   'reader.notFound': 'Chapitre introuvable.',
   'reader.cancel': 'Arrêter',
+  'reader.phase.detect': 'Détection de la langue…',
   'reader.phase.ocr': 'Lecture du texte',
   'reader.phase.translate': 'Traduction',
   'reader.phase.download': 'Téléchargement du modèle OCR',
@@ -193,6 +196,8 @@ const en: Record<MessageKey, string> = {
   'common.to': 'To',
   'common.loading': 'Loading…',
   'common.free': '100% free',
+  'lang.detecting': 'Language to detect',
+  'lang.autoShort': 'auto',
 
   'hero.title': 'Read any webtoon, manhwa or manga in your language.',
   'hero.text':
@@ -202,7 +207,7 @@ const en: Record<MessageKey, string> = {
   'how.1.title': 'Import the chapter',
   'how.1.text': 'Drop images, a folder, a .zip/.cbz archive or paste links.',
   'how.2.title': 'Pick your language',
-  'how.2.text': 'Korean, Japanese, Chinese, English… into 60+ languages.',
+  'how.2.text': 'The original language (Korean, Japanese, Chinese, English…) is detected automatically. Pick yours among 60+.',
   'how.3.title': 'Automatic translation',
   'how.3.text': 'Bubble detection, OCR and translation right in your browser.',
   'how.4.title': 'Read and touch up',
@@ -261,6 +266,7 @@ const en: Record<MessageKey, string> = {
   'reader.delete': 'Delete chapter',
   'reader.notFound': 'Chapter not found.',
   'reader.cancel': 'Stop',
+  'reader.phase.detect': 'Detecting the language…',
   'reader.phase.ocr': 'Reading text',
   'reader.phase.translate': 'Translating',
   'reader.phase.download': 'Downloading OCR model',

@@ -114,6 +114,19 @@ export const TARGET_LANGUAGES: TargetLanguage[] = [
   { code: 'ca', name: 'Català' },
 ];
 
+/** Source language value meaning "detect it from the pages". */
+export const AUTO = 'auto';
+
+/** Maps a language tag returned by an AI model to one of our source codes. */
+export function normaliseSourceCode(tag: string | undefined): string | null {
+  if (!tag) return null;
+  const t = tag.trim().toLowerCase();
+  if (/^zh[-_](tw|hk|mo|hant)/.test(t)) return 'zh-Hant';
+  if (t.startsWith('zh')) return 'zh-Hans';
+  const base = t.split(/[-_]/)[0];
+  return SOURCE_LANGUAGES.some((l) => l.code === base) ? base : null;
+}
+
 export function sourceLanguage(code: string): SourceLanguage {
   return SOURCE_LANGUAGES.find((l) => l.code === code) ?? SOURCE_LANGUAGES[0];
 }
@@ -123,6 +136,7 @@ export function targetLanguage(code: string): TargetLanguage {
 }
 
 export function googleCode(code: string): string {
+  if (code === AUTO) return 'auto';
   const target = TARGET_LANGUAGES.find((l) => l.code === code);
   if (target?.google) return target.google;
   if (code === 'zh-Hans') return 'zh-CN';
@@ -139,6 +153,7 @@ export function chromeCode(code: string): string {
 
 /** English name of a language, used in LLM prompts. */
 export function englishName(code: string): string {
+  if (code === AUTO) return 'the original language (detect it)';
   try {
     return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) ?? code;
   } catch {
@@ -148,6 +163,7 @@ export function englishName(code: string): string {
 
 /** Name of a language in the UI language. */
 export function displayName(code: string, uiLang: string): string {
+  if (code === AUTO) return uiLang === 'fr' ? 'Détection automatique' : 'Auto-detect';
   try {
     const name = new Intl.DisplayNames([uiLang], { type: 'language' }).of(code);
     if (name && name !== code) return name.charAt(0).toLocaleUpperCase(uiLang) + name.slice(1);

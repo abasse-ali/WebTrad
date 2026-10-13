@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { cleanLine, dedupeBlocks, groupLines, isMeaningful, joinLines, normaliseCase, type OcrLine } from '../src/lib/text';
+import {
+  classifyScript,
+  cleanLine,
+  dedupeBlocks,
+  groupLines,
+  guessLatinLanguage,
+  isMeaningful,
+  joinLines,
+  normaliseCase,
+  type OcrLine,
+} from '../src/lib/text';
 import { SOURCE_LANGUAGES } from '../src/lib/languages';
 
 const ko = SOURCE_LANGUAGES.find((l) => l.code === 'ko')!;
@@ -81,5 +91,29 @@ describe('text helpers', () => {
       { x: 300, y: 0, w: 50, h: 50 },
     ]);
     expect(out).toHaveLength(2);
+  });
+});
+
+describe('language detection', () => {
+  it('recognises the writing system of OCR output', () => {
+    expect(classifyScript('빨리 가자! 그런데 너는')).toBe('ko');
+    // Vertical Japanese read with a horizontal model: interleaved but still kana.
+    expect(classifyScript('元 こ 気 ん でに す ち かは')).toBe('ja');
+    expect(classifyScript('你在这里做什么？我们走吧')).toBe('zh');
+    expect(classifyScript('WHAT ARE YOU DOING HERE?')).toBe('latin');
+    expect(classifyScript('Что ты здесь делаешь?')).toBe('ru');
+    expect(classifyScript('!?')).toBeNull();
+  });
+
+  it('keeps Korean with a few hanja as Korean', () => {
+    expect(classifyScript('大韓民國 만세! 우리는 이긴다')).toBe('ko');
+  });
+
+  it('guesses Latin languages', () => {
+    expect(guessLatinLanguage('WHAT ARE YOU DOING HERE? I TOLD YOU TO WAIT')).toBe('en');
+    expect(guessLatinLanguage("Qu'est-ce que tu fais là ? Je t'ai dit de m'attendre")).toBe('fr');
+    expect(guessLatinLanguage('¿Qué estás haciendo aquí? No lo sé')).toBe('es');
+    expect(guessLatinLanguage('Was machst du hier? Ich weiß es nicht')).toBe('de');
+    expect(guessLatinLanguage('Anh đang làm gì ở đây? Tôi không biết')).toBe('vi');
   });
 });

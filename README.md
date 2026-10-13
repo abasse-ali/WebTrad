@@ -12,7 +12,7 @@ pièces, pas d’abonnement, pas de serveur. L’OCR tourne dans le navigateur e
 | --- | --- |
 | Import par lien de chapitre | Import par liens (page de chapitre ou images directes), avec proxy CORS gratuit optionnel |
 | Import d’images | Images, dossiers, archives **.zip / .cbz**, glisser-déposer, **Ctrl+V** |
-| Coréen, chinois, japonais, anglais → 50+ langues | Coréen, japonais (vertical inclus), chinois simplifié/traditionnel, anglais, français, espagnol… → **60+ langues** |
+| Coréen, chinois, japonais, anglais → 50+ langues | **Détection automatique** de la langue d’origine (coréen, japonais vertical inclus, chinois simplifié/traditionnel, anglais, français, espagnol…) → **60+ langues** |
 | Traduction IA | Google Traduction (gratuit, sans clé), MyMemory, **traducteur intégré à Chrome/Edge** (hors ligne), ou **votre IA** (Gemini, Groq, OpenRouter en offre gratuite, Ollama / LM Studio en local) |
 | Bibliothèque sur l’appareil | Bibliothèque IndexedDB, reprise de lecture, utilisable **hors ligne** (PWA installable) |
 | Toucher une bulle pour voir l’original | Oui, plus modes **Original** et **Comparer** (côte à côte) |

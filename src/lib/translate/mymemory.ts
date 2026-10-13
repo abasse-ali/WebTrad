@@ -33,7 +33,8 @@ export const myMemoryEngine: TranslationEngine = {
     for (const text of texts) {
       let translated = '';
       for (const chunk of chunks(text)) {
-        const params = new URLSearchParams({ q: chunk, langpair: `${googleCode(source)}|${googleCode(target)}` });
+        const from = source === 'auto' ? 'Autodetect' : googleCode(source);
+        const params = new URLSearchParams({ q: chunk, langpair: `${from}|${googleCode(target)}` });
         if (email) params.set('de', email);
         const res = await fetch(`${ENDPOINT}?${params}`, { signal });
         if (!res.ok) throw new TranslateError(`MyMemory HTTP ${res.status}`, 'mymemory');

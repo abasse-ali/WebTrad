@@ -74,3 +74,16 @@ describe('wrapText punctuation', () => {
     expect(wrapText('comment', 40, measure, 'fr', false, false)).toBeNull();
   });
 });
+
+describe('normaliseSourceCode', () => {
+  it('maps AI language tags to source codes', async () => {
+    const { normaliseSourceCode } = await import('../src/lib/languages');
+    expect(normaliseSourceCode('ko')).toBe('ko');
+    expect(normaliseSourceCode('ja-JP')).toBe('ja');
+    expect(normaliseSourceCode('zh')).toBe('zh-Hans');
+    expect(normaliseSourceCode('zh-TW')).toBe('zh-Hant');
+    expect(normaliseSourceCode('zh-Hant')).toBe('zh-Hant');
+    expect(normaliseSourceCode('xx')).toBeNull();
+    expect(normaliseSourceCode(undefined)).toBeNull();
+  });
+});

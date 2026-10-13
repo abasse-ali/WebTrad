@@ -115,7 +115,8 @@ export interface VisionBubble {
 const SYSTEM_VISION = `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
 Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes and important sound effects. Ignore watermarks, page numbers and credits.
 For each one give its bounding box as [ymin, xmin, ymax, xmax] normalised to 0-1000 (tight around the lettering), the exact original text, and a natural translation in the requested language.
-Answer with JSON only: {"bubbles":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;
+Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
+Answer with JSON only: {"source_language":"<code>","bubbles":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;
 
 export async function visionTranslate(
   imageDataUrl: string,
@@ -123,7 +124,7 @@ export async function visionTranslate(
   target: string,
   signal?: AbortSignal,
   llm: LlmSettings = getSettings().llm,
-): Promise<VisionBubble[]> {
+): Promise<{ bubbles: VisionBubble[]; sourceLanguage?: string }> {
   const answer = await chat(
     llm,
     [
@@ -133,7 +134,10 @@ export async function visionTranslate(
         content: [
           {
             type: 'text',
-            text: `Source language: ${englishName(source)}. Translate into ${englishName(target)}.`,
+            text:
+              source === 'auto'
+                ? `Detect the source language. Translate into ${englishName(target)}.`
+                : `Source language: ${englishName(source)}. Translate into ${englishName(target)}.`,
           },
           { type: 'image_url', image_url: { url: imageDataUrl } },
         ],
@@ -141,8 +145,9 @@ export async function visionTranslate(
     ],
     signal,
   );
-  const parsed = parseJsonAnswer<{ bubbles?: unknown[] } | unknown[]>(answer);
+  const parsed = parseJsonAnswer<{ bubbles?: unknown[]; source_language?: string } | unknown[]>(answer);
   const list = Array.isArray(parsed) ? parsed : (parsed.bubbles ?? []);
+  const sourceLanguage = Array.isArray(parsed) ? undefined : parsed.source_language;
   const out: VisionBubble[] = [];
   for (const raw of list) {
     const item = raw as { box_2d?: unknown; box?: unknown; text?: unknown; translation?: unknown };
@@ -156,7 +161,7 @@ export async function visionTranslate(
       translation: typeof item.translation === 'string' ? item.translation : '',
     });
   }
-  return out;
+  return { bubbles: out, sourceLanguage };
 }
 
 /** Quick round trip used by the "Test" button in the settings. */
