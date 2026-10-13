@@ -18,6 +18,7 @@ import {
   type Box,
   type LangRules,
   type OcrLine,
+  type TextBlock,
 } from './text';
 
 /** A text block found on a page, before translation. */
@@ -308,12 +309,22 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
     .filter((l) => !claimed.some((c) => contains(c, l.x + l.w / 2, l.y + l.h / 2)))
     .map((l) => ({ ...l, strong: l.confidence >= STRONG_LINE && scriptLetters(l.text, rules) >= minLetters }))
     .filter((l) => l.strong || plausibility(l.text, rules) >= 0.6);
+  let rereads = 0;
   for (const block of groupLines(free, rules)) {
-    if (!block.lines.some((l) => l.strong)) continue;
     let text = block.text;
     let confidence = block.confidence;
     let vertical = block.vertical;
     let lineBoxes: RawLine[] = block.lines;
+    if (!block.lines.some((l) => l.strong)) {
+      // Thin or coloured lettering is often read at 60-79 %: give lines that
+      // look like real words a second, enlarged reading instead of dropping them.
+      if (rereads >= MAX_REREADS || !worthRereading(block, rules)) continue;
+      rereads++;
+      const res = await rereadEnlarged(bitmap, block, lang);
+      if (!res) continue;
+      ({ text, confidence } = res);
+      lineBoxes = res.lines;
+    }
     // Vertical manga text is misread by horizontal models: read the box again.
     if (lang.vertical && block.h > block.w * 1.3) {
       const pad = Math.round(Math.max(block.w, 12) * 0.25);
@@ -342,6 +353,52 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
   }
 
   return dedupeBlocks(found.map((f) => ({ ...f, ...f.box }))).map(({ x: _x, y: _y, w: _w, h: _h, ...rest }) => rest);
+}
+
+const MAX_REREADS = 12;
+
+function worthRereading(block: TextBlock, rules: LangRules): boolean {
+  if (block.vertical || block.lines.length > 3 || block.confidence < 55) return false;
+  return scriptLetters(block.text, rules) >= (isLatin(rules) ? 4 : 2) && plausibility(block.text, rules) >= 0.75;
+}
+
+/** Reads a small block again at a larger scale; keeps it only if now read confidently. */
+async function rereadEnlarged(bitmap: DecodedImage, block: TextBlock, lang: SourceLanguage): Promise<RecognizedText | null> {
+  const rules = rulesFor(lang);
+  const lineH = median(block.lines.map((l) => l.h)) || block.h;
+  const pad = Math.round(lineH * 0.5);
+  const crop = clampBox({ x: block.x - pad, y: block.y - pad, w: block.w + pad * 2, h: block.h + pad * 2 }, bitmap.width, bitmap.height);
+  const scale = Math.min(3, Math.max(1.5, 64 / lineH));
+  const canvas = pixelsToCanvas(bitmapPixels(bitmap, scale, crop));
+  const result = await recognize(lang.tesseract[0], canvas, block.lines.length === 1 ? '7' : '6');
+  const lines = keepLines(linesOf(result, scale, crop.x, crop.y), rules, 0);
+  if (lines.length === 0) return null;
+  const text = joinLines(
+    lines.map((l) => l.text),
+    rules,
+  );
+  // Judge on the letters: Tesseract scores a whole word low for a doubtful
+  // quote or dot ("THAT...”" = 20 % while each letter is 99 %).
+  const confidence = letterConfidence(result, rules);
+  if (confidence < REREAD_LETTERS || plausibility(text, rules) < 0.75 || isNoiseBlock(text, confidence, rules)) return null;
+  return { text, confidence, lines, vertical: false };
+}
+
+const REREAD_LETTERS = 85;
+
+function letterConfidence(result: Awaited<ReturnType<typeof recognize>>, rules: LangRules): number {
+  let sum = 0;
+  let n = 0;
+  for (const b of result.data.blocks ?? [])
+    for (const p of b.paragraphs)
+      for (const l of p.lines)
+        for (const w of l.words)
+          for (const sym of w.symbols) {
+            if (!rules.script.test(sym.text)) continue;
+            sum += sym.confidence;
+            n++;
+          }
+  return n ? sum / n : 0;
 }
 
 /** Reads the text inside a box drawn by the user. */

@@ -141,6 +141,11 @@ describe('OCR noise filtering (real manhwa samples)', () => {
     }
   });
 
+  it('keeps stuttered words', () => {
+    expect(isNoiseBlock('R-REALLY?!', 75, en)).toBe(false);
+    expect(isNoiseBlock('I-I CAN WAIT!', 70, en)).toBe(false);
+  });
+
   it('keeps real lettering', () => {
     expect(isNoiseBlock('HAA... FINALLY...', 93, en)).toBe(false);
     expect(isNoiseBlock('NO!', 96, en)).toBe(false);

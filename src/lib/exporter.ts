@@ -176,7 +176,8 @@ export async function exportChapter(
   onProgress?: (done: number, total: number) => void,
   maxMB = getSettings().exportMaxMB,
 ): Promise<ExportResult> {
-  const limit = maxMB > 0 ? maxMB * 1024 * 1024 : 0;
+  // Decimal megabytes, as phones and file managers count them, with a small margin.
+  const limit = maxMB > 0 ? maxMB * 1_000_000 * 0.98 : 0;
   let result = await buildArchive(chapter, pages, limit, onProgress);
   // Pages that could not be shrunk (or added as originals) may overshoot: retry tighter.
   for (let pass = 1; limit > 0 && result.zip.size > limit && pass <= 2; pass++) {

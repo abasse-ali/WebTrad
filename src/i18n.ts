@@ -391,13 +391,14 @@ export function useT(): Translate {
   return useMemo<Translate>(() => (key, vars) => translate(uiLang, key, vars), [uiLang]);
 }
 
+/** Sizes in decimal units (1 Mo = 1 000 000 o), like phones and file managers show them. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes)) return '—';
   const units = ['o', 'Ko', 'Mo', 'Go'];
   let i = 0;
   let v = bytes;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
     i++;
   }
   return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;

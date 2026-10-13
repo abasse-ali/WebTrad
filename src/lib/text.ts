@@ -82,7 +82,8 @@ const VOWEL = /[aeiouyàáâãäåæèéêëìíîïòóôõöøœùúûüýÿ]/
 /** Share of tokens that look like real words (Latin scripts); 1 for other scripts. */
 export function plausibility(text: string, rules: LangRules): number {
   if (!isLatin(rules)) return 1;
-  const words = text.match(/\p{L}[\p{L}'’]*/gu) ?? [];
+  // Hyphens join stutters ("R-REALLY", "I-I") into one word.
+  const words = text.match(/\p{L}[\p{L}'’-]*/gu) ?? [];
   if (words.length === 0) return 0;
   const ok = words.filter((w) => (w.length >= 2 && VOWEL.test(w)) || SINGLE_LETTERS.has(w)).length;
   return ok / words.length;
