@@ -56,7 +56,12 @@ const fr = {
   'new.folder': 'Choisir un dossier',
   'new.urlsLabel': 'Une adresse par ligne : image directe ou page d’un chapitre',
   'new.urlsHint':
-    'Les sites bloquent souvent les requêtes depuis un autre site (CORS). Si l’import échoue, configurez un proxy CORS gratuit dans les réglages.',
+    'Collez le lien d’un chapitre (ou des liens d’images). Si le site bloque l’accès direct, WebTrad passe automatiquement par des relais gratuits (r.jina.ai pour la page, wsrv.nl pour les images).',
+  'new.readingPage': 'Lecture de la page du chapitre…',
+  'new.pageUnreachable':
+    'Impossible de lire {url} : le site est protégé (anti-robot, connexion requise) ou hors ligne. Téléchargez les images et importez-les depuis l’onglet Fichiers, ou configurez votre propre proxy dans les réglages.',
+  'new.imageUnreachable':
+    'Les images de {url} refusent le téléchargement (protection anti-copie). Configurez votre propre proxy dans les réglages ou importez les images depuis l’onglet Fichiers.',
   'new.fetch': 'Récupérer les images',
   'new.fetching': 'Téléchargement {done}/{total}…',
   'new.chapterTitle': 'Titre du chapitre',
@@ -165,7 +170,7 @@ const fr = {
   'settings.import': 'Import par lien',
   'settings.corsProxy': 'Proxy CORS',
   'settings.corsProxy.desc':
-    'Utilisé seulement quand un site bloque le téléchargement direct. Mettez {url} à l’endroit de l’adresse (et {referer} pour la page d’origine). Vous pouvez héberger gratuitement le vôtre (voir tools/cors-proxy-worker.js).',
+    'Facultatif : WebTrad utilise déjà des relais gratuits. Votre proxy est essayé en premier, utile pour les sites qui exigent une page d’origine (Naver…). Mettez {url} à l’endroit de l’adresse (et {referer} pour la page d’origine). Vous pouvez héberger gratuitement le vôtre (voir tools/cors-proxy-worker.js).',
   'settings.storage': 'Stockage',
   'settings.storage.used': '{used} utilisés sur {quota}',
   'settings.storage.clear': 'Effacer toute la bibliothèque',
@@ -234,7 +239,12 @@ const en: Record<MessageKey, string> = {
   'new.folder': 'Pick a folder',
   'new.urlsLabel': 'One address per line: a direct image or a chapter page',
   'new.urlsHint':
-    'Websites often block requests coming from another site (CORS). If the import fails, set up a free CORS proxy in the settings.',
+    'Paste a chapter link (or image links). If the website blocks direct access, WebTrad automatically goes through free relays (r.jina.ai for the page, wsrv.nl for images).',
+  'new.readingPage': 'Reading the chapter page…',
+  'new.pageUnreachable':
+    'Could not read {url}: the website is protected (anti-bot, login required) or offline. Download the images and import them from the Files tab, or set up your own proxy in the settings.',
+  'new.imageUnreachable':
+    'The images of {url} refuse to be downloaded (hotlink protection). Set up your own proxy in the settings or import the images from the Files tab.',
   'new.fetch': 'Fetch images',
   'new.fetching': 'Downloading {done}/{total}…',
   'new.chapterTitle': 'Chapter title',
@@ -343,7 +353,7 @@ const en: Record<MessageKey, string> = {
   'settings.import': 'Import from links',
   'settings.corsProxy': 'CORS proxy',
   'settings.corsProxy.desc':
-    'Only used when a website blocks direct downloads. Put {url} where the address goes (and {referer} for the source page). You can host your own for free (see tools/cors-proxy-worker.js).',
+    'Optional: WebTrad already uses free relays. Your proxy is tried first, useful for websites that require a referer (Naver…). Put {url} where the address goes (and {referer} for the source page). You can host your own for free (see tools/cors-proxy-worker.js).',
   'settings.storage': 'Storage',
   'settings.storage.used': '{used} used of {quota}',
   'settings.storage.clear': 'Erase the whole library',

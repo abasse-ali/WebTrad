@@ -6,8 +6,10 @@ import {
   groupLines,
   guessLatinLanguage,
   isMeaningful,
+  isNoiseBlock,
   joinLines,
   normaliseCase,
+  stripJunkTokens,
   type OcrLine,
 } from '../src/lib/text';
 import { SOURCE_LANGUAGES } from '../src/lib/languages';
@@ -115,5 +117,35 @@ describe('language detection', () => {
     expect(guessLatinLanguage('¿Qué estás haciendo aquí? No lo sé')).toBe('es');
     expect(guessLatinLanguage('Was machst du hier? Ich weiß es nicht')).toBe('de');
     expect(guessLatinLanguage('Anh đang làm gì ở đây? Tôi không biết')).toBe('vi');
+  });
+});
+
+
+describe('OCR noise filtering (real manhwa samples)', () => {
+  it('removes debris tokens but keeps punctuation that matters', () => {
+    expect(stripJunkTokens('I PAID THE “ ] MONEY I OWED THE CYBER | i CAFE...')).toBe('I PAID THE MONEY I OWED THE CYBER CAFE...');
+    expect(stripJunkTokens('! TIME TO GET SERIOUS ! ...')).toBe('! TIME TO GET SERIOUS ! ...');
+  });
+
+  it('flags short unsure fragments read from the artwork', () => {
+    for (const [text, conf] of [
+      ['Vy', 61],
+      ['Ret', 54],
+      ['ADV', 55],
+      ['27 Mg', 44],
+      ['wo Fh.', 55],
+      ['Gs', 40],
+      ['RVULP', 74],
+    ] as const) {
+      expect(isNoiseBlock(text, conf, en), text).toBe(true);
+    }
+  });
+
+  it('keeps real lettering', () => {
+    expect(isNoiseBlock('HAA... FINALLY...', 93, en)).toBe(false);
+    expect(isNoiseBlock('NO!', 96, en)).toBe(false);
+    expect(isNoiseBlock('FUU... FUCK THE WORLD...', 92, en)).toBe(false);
+    expect(isNoiseBlock('빨리 가자!', 95, ko)).toBe(false);
+    expect(isNoiseBlock('ㅋ', 50, ko)).toBe(true);
   });
 });

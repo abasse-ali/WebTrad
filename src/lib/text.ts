@@ -13,6 +13,8 @@ export interface Box {
 export interface OcrLine extends Box {
   text: string;
   confidence: number;
+  /** Read with high confidence: may start a text block on its own. */
+  strong?: boolean;
 }
 
 export interface TextBlock extends Box {
@@ -39,9 +41,66 @@ export function isVerticalBox(b: Box): boolean {
 export function cleanLine(text: string, rules: LangRules): string {
   let t = text.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
   if (rules.noSpaces) t = t.replace(CJK_GAP, '$1');
+  if (isLatin(rules)) t = stripJunkTokens(t);
   // Stray symbols Tesseract likes to add around bubble borders.
   t = t.replace(/^[|\\/_\-=~`'"“”‘’,.:;]+(?=\p{L})/u, '').replace(/(?<=[\p{L}!?.…])[|\\/_=~`]+$/u, '');
   return t.trim();
+}
+
+export function isLatin(rules: LangRules): boolean {
+  return /[A-Za-z]/.test(rules.script.source);
+}
+
+/** Letters of the source script in a text. */
+export function scriptLetters(text: string, rules: LangRules): number {
+  let n = 0;
+  for (const ch of text) if (rules.script.test(ch)) n++;
+  return n;
+}
+
+const JUNK_TOKEN = /^[|\\/[\]{}()“”"'`~=_+*#@§®©<>:;,.\-—–]+$/u;
+const KEEP_TOKEN = /^(\.{2,}|…|[!?]+|[!?]*\.{3}[!?]*)$/u;
+const SINGLE_LETTERS = new Set(['I', 'A', 'a', 'O', 'o', 'y', 'à', 'e', 'é', 'Y', 'E', 'É', 'À', 'u', 'U']);
+
+/** Removes OCR debris from Latin-script text: lone bars, brackets, quotes… */
+export function stripJunkTokens(text: string): string {
+  return text
+    .split(' ')
+    .filter((tok) => {
+      if (!tok) return false;
+      if (KEEP_TOKEN.test(tok)) return true;
+      if (JUNK_TOKEN.test(tok)) return false;
+      const letters = tok.replace(/[^\p{L}]/gu, '');
+      if (letters.length === 1 && !/\d/.test(tok) && !SINGLE_LETTERS.has(letters)) return false;
+      return true;
+    })
+    .join(' ');
+}
+
+const VOWEL = /[aeiouyàáâãäåæèéêëìíîïòóôõöøœùúûüýÿ]/i;
+
+/** Share of tokens that look like real words (Latin scripts); 1 for other scripts. */
+export function plausibility(text: string, rules: LangRules): number {
+  if (!isLatin(rules)) return 1;
+  const words = text.match(/\p{L}[\p{L}'’]*/gu) ?? [];
+  if (words.length === 0) return 0;
+  const ok = words.filter((w) => (w.length >= 2 && VOWEL.test(w)) || SINGLE_LETTERS.has(w)).length;
+  return ok / words.length;
+}
+
+/**
+ * Short, unsure fragments are almost always art misread as text
+ * ("Vy", "fl", "27 Mg"…). Real lettering is either long or read with high
+ * confidence.
+ */
+export function isNoiseBlock(text: string, confidence: number, rules: LangRules): boolean {
+  const letters = scriptLetters(text, rules);
+  if (isLatin(rules)) {
+    if (letters < 3 && confidence < 90) return true;
+    if (letters < 6 && confidence < 75) return true;
+    return plausibility(text, rules) < 0.6;
+  }
+  return letters < 2 && confidence < 85;
 }
 
 /** Share of letters in `text` that belong to the expected source script. */

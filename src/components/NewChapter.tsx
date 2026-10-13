@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useT, type MessageKey } from '../i18n';
-import { createChapter, filesToImages, guessTitle, urlsToImages, type ImportedImage } from '../lib/importers';
+import { ImportError, createChapter, filesToImages, guessTitle, urlsToImages, type ImportedImage } from '../lib/importers';
 import { startChapter } from '../lib/pipeline';
 import { getSettings, updateSettings, useSettings } from '../lib/settings';
 import { warmUpTranslator } from '../lib/translate';
@@ -78,16 +78,24 @@ export function NewChapter() {
     const lines = urls.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
     if (lines.length === 0) return;
     setError(null);
-    setBusy(t('new.fetching', { done: 0, total: '…' }));
+    setBusy(t('new.readingPage'));
     try {
-      const found = await urlsToImages(lines, getSettings().corsProxy, (done, total) =>
-        setBusy(t('new.fetching', { done, total })),
+      const found = await urlsToImages(
+        lines,
+        getSettings().corsProxy,
+        (done, total) => setBusy(t('new.fetching', { done, total })),
+        undefined,
+        () => setBusy(t('new.readingPage')),
       );
-      if (found.length === 0) setError(t('new.noImages'));
-      setImages((prev) => [...prev, ...found]);
-      if (!title) setTitle(guessTitle(lines[0]));
+      if (found.images.length === 0) setError(t('new.noImages'));
+      setImages((prev) => [...prev, ...found.images]);
+      if (!title) setTitle(found.title || guessTitle(lines[0]));
     } catch (err) {
-      setError(t('error.generic', { message: (err as Error).message }));
+      if (err instanceof ImportError) {
+        setError(t(err.code === 'PAGE_UNREACHABLE' ? 'new.pageUnreachable' : 'new.imageUnreachable', { url: err.url }));
+      } else {
+        setError(t('error.generic', { message: (err as Error).message }));
+      }
     } finally {
       setBusy(null);
     }

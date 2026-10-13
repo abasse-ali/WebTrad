@@ -53,20 +53,27 @@ Cloudflare Pages, Netlify, Vercel…
 **GitHub Pages** (déjà configuré) : dans *Settings → Pages* du dépôt, choisir *Source : GitHub Actions*. Chaque
 push sur `main` (ou sur la branche par défaut du dépôt) lance les tests, construit et publie le site (`.github/workflows/deploy.yml`).
 
-## Import par lien et proxy CORS
+## Import par lien
 
-Les navigateurs interdisent à une page de lire le contenu d’un autre site sans son accord (CORS). Beaucoup de sites
-de webtoons bloquent donc l’import direct. La solution gratuite : déployer votre propre petit proxy sur Cloudflare
-Workers (100 000 requêtes/jour offertes) avec `tools/cors-proxy-worker.js`, puis indiquer dans *Réglages → Proxy
-CORS* :
+Collez simplement l’adresse d’un chapitre (ou d’images). Les navigateurs interdisent à une page de lire le contenu
+d’un autre site sans son accord (CORS) ; WebTrad essaie donc, dans l’ordre :
+
+1. l’accès direct (sites qui l’autorisent) ;
+2. votre propre proxy, s’il est configuré (*Réglages → Proxy CORS*) ;
+3. des relais publics gratuits : [r.jina.ai](https://jina.ai/reader) pour la page (il exécute aussi le JavaScript,
+   donc les images chargées dynamiquement sont trouvées) et [wsrv.nl](https://wsrv.nl) pour les images, puis
+   allorigins / codetabs en dernier recours.
+
+Les images du chapitre sont repérées automatiquement (elles partagent le même dossier ; logos, pubs et images
+minuscules sont écartés) et le titre est déduit de la page.
+
+Limites : les sites qui exigent une connexion ou bloquent les robots (défi Cloudflare) ne peuvent pas être lus, et
+les hébergeurs d’images qui exigent une page d’origine (Naver…) nécessitent votre propre proxy. Le plus simple est
+alors de déployer gratuitement `tools/cors-proxy-worker.js` sur Cloudflare Workers et d’indiquer :
 
 ```
 https://<votre-worker>.workers.dev/?url={url}&referer={referer}
 ```
-
-Le proxy envoie l’en-tête `Referer` de la page du chapitre, exigé par certains hébergeurs d’images (Naver…). Les
-pages qui chargent leurs images uniquement en JavaScript ne peuvent pas être lues ainsi : téléchargez alors les images
-et importez-les (ou en .zip/.cbz).
 
 ## Moteurs IA gratuits (facultatif)
 
@@ -82,6 +89,8 @@ La clé est enregistrée uniquement dans votre navigateur et n’est envoyée qu
 ## Confidentialité
 
 - Aucun serveur WebTrad : images, chapitres et réglages restent dans le navigateur (IndexedDB / localStorage).
+- Import par lien : si le site bloque l’accès direct, l’adresse de la page et des images passe par les relais publics
+  ci-dessus.
 - Seul le **texte** des bulles est envoyé au service de traduction choisi (aucun envoi avec le traducteur intégré de
   Chrome ou un modèle local). En mode « OCR par IA », l’image de la page est envoyée au fournisseur IA.
 

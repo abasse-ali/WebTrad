@@ -65,23 +65,108 @@ export function proxied(url: string, proxy: string, referer?: string): string {
     : withReferer + encodeURIComponent(url);
 }
 
-async function fetchWithProxy(url: string, proxy: string, signal?: AbortSignal, referer?: string): Promise<Response> {
-  try {
-    const res = await fetch(url, { signal, referrerPolicy: 'no-referrer' });
-    if (res.ok) return res;
-    if (!proxy) throw new Error(`HTTP ${res.status}`);
-  } catch (err) {
-    if ((err as Error).name === 'AbortError') throw err;
-    if (!proxy.trim()) throw new Error(`CORS / network error for ${url}. Configure a CORS proxy in the settings.`);
+// Free public services used when a website does not allow cross-site reads:
+// r.jina.ai renders the page (JavaScript included) and returns its HTML,
+// wsrv.nl relays images with the CORS header that lets us read their pixels.
+// allorigins / codetabs are last-resort generic relays.
+const PAGE_RELAY = 'https://r.jina.ai/';
+const IMAGE_RELAY = 'https://wsrv.nl/?url=';
+const GENERIC_RELAYS = ['https://api.allorigins.win/raw?url=', 'https://api.codetabs.com/v1/proxy?quest='];
+
+type Kind = 'page' | 'image';
+
+interface Route {
+  id: string;
+  url: string;
+  init?: RequestInit;
+  /** Public relays are shared and sometimes refuse a burst: worth one retry. */
+  retry?: boolean;
+}
+
+export function routesFor(url: string, kind: Kind, proxy: string, referer?: string): Route[] {
+  const routes: Route[] = [{ id: 'direct', url, init: { referrerPolicy: 'no-referrer' } }];
+  if (proxy.trim()) routes.push({ id: 'proxy', url: proxied(url, proxy, referer) });
+  routes.push(
+    kind === 'page'
+      ? { id: 'jina', url: PAGE_RELAY + url, init: { headers: { 'X-Return-Format': 'html' } }, retry: true }
+      : { id: 'wsrv', url: IMAGE_RELAY + encodeURIComponent(url), retry: true },
+  );
+  GENERIC_RELAYS.forEach((r, i) => routes.push({ id: `relay${i + 1}`, url: r + encodeURIComponent(url) }));
+  return routes;
+}
+
+/** Remembers which route works for each host so we don't retry dead ends. */
+const preferredRoute = new Map<string, string>();
+
+export class ImportError extends Error {
+  constructor(
+    readonly code: 'PAGE_UNREACHABLE' | 'IMAGE_UNREACHABLE',
+    readonly url: string,
+    detail: string,
+  ) {
+    super(`${code}: ${url} (${detail})`);
+    this.name = 'ImportError';
   }
-  const res = await fetch(proxied(url, proxy, referer), { signal });
-  if (!res.ok) throw new Error(`HTTP ${res.status} via proxy for ${url}`);
-  return res;
+}
+
+/** Aborts when the caller cancels or after `ms` (a hung route must not block the import). */
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  return signal && any ? any([signal, timeout]) : (signal ?? timeout);
+}
+
+const DIRECT_TIMEOUT = 15_000;
+const RELAY_TIMEOUT = 60_000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSignal, referer?: string): Promise<{ res: Response; route: string }> {
+  const host = `${kind}:${new URL(url).host}`;
+  const routes = routesFor(url, kind, proxy, referer);
+  const preferred = preferredRoute.get(host);
+  if (preferred) routes.sort((a, b) => Number(b.id === preferred) - Number(a.id === preferred));
+  const errors: string[] = [];
+  for (const route of routes) {
+    for (let attempt = 0; attempt < (route.retry ? 2 : 1); attempt++) {
+      if (attempt > 0) await sleep(1500);
+      try {
+        const timeout = route.id === 'direct' ? DIRECT_TIMEOUT : RELAY_TIMEOUT;
+        const res = await fetch(route.url, { ...route.init, signal: withTimeout(signal, timeout) });
+        const type = res.headers.get('content-type') ?? '';
+        if (!res.ok) {
+          errors.push(`${route.id}: HTTP ${res.status}`);
+          // Only rate limits and server hiccups are worth a second try.
+          if (res.status === 401 || res.status === 429 || res.status >= 500) continue;
+          break;
+        }
+        if (kind === 'image' && !type.startsWith('image/') && !type.startsWith('application/octet-stream')) {
+          errors.push(`${route.id}: ${type || 'not an image'}`);
+          break;
+        }
+        preferredRoute.set(host, route.id);
+        return { res, route: route.id };
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        errors.push(`${route.id}: ${(err as Error).message}`);
+      }
+    }
+  }
+  throw new ImportError(kind === 'page' ? 'PAGE_UNREACHABLE' : 'IMAGE_UNREACHABLE', url, errors.join(' · '));
 }
 
 const SKIP_URL = /(logo|icon|avatar|banner|sprite|emoji|button|thumb|badge|\.svg)(\W|$)/i;
 
-/** Extracts the probable chapter images of an HTML page, in document order. */
+function directoryOf(url: string): string {
+  const u = new URL(url);
+  return u.origin + u.pathname.slice(0, u.pathname.lastIndexOf('/') + 1);
+}
+
+/**
+ * Extracts the probable chapter images of an HTML page, in document order.
+ * Chapter pages almost always live in one folder: when a folder holds at
+ * least 3 images, logos and ads stored elsewhere are dropped.
+ */
 export function extractImageUrls(html: string, pageUrl: string): string[] {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const urls: string[] = [];
@@ -92,7 +177,7 @@ export function extractImageUrls(html: string, pageUrl: string): string[] {
     if (!value || value.startsWith('data:')) return;
     try {
       const abs = new URL(value, pageUrl).href;
-      if (seen.has(abs) || SKIP_URL.test(abs)) return;
+      if (seen.has(abs) || SKIP_URL.test(abs) || !/^https?:/.test(abs)) return;
       seen.add(abs);
       urls.push(abs);
     } catch {
@@ -109,49 +194,84 @@ export function extractImageUrls(html: string, pageUrl: string): string[] {
     const srcset = img.getAttribute('srcset')?.split(',').pop()?.trim().split(/\s+/)[0];
     add(lazy ?? srcset ?? img.getAttribute('src'));
   });
-  return urls;
+  const counts = new Map<string, number>();
+  for (const u of urls) counts.set(directoryOf(u), (counts.get(directoryOf(u)) ?? 0) + 1);
+  const [mainDir, mainCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+  return mainCount >= 3 ? urls.filter((u) => directoryOf(u) === mainDir) : urls;
+}
+
+/** "Series - Chapter 12 - Site name - Read online" → "Series - Chapter 12". */
+export function titleFromHtml(html: string): string {
+  const raw = new DOMParser().parseFromString(html, 'text/html').title.trim();
+  if (!raw) return '';
+  const parts = raw.split(/\s+[-|–—:]\s+/).filter(Boolean);
+  const chapterIdx = parts.findIndex((p) => /(chap|ch\.|episode|ép|ep\.?\s*\d|第|화|話|回)/i.test(p));
+  const kept = chapterIdx >= 0 ? parts.slice(0, chapterIdx + 1) : parts.slice(0, Math.min(2, parts.length));
+  return kept.join(' - ').slice(0, 80);
 }
 
 export interface UrlImportProgress {
   (done: number, total: number): void;
 }
 
+export interface UrlImportResult {
+  images: ImportedImage[];
+  title: string;
+}
+
 /**
  * Each line can be a direct image URL or the URL of a chapter page; in the
  * latter case the images of the page are downloaded (small ones are skipped).
+ * Websites that block cross-site reads are fetched through free relays.
  */
 export async function urlsToImages(
   lines: string[],
   proxy: string,
   onProgress?: UrlImportProgress,
   signal?: AbortSignal,
-): Promise<ImportedImage[]> {
+  onPage?: (url: string) => void,
+): Promise<UrlImportResult> {
   const candidates: { url: string; fromPage: boolean; referer?: string }[] = [];
+  let title = '';
   for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
     if (IMAGE_EXT.test(new URL(line).pathname)) {
       candidates.push({ url: line, fromPage: false });
       continue;
     }
-    const res = await fetchWithProxy(line, proxy, signal);
-    const type = res.headers.get('content-type') ?? '';
-    if (type.startsWith('image/')) {
+    onPage?.(line);
+    let { res, route } = await fetchAny(line, 'page', proxy, signal);
+    if ((res.headers.get('content-type') ?? '').startsWith('image/')) {
       candidates.push({ url: line, fromPage: false });
       continue;
     }
-    const html = await res.text();
-    extractImageUrls(html, line).forEach((url) => candidates.push({ url, fromPage: true, referer: line }));
+    let html = await res.text();
+    let found = extractImageUrls(html, line);
+    // Images inserted by JavaScript: ask the relay for the rendered page.
+    if (found.length === 0 && route !== 'jina') {
+      res = await fetch(PAGE_RELAY + line, {
+        headers: { 'X-Return-Format': 'html' },
+        signal: withTimeout(signal, RELAY_TIMEOUT),
+      });
+      if (res.ok) {
+        html = await res.text();
+        found = extractImageUrls(html, line);
+        route = 'jina';
+      }
+    }
+    title ||= titleFromHtml(html);
+    found.forEach((url) => candidates.push({ url, fromPage: true, referer: line }));
   }
   const out: (ImportedImage | null)[] = new Array(candidates.length).fill(null);
   let done = 0;
   let cursor = 0;
+  let lastError: unknown = null;
   const worker = async () => {
     while (cursor < candidates.length) {
       const i = cursor++;
       const { url, fromPage, referer } = candidates[i];
       try {
-        const res = await fetchWithProxy(url, proxy, signal, referer);
+        const { res } = await fetchAny(url, 'image', proxy, signal, referer);
         const blob = await res.blob();
-        if (!blob.type.startsWith('image/') && !IMAGE_EXT.test(url)) continue;
         if (fromPage) {
           const { width, height } = await imageSize(blob);
           if (width < 300 || height < 300) continue; // icons, ads, avatars
@@ -160,6 +280,7 @@ export async function urlsToImages(
         out[i] = { name, blob };
       } catch (err) {
         if ((err as Error).name === 'AbortError') throw err;
+        lastError = err;
         if (!fromPage) throw err;
       } finally {
         done++;
@@ -168,7 +289,9 @@ export async function urlsToImages(
     }
   };
   await Promise.all([worker(), worker(), worker(), worker()]);
-  return out.filter((x): x is ImportedImage => x !== null);
+  const images = out.filter((x): x is ImportedImage => x !== null);
+  if (images.length === 0 && lastError) throw lastError;
+  return { images, title };
 }
 
 // --- chapter creation -----------------------------------------------------------

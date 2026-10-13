@@ -8,8 +8,12 @@ import {
   dedupeBlocks,
   groupLines,
   guessLatinLanguage,
+  isLatin,
   isMeaningful,
+  isNoiseBlock,
   joinLines,
+  plausibility,
+  scriptLetters,
   scriptStats,
   type Box,
   type LangRules,
@@ -114,7 +118,21 @@ function linesOf(result: Awaited<ReturnType<typeof recognize>>, scale: number, d
 function keepLines(lines: RawLine[], rules: LangRules, minConfidence: number): RawLine[] {
   return lines
     .map((l) => ({ ...l, text: cleanLine(l.text, rules) }))
-    .filter((l) => l.confidence >= minConfidence && isMeaningful(l.text, rules));
+    .filter(
+      (l) =>
+        l.confidence >= minConfidence &&
+        isMeaningful(l.text, rules) &&
+        // Lines that look like misread artwork are dropped unless read very confidently.
+        (l.confidence >= STRONG_LINE || !isNoiseBlock(l.text, l.confidence, rules)),
+    );
+}
+
+function intersect(a: Box, b: Box): Box | null {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
 }
 
 function unionBox(boxes: Box[]): Box {
@@ -171,6 +189,7 @@ async function recognizeBlock(
     );
     const weight = lines.reduce((s, l) => s + l.text.length, 0) || 1;
     const confidence = lines.reduce((s, l) => s + l.confidence * l.text.length, 0) / weight;
+    if (isNoiseBlock(text, confidence, rules)) continue;
     const candidate = { text, confidence, lines, vertical: mode.vertical };
     if (!best || candidate.confidence > best.confidence) best = candidate;
     if (confidence >= 75) break;
@@ -194,6 +213,8 @@ export interface PageOcrOptions {
 }
 
 const MAX_PIXELS = 12_000_000;
+/** Confidence of a line that can be trusted on its own (outside bubbles). */
+const STRONG_LINE = 80;
 const TILE = 2400;
 const OVERLAP = 200;
 
@@ -225,25 +246,38 @@ export async function ocrPage(bitmap: ImageBitmap, sourceCode: string, opts: Pag
     const preferVertical = Boolean(lang.vertical) && region.inkBox.h > region.inkBox.w * 1.15;
     const res = await recognizeBlock(canvas, lang, preferVertical, opts.minConfidence, scale, crop.x / scale, crop.y / scale);
     if (!res) continue;
-    // Erase every dark pixel enclosed by the bubble (OCR boxes miss periods, dots…).
-    const ink = region.inkBox;
-    const box = unionBox([...res.lines, { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale }]);
-    const center = { x: (box.x + box.w / 2) * scale, y: (box.y + box.h / 2) * scale };
-    const inner = innerBox(region, center.x, center.y, box.h * scale);
-    const area =
-      inner.w > 0 ? { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale } : undefined;
+    const textBox = unionBox(res.lines);
+    const fontSize = fontSizeOf(res.lines, res.vertical);
+    // A bright region much bigger than its text is a white page background
+    // holding artwork, not a speech bubble: only the text itself is used then.
+    const regionArea = (region.w / scale) * (region.h / scale);
+    const isBubble = regionArea <= textBox.w * textBox.h * 12;
+    // Erase the dark pixels right around the text too (OCR boxes miss
+    // periods, dots, accents…) but never the artwork further away.
+    const margin = Math.max(6, fontSize * 0.8);
+    const ink = intersect(
+      { x: region.inkBox.x / scale, y: region.inkBox.y / scale, w: region.inkBox.w / scale, h: region.inkBox.h / scale },
+      { x: textBox.x - margin, y: textBox.y - margin, w: textBox.w + margin * 2, h: textBox.h + margin * 2 },
+    );
+    const box = ink ? unionBox([textBox, ink]) : textBox;
+    let area: Box | undefined;
+    if (isBubble) {
+      const inner = innerBox(region, (box.x + box.w / 2) * scale, (box.y + box.h / 2) * scale, box.h * scale);
+      if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
+      if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
+    }
     const bg = backgroundFor(px, box, scale);
     found.push({
       box,
-      area: area && area.w * area.h >= box.w * box.h * 0.6 ? area : undefined,
+      area,
       text: res.text,
       confidence: res.confidence,
       vertical: res.vertical,
-      fontSize: fontSizeOf(res.lines, res.vertical),
+      fontSize,
       fill: bg.fill,
       outline: false,
     });
-    claimed.push(regionBox(region, scale));
+    claimed.push(isBubble ? regionBox(region, scale) : box);
   }
 
   // 2. Sparse text pass, tile by tile.
@@ -266,10 +300,16 @@ export async function ocrPage(bitmap: ImageBitmap, sourceCode: string, opts: Pag
     }
     if (isLast) break;
   }
-  const free = keepLines(lines, rules, opts.minConfidence).filter(
-    (l) => !claimed.some((c) => contains(c, l.x + l.w / 2, l.y + l.h / 2)),
-  );
+  // Outside bubbles the OCR reads a lot of artwork as text. A block is kept
+  // only if one of its lines was read with high confidence; weaker lines
+  // may join such a block (e.g. the last line of a caption) but never stand alone.
+  const minLetters = isLatin(rules) ? 3 : 2;
+  const free = keepLines(lines, rules, opts.minConfidence)
+    .filter((l) => !claimed.some((c) => contains(c, l.x + l.w / 2, l.y + l.h / 2)))
+    .map((l) => ({ ...l, strong: l.confidence >= STRONG_LINE && scriptLetters(l.text, rules) >= minLetters }))
+    .filter((l) => l.strong || plausibility(l.text, rules) >= 0.6);
   for (const block of groupLines(free, rules)) {
+    if (!block.lines.some((l) => l.strong)) continue;
     let text = block.text;
     let confidence = block.confidence;
     let vertical = block.vertical;
@@ -287,7 +327,7 @@ export async function ocrPage(bitmap: ImageBitmap, sourceCode: string, opts: Pag
         lineBoxes = res.lines;
       }
     }
-    if (!isMeaningful(text, rules)) continue;
+    if (!isMeaningful(text, rules) || isNoiseBlock(text, confidence, rules)) continue;
     const box = { x: block.x, y: block.y, w: block.w, h: block.h };
     const bg = backgroundFor(px, box, scale);
     found.push({
