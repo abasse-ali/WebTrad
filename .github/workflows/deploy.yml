@@ -27,13 +27,13 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Upload site
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_name == github.event.repository.default_branch)
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_name == github.event.repository.default_branch)
     needs: build
     runs-on: ubuntu-latest
     environment:

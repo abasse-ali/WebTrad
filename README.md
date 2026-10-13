@@ -51,7 +51,7 @@ Le résultat de `npm run build` est un simple site statique : il peut être héb
 Cloudflare Pages, Netlify, Vercel…
 
 **GitHub Pages** (déjà configuré) : dans *Settings → Pages* du dépôt, choisir *Source : GitHub Actions*. Chaque
-push sur `main` lance les tests, construit et publie le site (`.github/workflows/deploy.yml`).
+push sur `main` (ou sur la branche par défaut du dépôt) lance les tests, construit et publie le site (`.github/workflows/deploy.yml`).
 
 ## Import par lien et proxy CORS
 
