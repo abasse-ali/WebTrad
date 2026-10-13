@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useT, type MessageKey } from '../i18n';
+import { formatBytes, useT, type MessageKey } from '../i18n';
 import { useChapter } from '../hooks';
 import { deleteChapter, getPage, patchChapter, patchPage, uid } from '../lib/db';
 import { downloadBlob, exportChapter, fontsReady, renderPage, safeName } from '../lib/exporter';
@@ -243,10 +243,13 @@ export function Reader({ id }: { id: string }) {
     setMenuOpen(false);
     setExporting(t('reader.exporting', { done: 0, total: pages.length }));
     try {
-      const untranslated = await exportChapter(chapter, pages, (done, total) =>
+      const result = await exportChapter(chapter, pages, (done, total) =>
         setExporting(t('reader.exporting', { done, total })),
       );
-      if (untranslated > 0) setNotice(t('reader.exportPartial', { n: untranslated }));
+      setNotice(
+        t('reader.exported', { size: formatBytes(result.size) }) +
+          (result.untranslated > 0 ? ' ' + t('reader.exportPartial', { n: result.untranslated }) : ''),
+      );
     } catch (err) {
       setNotice(t('error.generic', { message: (err as Error).message }));
     } finally {

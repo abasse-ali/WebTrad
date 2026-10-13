@@ -103,6 +103,7 @@ export const DEFAULT_SETTINGS: Settings = {
   font: 'comic',
   uppercase: false,
   corsProxy: '',
+  exportMaxMB: 30,
 };
 
 function load(): Settings {

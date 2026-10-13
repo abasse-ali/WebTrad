@@ -94,4 +94,6 @@ export interface Settings {
   font: FontId;
   uppercase: boolean;
   corsProxy: string;
+  /** Maximum size of an exported .cbz in megabytes (0 = no limit). */
+  exportMaxMB: number;
 }

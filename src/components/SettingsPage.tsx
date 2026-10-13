@@ -223,6 +223,18 @@ export function SettingsPage() {
           <input type="checkbox" checked={s.uppercase} onChange={(e) => updateSettings({ uppercase: e.target.checked })} />
           <span>{t('settings.uppercase')}</span>
         </label>
+        <label className="field">
+          <span>{t('settings.exportMax', { n: s.exportMaxMB > 0 ? `${s.exportMaxMB} Mo` : t('settings.exportMax.none') })}</span>
+          <input
+            type="range"
+            min={0}
+            max={200}
+            step={5}
+            value={s.exportMaxMB}
+            onChange={(e) => updateSettings({ exportMaxMB: Number(e.target.value) })}
+          />
+        </label>
+        <p className="muted small">{t('settings.exportMax.desc')}</p>
       </section>
 
       <section className="panel">

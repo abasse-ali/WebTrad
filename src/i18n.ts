@@ -89,6 +89,7 @@ const fr = {
   'reader.export': 'Exporter en .cbz',
   'reader.exporting': 'Export {done}/{total}…',
   'reader.exportPartial': '{n} page(s) n’ont pas pu être dessinées et sont dans l’archive sans traduction.',
+  'reader.exported': 'Export terminé : {size}.',
   'reader.downloadPage': 'Télécharger cette page',
   'reader.languages': 'Langues du chapitre',
   'reader.delete': 'Supprimer le chapitre',
@@ -168,6 +169,10 @@ const fr = {
   'settings.font.sans': 'Sans empattement',
   'settings.font.serif': 'Avec empattement',
   'settings.uppercase': 'Texte en MAJUSCULES (style BD)',
+  'settings.exportMax': 'Taille maximale d’un export .cbz : {n}',
+  'settings.exportMax.desc':
+    'La qualité puis, si besoin, la résolution des images sont ajustées automatiquement pour ne pas dépasser cette taille.',
+  'settings.exportMax.none': 'sans limite',
   'settings.import': 'Import par lien',
   'settings.corsProxy': 'Proxy CORS',
   'settings.corsProxy.desc':
@@ -273,6 +278,7 @@ const en: Record<MessageKey, string> = {
   'reader.export': 'Export as .cbz',
   'reader.exporting': 'Exporting {done}/{total}…',
   'reader.exportPartial': '{n} page(s) could not be drawn and are in the archive untranslated.',
+  'reader.exported': 'Export done: {size}.',
   'reader.downloadPage': 'Download this page',
   'reader.languages': 'Chapter languages',
   'reader.delete': 'Delete chapter',
@@ -352,6 +358,9 @@ const en: Record<MessageKey, string> = {
   'settings.font.sans': 'Sans-serif',
   'settings.font.serif': 'Serif',
   'settings.uppercase': 'UPPERCASE text (comic style)',
+  'settings.exportMax': 'Maximum .cbz export size: {n}',
+  'settings.exportMax.desc': 'Image quality, then resolution if needed, is adjusted automatically to stay under this size.',
+  'settings.exportMax.none': 'no limit',
   'settings.import': 'Import from links',
   'settings.corsProxy': 'CORS proxy',
   'settings.corsProxy.desc':
