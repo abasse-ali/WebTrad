@@ -88,7 +88,9 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
       spans[r * 2] = minX;
       spans[r * 2 + 1] = maxX;
       if (minX < 0) continue;
-      for (let x = minX + 1; x < maxX; x++) {
+      // Skip the inner rim: textured or blurred bubble borders are not text.
+      const rim = Math.max(3, Math.round((maxX - minX) * 0.04));
+      for (let x = minX + rim; x <= maxX - rim; x++) {
         const p = y * W + x;
         if (labels[p] !== c.id && lum[p] < 128) {
           ink++;

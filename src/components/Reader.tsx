@@ -4,6 +4,7 @@ import { useChapter } from '../hooks';
 import { deleteChapter, getPage, patchChapter, patchPage, uid } from '../lib/db';
 import { downloadBlob, exportChapter, fontsReady, renderPage, safeName } from '../lib/exporter';
 import { clearLayoutCache, type LayoutOptions } from '../lib/layout';
+import { decodeImage } from '../lib/image';
 import { ocrRegion } from '../lib/ocr';
 import { cancelChapter, startChapter, stopChapter, translateBubbles, useJob } from '../lib/pipeline';
 import { useSettings } from '../lib/settings';
@@ -136,7 +137,7 @@ export function Reader({ id }: { id: string }) {
     const page = await getPage(pageId);
     const chapter = latest.current.chapter;
     if (!page || !chapter) return null;
-    const bitmap = await createImageBitmap(page.blob);
+    const bitmap = await decodeImage(page.blob);
     try {
       return await ocrRegion(bitmap, box, chapter.sourceLang, settings.minConfidence);
     } finally {
@@ -242,7 +243,10 @@ export function Reader({ id }: { id: string }) {
     setMenuOpen(false);
     setExporting(t('reader.exporting', { done: 0, total: pages.length }));
     try {
-      await exportChapter(chapter, pages, (done, total) => setExporting(t('reader.exporting', { done, total })));
+      const untranslated = await exportChapter(chapter, pages, (done, total) =>
+        setExporting(t('reader.exporting', { done, total })),
+      );
+      if (untranslated > 0) setNotice(t('reader.exportPartial', { n: untranslated }));
     } catch (err) {
       setNotice(t('error.generic', { message: (err as Error).message }));
     } finally {

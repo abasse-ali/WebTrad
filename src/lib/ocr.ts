@@ -1,5 +1,5 @@
 import { createWorker, type Worker } from 'tesseract.js';
-import { bitmapPixels, pixelsToCanvas } from './image';
+import { bitmapPixels, pixelsToCanvas, type DecodedImage } from './image';
 import { detectBubbles, innerBox, maskedCrop, sampleBackground, type BubbleRegion, type Pixels } from './imageproc';
 import { sourceLanguage, type SourceLanguage } from './languages';
 import {
@@ -224,7 +224,7 @@ const OVERLAP = 200;
  * 2. a sparse-text pass over the page catches captions, narration boxes and
  *    text that is not inside a white bubble.
  */
-export async function ocrPage(bitmap: ImageBitmap, sourceCode: string, opts: PageOcrOptions): Promise<DetectedText[]> {
+export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: PageOcrOptions): Promise<DetectedText[]> {
   const lang = sourceLanguage(sourceCode);
   const rules = rulesFor(lang);
   const W = bitmap.width;
@@ -346,7 +346,7 @@ export async function ocrPage(bitmap: ImageBitmap, sourceCode: string, opts: Pag
 
 /** Reads the text inside a box drawn by the user. */
 export async function ocrRegion(
-  bitmap: ImageBitmap,
+  bitmap: DecodedImage,
   box: Box,
   sourceCode: string,
   minConfidence: number,
@@ -428,7 +428,7 @@ async function chooseChinese(samples: HTMLCanvasElement[]): Promise<string> {
  * the top of the page when there are none). Returns null if there is too
  * little text to decide.
  */
-export async function detectPageLanguage(bitmap: ImageBitmap): Promise<string | null> {
+export async function detectPageLanguage(bitmap: DecodedImage): Promise<string | null> {
   const scale = Math.min(1, Math.sqrt(MAX_PIXELS / (bitmap.width * bitmap.height)));
   const px = bitmapPixels(bitmap, scale);
   const samples = detectBubbles(px)

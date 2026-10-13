@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPages, patchChapter, patchPage, uid } from './db';
-import { bitmapPixels, createCanvas, context2d } from './image';
+import { bitmapPixels, context2d, createCanvas, decodeImage, type DecodedImage } from './image';
 import { detectBubbles, innerBox, sampleBackground } from './imageproc';
 import {
   detectPageLanguage,
@@ -114,7 +114,7 @@ export async function translateBubbles(
 const VISION_MAX_SIDE = 1536;
 
 /** AI vision mode: one request per slice of the page reads and translates. */
-async function visionPage(bitmap: ImageBitmap, chapter: Chapter, signal: AbortSignal): Promise<Bubble[]> {
+async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
   const sliceH = Math.min(H, Math.round(W * 1.6));
@@ -129,7 +129,7 @@ async function visionPage(bitmap: ImageBitmap, chapter: Chapter, signal: AbortSi
     const canvas = createCanvas(W * k, h * k);
     const c = context2d(canvas);
     c.imageSmoothingQuality = 'high';
-    c.drawImage(bitmap, 0, top, W, h, 0, 0, canvas.width, canvas.height);
+    c.drawImage(bitmap.source, 0, top, W, h, 0, 0, canvas.width, canvas.height);
     const result = await visionTranslate(canvas.toDataURL('image/jpeg', 0.88), chapter.sourceLang, chapter.targetLang, signal);
     const found = result.bubbles;
     const detected = normaliseSourceCode(result.sourceLanguage);
@@ -197,7 +197,7 @@ async function detectChapterLanguage(chapter: Chapter, pages: Page[], signal: Ab
   try {
     for (const page of pages.slice(0, DETECTION_PAGES)) {
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      const bitmap = await createImageBitmap(page.blob);
+      const bitmap = await decodeImage(page.blob);
       try {
         const code = await detectPageLanguage(bitmap);
         if (code) return code;
@@ -216,7 +216,7 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   const useVision = visionEnabled();
   setJob(chapter.id, { pageIndex: page.index, phase: 'ocr' });
   await patchPage(page.id, { status: 'ocr', error: undefined });
-  const bitmap = await createImageBitmap(page.blob);
+  const bitmap = await decodeImage(page.blob);
   try {
     if (useVision) {
       const bubbles = await visionPage(bitmap, chapter, signal);
