@@ -1221,7 +1221,7 @@ textarea {
 }
 .sheet-grid {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr 1fr auto;
   gap: 16px;
   align-items: start;
 }
@@ -1314,6 +1314,15 @@ textarea {
   }
   .hide-sm {
     display: none;
+  }
+  .sheet-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 0 16px;
+  }
+  .sheet-grid .colors {
+    grid-column: 1 / -1;
+    padding-top: 0;
+    margin-bottom: 10px;
   }
   .segmented button {
     padding: 6px 8px;

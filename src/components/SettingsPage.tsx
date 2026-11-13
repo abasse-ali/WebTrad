@@ -8,7 +8,7 @@ import { LLM_PRESETS, updateSettings, useSettings } from '../lib/settings';
 import { builtinAvailability, hasBuiltinTranslator } from '../lib/translate/chrome';
 import { testLlm } from '../lib/translate/llm';
 import { clearLayoutCache } from '../lib/layout';
-import type { FontId, OcrEngine, ProviderId, ThemeId } from '../lib/types';
+import type { FontId, LetterCase, OcrEngine, ProviderId, ThemeId } from '../lib/types';
 import { Icon } from './Icon';
 import { LangSelect } from './LangSelect';
 
@@ -253,9 +253,15 @@ export function SettingsPage() {
             ))}
           </select>
         </label>
-        <label className="check">
-          <input type="checkbox" checked={s.uppercase} onChange={(e) => updateSettings({ uppercase: e.target.checked })} />
-          <span>{t('settings.uppercase')}</span>
+        <label className="field">
+          <span>{t('settings.letterCase')}</span>
+          <select value={s.letterCase} onChange={(e) => updateSettings({ letterCase: e.target.value as LetterCase })}>
+            {(['original', 'upper', 'normal'] as LetterCase[]).map((c) => (
+              <option key={c} value={c}>
+                {t(`settings.letterCase.${c}` as MessageKey)}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="field">
           <span>{t('settings.exportMax', { n: s.exportMaxMB > 0 ? formatBytes(s.exportMaxMB * 1_000_000) : t('settings.exportMax.none') })}</span>

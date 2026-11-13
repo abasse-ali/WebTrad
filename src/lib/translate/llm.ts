@@ -113,7 +113,7 @@ export interface VisionBubble {
 }
 
 const SYSTEM_VISION = `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
-Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes and important sound effects. Ignore watermarks, page numbers and credits.
+Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, sound effects, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers and credits.
 For each one give its bounding box as [ymin, xmin, ymax, xmax] normalised to 0-1000 (tight around the lettering), the exact original text, and a natural translation in the requested language.
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
 Answer with JSON only: {"source_language":"<code>","bubbles":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;

@@ -71,8 +71,8 @@ export function Reader({ id }: { id: string }) {
   latest.current = { pages, chapter, draft, selection };
 
   const opts: LayoutOptions = useMemo(
-    () => ({ font: settings.font, uppercase: settings.uppercase, target: chapter?.targetLang ?? settings.targetLang }),
-    [settings.font, settings.uppercase, chapter?.targetLang, settings.targetLang],
+    () => ({ font: settings.font, letterCase: settings.letterCase, target: chapter?.targetLang ?? settings.targetLang }),
+    [settings.font, settings.letterCase, chapter?.targetLang, settings.targetLang],
   );
 
   // --- reading position ------------------------------------------------------
@@ -242,7 +242,8 @@ export function Reader({ id }: { id: string }) {
         const dx = box.x - b.x;
         const dy = box.y - b.y;
         const area = resized || !b.area ? undefined : { ...b.area, x: b.area.x + dx, y: b.area.y + dy };
-        return { ...b, ...box, area };
+        // The repaired artwork belongs to the old place.
+        return { ...b, ...box, area, patch: undefined, patchBox: undefined };
       }),
     );
   }, []);
@@ -272,7 +273,7 @@ export function Reader({ id }: { id: string }) {
       try {
         const res = await readBox(pageId, box);
         if (res) {
-          next = { ...next, original: res.text, confidence: Math.round(res.confidence), vertical: res.vertical, fill: res.fill, fontSize: res.fontSize };
+          next = { ...next, original: res.text, confidence: Math.round(res.confidence), vertical: res.vertical, fill: res.fill, fontSize: res.fontSize, color: res.color, rotation: res.rotation };
           const translated = await translateBubbles([next], chapter);
           next = translated.bubbles[0];
         } else {
