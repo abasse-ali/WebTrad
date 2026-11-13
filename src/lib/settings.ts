@@ -93,6 +93,7 @@ const defaultLlm: LlmSettings = {
 export const DEFAULT_SETTINGS: Settings = {
   v: 2,
   uiLang: browserUiLang(),
+  theme: 'auto',
   sourceLang: 'auto',
   targetLang: defaultTarget(),
   provider: 'auto',
@@ -119,7 +120,16 @@ function load(): Settings {
   }
 }
 
+/** `auto` follows the device; otherwise the choice is forced on the root element. */
+function applyTheme(settings: Settings): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  if (settings.theme === 'light' || settings.theme === 'dark') root.dataset.theme = settings.theme;
+  else delete root.dataset.theme;
+}
+
 let current: Settings = load();
+applyTheme(current);
 const listeners = new Set<() => void>();
 
 export function getSettings(): Settings {
@@ -128,6 +138,7 @@ export function getSettings(): Settings {
 
 export function updateSettings(patch: Partial<Settings>): void {
   current = { ...current, ...patch };
+  applyTheme(current);
   try {
     localStorage.setItem(KEY, JSON.stringify(current));
   } catch {

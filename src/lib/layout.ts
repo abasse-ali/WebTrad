@@ -123,6 +123,56 @@ export function wrapText(
   return lines;
 }
 
+/**
+ * Evens out the lines of a wrapped text: the narrowest width that still
+ * gives the same number of lines. Greedy wrapping fills the first lines and
+ * leaves an orphan word on the last one ("…si / tard ?"); lettering reads
+ * better as a compact, centred block.
+ */
+export function balanceLines(
+  text: string,
+  lines: string[],
+  maxWidth: number,
+  measure: Measure,
+  lang: string,
+  noSpaces: boolean,
+): string[] {
+  if (lines.length < 2) return lines;
+  let best = lines;
+  let lo = 0;
+  let hi = Math.max(...lines.map(measure));
+  for (let i = 0; i < 8 && hi - lo > 1; i++) {
+    const mid = (lo + hi) / 2;
+    const candidate = wrapText(text, Math.min(mid, maxWidth), measure, lang, noSpaces, false);
+    if (candidate && candidate.length <= lines.length) {
+      best = candidate;
+      hi = mid;
+    } else lo = mid;
+  }
+  return best;
+}
+
+/** Lettering written in capitals only, as most comics and scanlations are. */
+export function isAllCaps(text: string): boolean {
+  let cased = 0;
+  let upper = 0;
+  for (const ch of text) {
+    const up = ch.toUpperCase();
+    if (up === ch.toLowerCase()) continue; // digits, punctuation, scripts without case
+    cased++;
+    if (ch === up) upper++;
+  }
+  return cased >= 3 && upper / cased >= 0.8;
+}
+
+/** Translation size allowed for an original line box of height 1. */
+const SIZE_RATIO = 1.2;
+/**
+ * The line box of capitals-only lettering is its cap height, about 0.7 em,
+ * while the translation is set in mixed case: same factor on the real em size.
+ */
+const SIZE_RATIO_CAPS = 1.5;
+
 function fits(lines: string[], size: number, box: { w: number; h: number }, measure: Measure): boolean {
   if (lines.length * size * LINE_HEIGHT > box.h) return false;
   return lines.every((l) => measure(l) <= box.w + 0.5);
@@ -140,7 +190,9 @@ const cache = new Map<string, BubbleLayout | null>();
 export function layoutBubble(b: Bubble, page: { width: number; height: number }, opts: LayoutOptions): BubbleLayout | null {
   const text = b.translation.trim();
   if (!text || b.hidden) return null;
-  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, opts, page.width]);
+  // Only OCR measures the line box itself; AI boxes include the line spacing.
+  const capsSource = b.confidence !== undefined && isAllCaps(b.original);
+  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, opts, page.width, capsSource]);
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
@@ -181,7 +233,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   };
   const scale = b.fontScale ?? 1;
   // Latin letters look smaller than CJK ones at the same pixel size.
-  const maxSize = Math.max(8, original * 1.2 * scale);
+  const maxSize = Math.max(8, original * (capsSource ? SIZE_RATIO_CAPS : SIZE_RATIO) * scale);
   const minSize = Math.max(6, Math.min(original * 0.4, 12));
   let size = minSize;
   let lines = wrapText(display, inner.w, measureAt(minSize), opts.target, Boolean(target.noSpaces));
@@ -200,6 +252,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     } else hi = mid;
   }
   if (size === minSize) lines = wrapText(display, inner.w, measureAt(minSize), opts.target, Boolean(target.noSpaces));
+  lines = balanceLines(display, lines, inner.w, measureAt(size), opts.target, Boolean(target.noSpaces));
 
   const layout: BubbleLayout = {
     erase,

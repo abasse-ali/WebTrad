@@ -14,10 +14,10 @@ export interface Chapter {
   pageIds: string[];
   /** Small JPEG data URL used by the library grid. */
   cover?: string;
-  /** Where the chapter came from (file names, URL…) – informative only. */
+  /** Address the chapter was imported from, when it came from a link. */
   origin?: string;
-  /** Index of the last page the reader looked at. */
-  lastPage?: number;
+  /** Address of the following chapter, when the source page links to it. */
+  nextUrl?: string;
   /** Page counters, refreshed while the chapter is processed. */
   stats?: { done: number; errors: number; total: number };
 }
@@ -63,6 +63,8 @@ export interface Page {
   blob: Blob;
   status: PageStatus;
   error?: string;
+  /** Times the app died while this page was being processed (crash-loop guard). */
+  stalled?: number;
   /** Incremented on every change (cheap equality check for the UI). */
   rev?: number;
   bubbles: Bubble[];
@@ -71,6 +73,7 @@ export interface Page {
 export type ProviderId = 'auto' | 'chrome' | 'google' | 'mymemory' | 'llm';
 export type OcrEngine = 'tesseract' | 'vision';
 export type FontId = 'comic' | 'sans' | 'serif';
+export type ThemeId = 'auto' | 'light' | 'dark';
 export type ReaderMode = 'translated' | 'original' | 'compare';
 
 export interface LlmSettings {
@@ -84,6 +87,7 @@ export interface Settings {
   /** Settings schema version (used for one-off migrations). */
   v?: number;
   uiLang: 'fr' | 'en';
+  theme: ThemeId;
   sourceLang: string;
   targetLang: string;
   provider: ProviderId;

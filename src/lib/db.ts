@@ -105,6 +105,39 @@ export async function patchPage(id: string, patch: Partial<Page>): Promise<Page 
   return next;
 }
 
+/** Error code of a page that was being processed when the app died, twice. */
+export const INTERRUPTED = 'INTERRUPTED';
+
+/**
+ * Pages left in "ocr" / "translating" belong to a job that died with its
+ * tab (reload, phone locked, browser killed in the background): nothing is
+ * working on them any more. Puts them back in the queue and returns the
+ * chapters that were interrupted.
+ *
+ * A page that was in flight at two deaths in a row is probably what kills
+ * the tab (image too heavy for the device): it is set aside as an error so
+ * resuming the chapter cannot loop on it.
+ */
+export async function resetStalePages(): Promise<string[]> {
+  const database = await db();
+  const tx = database.transaction('pages', 'readwrite');
+  const interrupted = new Set<string>();
+  for (let cursor = await tx.store.openCursor(); cursor; cursor = await cursor.continue()) {
+    const page = cursor.value;
+    if (page.status !== 'ocr' && page.status !== 'translating') continue;
+    const stalled = (page.stalled ?? 0) + 1;
+    const next: Page =
+      stalled >= 2
+        ? { ...page, status: 'error', error: INTERRUPTED, stalled: 0, rev: (page.rev ?? 0) + 1 }
+        : { ...page, status: 'pending', stalled, rev: (page.rev ?? 0) + 1 };
+    await cursor.update(next);
+    interrupted.add(page.chapterId);
+  }
+  await tx.done;
+  interrupted.forEach((id) => emit(id));
+  return [...interrupted];
+}
+
 export async function clearAll(): Promise<void> {
   const database = await db();
   const tx = database.transaction(['chapters', 'pages'], 'readwrite');

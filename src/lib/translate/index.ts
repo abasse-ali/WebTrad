@@ -1,6 +1,6 @@
 import { getSettings } from '../settings';
 import type { ProviderId } from '../types';
-import { builtinEngine, hasBuiltinTranslator, prepareBuiltin } from './chrome';
+import { builtinEngine, builtinOnlyEngine, hasBuiltinTranslator, prepareBuiltin } from './chrome';
 import { googleEngine } from './google';
 import { llmEngine } from './llm';
 import { myMemoryEngine } from './mymemory';
@@ -11,7 +11,7 @@ export { TranslateError } from './types';
 function engineChain(provider: ProviderId): TranslationEngine[] {
   switch (provider) {
     case 'chrome':
-      return [builtinEngine];
+      return [builtinOnlyEngine];
     case 'google':
       return [googleEngine, myMemoryEngine];
     case 'mymemory':

@@ -17,9 +17,12 @@ export function App() {
     document.documentElement.lang = uiLang;
   }, [uiLang]);
 
+  // Every screen starts at its top, another chapter included (the reader
+  // then moves to the place where that chapter was left).
+  const screen = route.name === 'reader' ? `reader:${route.id}` : route.name;
   useEffect(() => {
     window.scrollTo(0, 0);
-  }, [route.name]);
+  }, [screen]);
 
   if (route.name === 'reader') return <Reader key={route.id} id={route.id} />;
 
@@ -49,7 +52,7 @@ export function App() {
       </header>
       <main className="content">
         {route.name === 'library' && <Library onNew={() => navigate('/new')} />}
-        {route.name === 'new' && <NewChapter />}
+        {route.name === 'new' && <NewChapter key={route.url ?? ''} initialUrl={route.url} />}
         {route.name === 'settings' && <SettingsPage />}
       </main>
       <footer className="footer">

@@ -3,6 +3,7 @@ import { parseJsonAnswer } from '../src/lib/translate/llm';
 import { proxied } from '../src/lib/importers';
 import { wrapText } from '../src/lib/layout';
 import { googleCode, chromeCode } from '../src/lib/languages';
+import { withTimeout } from '../src/lib/translate/chrome';
 
 describe('parseJsonAnswer', () => {
   it('accepts fenced and chatty answers', () => {
@@ -85,5 +86,13 @@ describe('normaliseSourceCode', () => {
     expect(normaliseSourceCode('zh-Hant')).toBe('zh-Hant');
     expect(normaliseSourceCode('xx')).toBeNull();
     expect(normaliseSourceCode(undefined)).toBeNull();
+  });
+});
+
+describe('withTimeout', () => {
+  it('passes results through and rejects when nothing answers', async () => {
+    await expect(withTimeout(Promise.resolve(3), 50, () => new Error('late'))).resolves.toBe(3);
+    await expect(withTimeout(Promise.reject(new Error('boom')), 50, () => new Error('late'))).rejects.toThrow('boom');
+    await expect(withTimeout(new Promise(() => {}), 10, () => new Error('late'))).rejects.toThrow('late');
   });
 });

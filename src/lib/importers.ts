@@ -16,6 +16,15 @@ export function naturalSort<T extends { name: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => collator.compare(a.name, b.name));
 }
 
+/** True for the address of an image file (as opposed to a chapter page). */
+export function isImageUrl(url: string): boolean {
+  try {
+    return IMAGE_EXT.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 function mimeFor(name: string): string {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
   return (
@@ -210,6 +219,56 @@ export function titleFromHtml(html: string): string {
   return kept.join(' - ').slice(0, 80);
 }
 
+const NEXT_WORD =
+  /^\s*(?:next(?:\s+(?:chapter|episode|ep|page))?|(?:chapitre|[ée]pisode)?\s*suivante?|siguiente(?:\s+cap[ií]tulo)?|pr[óo]ximo(?:\s+cap[ií]tulo)?|weiter|n[äa]chstes?(?:\s+kapitel)?|다음\s*(?:화|회|편)?|次(?:へ|の話|話|の章)?|下一(?:章|话|話|页|頁|篇))\s*[›»→>]*\s*$/iu;
+const NEXT_CLASS = /(?:^|[\s_-])next(?:$|[\s_-]|chap|page|ep)/i;
+
+/**
+ * Finds the link to the following chapter in a chapter page: rel="next",
+ * a "next" class, or a link simply called "Next" / "Suivant" / "다음화"…
+ * Only links to the same website count.
+ */
+export function findNextChapterUrl(html: string, pageUrl: string): string | undefined {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const page = new URL(pageUrl);
+  const resolve = (el: Element | null | undefined): string | undefined => {
+    const raw = el?.getAttribute('href')?.trim();
+    if (!raw || raw.startsWith('#') || /^javascript:/i.test(raw)) return undefined;
+    try {
+      const u = new URL(raw, pageUrl);
+      u.hash = '';
+      if (!/^https?:$/.test(u.protocol) || u.hostname !== page.hostname) return undefined;
+      // The page itself or the home page is not a next chapter.
+      if (u.pathname === page.pathname && u.search === page.search) return undefined;
+      if (u.pathname === '/' && !u.search) return undefined;
+      return u.href;
+    } catch {
+      return undefined;
+    }
+  };
+  for (const el of doc.querySelectorAll('link[rel~="next"][href], a[rel~="next"][href]')) {
+    const url = resolve(el);
+    if (url) return url;
+  }
+  const anchors = [...doc.querySelectorAll('a[href]')];
+  const byClass = anchors.find(
+    (a) =>
+      (NEXT_CLASS.test(a.getAttribute('class') ?? '') ||
+        NEXT_CLASS.test(a.getAttribute('id') ?? '') ||
+        NEXT_CLASS.test(a.parentElement?.getAttribute('class') ?? '')) &&
+      resolve(a),
+  );
+  if (byClass) return resolve(byClass);
+  const byText = anchors.find(
+    (a) =>
+      (NEXT_WORD.test(a.textContent ?? '') ||
+        NEXT_WORD.test(a.getAttribute('title') ?? '') ||
+        NEXT_WORD.test(a.getAttribute('aria-label') ?? '')) &&
+      resolve(a),
+  );
+  return resolve(byText);
+}
+
 export interface UrlImportProgress {
   (done: number, total: number): void;
 }
@@ -217,6 +276,8 @@ export interface UrlImportProgress {
 export interface UrlImportResult {
   images: ImportedImage[];
   title: string;
+  /** Link to the following chapter found in the page, if any. */
+  nextUrl?: string;
 }
 
 /**
@@ -233,8 +294,9 @@ export async function urlsToImages(
 ): Promise<UrlImportResult> {
   const candidates: { url: string; fromPage: boolean; referer?: string }[] = [];
   let title = '';
+  let nextUrl: string | undefined;
   for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
-    if (IMAGE_EXT.test(new URL(line).pathname)) {
+    if (isImageUrl(line)) {
       candidates.push({ url: line, fromPage: false });
       continue;
     }
@@ -259,6 +321,7 @@ export async function urlsToImages(
       }
     }
     title ||= titleFromHtml(html);
+    nextUrl ??= findNextChapterUrl(html, line);
     found.forEach((url) => candidates.push({ url, fromPage: true, referer: line }));
   }
   const out: (ImportedImage | null)[] = new Array(candidates.length).fill(null);
@@ -291,7 +354,7 @@ export async function urlsToImages(
   await Promise.all([worker(), worker(), worker(), worker()]);
   const images = out.filter((x): x is ImportedImage => x !== null);
   if (images.length === 0 && lastError) throw lastError;
-  return { images, title };
+  return { images, title, nextUrl };
 }
 
 // --- chapter creation -----------------------------------------------------------
@@ -302,6 +365,7 @@ export async function createChapter(input: {
   sourceLang: string;
   targetLang: string;
   origin?: string;
+  nextUrl?: string;
 }): Promise<Chapter> {
   const chapterId = uid();
   const pages: Page[] = [];
@@ -337,9 +401,13 @@ export async function createChapter(input: {
     pageIds: pages.map((p) => p.id),
     cover: await makeThumbnail(pages[0].blob).catch(() => undefined),
     origin: input.origin,
+    nextUrl: input.nextUrl,
   };
   await savePages(pages);
   await saveChapter(chapter);
+  // Ask the browser not to evict the library when the device runs low on
+  // space (Safari otherwise clears sites that were not opened for a week).
+  void navigator.storage?.persist?.().catch(() => false);
   return chapter;
 }
 

@@ -1,5 +1,7 @@
 import { memo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import type { MessageKey, Translate } from '../i18n';
+import { useNearViewport } from '../hooks';
+import { INTERRUPTED } from '../lib/db';
 import { LINE_HEIGHT, layoutBubble, type BubbleLayout, type LayoutOptions } from '../lib/layout';
 import type { Box } from '../lib/text';
 import type { Bubble, Page } from '../lib/types';
@@ -51,7 +53,17 @@ function TranslatedLayer({
           textShadow: l.outline ? outlineShadow(l, W) : undefined,
         };
         return (
-          <div key={b.id} className={`tb ${selectedId === b.id ? 'selected' : ''}`} onClick={() => onSelect?.(b.id)}>
+          <div
+            key={b.id}
+            className={`tb ${selectedId === b.id ? 'selected' : ''}`}
+            onClick={
+              onSelect &&
+              ((e) => {
+                e.stopPropagation();
+                onSelect(b.id);
+              })
+            }
+          >
             <div
               className="tb-erase"
               style={{
@@ -222,6 +234,8 @@ export interface PageViewProps {
   onGeometry: (pageId: string, bubbleId: string, box: Box, resized: boolean) => void;
   onCreate: (pageId: string, box: Box) => void;
   onRetry: (pageId: string) => void;
+  /** Tap on the page itself, outside any bubble. */
+  onTap?: () => void;
 }
 
 const STATUS_KEY: Record<string, MessageKey> = {
@@ -233,50 +247,67 @@ const STATUS_KEY: Record<string, MessageKey> = {
 
 function PageViewImpl(props: PageViewProps) {
   const { page, url, showTranslation, interactive, editing, drawing, opts, fontsOk, draft, selectedId, busyIds, t } = props;
+  const [ref, near] = useNearViewport<HTMLDivElement>();
   const bubbles = draft ? page.bubbles.map((b) => (b.id === draft.id ? draft : b)) : page.bubbles;
   const working = page.status === 'ocr' || page.status === 'translating';
   return (
-    <div className={`page ${working ? 'working' : ''}`} id={`page-${page.index}`} style={{ aspectRatio: `${page.width} / ${page.height}` }}>
-      <img src={url} alt="" width={page.width} height={page.height} loading="lazy" decoding="async" draggable={false} />
-      {showTranslation && fontsOk && (
-        <TranslatedLayer
-          page={page}
-          bubbles={bubbles}
-          opts={opts}
-          selectedId={selectedId}
-          onSelect={interactive && !editing ? (id) => props.onSelect(page.id, id) : undefined}
-        />
-      )}
-      {interactive && editing && (
-        <EditLayer
-          page={page}
-          bubbles={bubbles}
-          drawing={drawing}
-          busyIds={busyIds}
-          selectedId={selectedId}
-          onSelect={(id) => props.onSelect(page.id, id)}
-          onGeometry={(id, box, resized) => props.onGeometry(page.id, id, box, resized)}
-          onCreate={(box) => props.onCreate(page.id, box)}
-        />
-      )}
-      {working && <div className="scanline" aria-hidden="true" />}
-      {interactive && page.status !== 'done' && (
-        <div className={`page-chip ${page.status}`}>
-          <span>{t(STATUS_KEY[page.status])}</span>
-          {page.status === 'error' && (
-            <>
-              {page.error && <small title={page.error}>{page.error.slice(0, 120)}</small>}
-              <button className="btn small" onClick={() => props.onRetry(page.id)}>
-                <Icon name="refresh" size={14} /> {t('reader.page.retry')}
-              </button>
-            </>
+    <div
+      ref={ref}
+      className={`page ${working ? 'working' : ''}`}
+      // The reading position is tracked on the interactive column only (compare mode shows two).
+      id={interactive ? `page-${page.index}` : undefined}
+      data-page={page.index}
+      style={{ aspectRatio: `${page.width} / ${page.height}` }}
+      onClick={interactive && !editing ? props.onTap : undefined}
+    >
+      {near && (
+        <>
+          <img src={url} alt="" width={page.width} height={page.height} decoding="async" draggable={false} />
+          {showTranslation && fontsOk && (
+            <TranslatedLayer
+              page={page}
+              bubbles={bubbles}
+              opts={opts}
+              selectedId={selectedId}
+              onSelect={interactive && !editing ? (id) => props.onSelect(page.id, id) : undefined}
+            />
           )}
-        </div>
-      )}
-      {interactive && editing && page.status === 'done' && page.bubbles.length === 0 && (
-        <div className="page-chip">
-          <span>{t('reader.page.noText')}</span>
-        </div>
+          {interactive && editing && (
+            <EditLayer
+              page={page}
+              bubbles={bubbles}
+              drawing={drawing}
+              busyIds={busyIds}
+              selectedId={selectedId}
+              onSelect={(id) => props.onSelect(page.id, id)}
+              onGeometry={(id, box, resized) => props.onGeometry(page.id, id, box, resized)}
+              onCreate={(box) => props.onCreate(page.id, box)}
+            />
+          )}
+          {working && <div className="scanline" aria-hidden="true" />}
+          {interactive && page.status !== 'done' && (
+            <div className={`page-chip ${page.status}`} onClick={(e) => e.stopPropagation()}>
+              <span>{t(STATUS_KEY[page.status])}</span>
+              {page.status === 'error' && (
+                <>
+                  {page.error && (
+                    <small title={page.error}>
+                      {page.error === INTERRUPTED ? t('reader.page.interrupted') : page.error.slice(0, 120)}
+                    </small>
+                  )}
+                  <button className="btn small" onClick={() => props.onRetry(page.id)}>
+                    <Icon name="refresh" size={14} /> {t('reader.page.retry')}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {interactive && editing && page.status === 'done' && page.bubbles.length === 0 && (
+            <div className="page-chip">
+              <span>{t('reader.page.noText')}</span>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

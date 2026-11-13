@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useT, type MessageKey } from '../i18n';
-import { ImportError, createChapter, filesToImages, guessTitle, urlsToImages, type ImportedImage } from '../lib/importers';
+import {
+  ImportError,
+  createChapter,
+  filesToImages,
+  guessTitle,
+  isImageUrl,
+  urlsToImages,
+  type ImportedImage,
+} from '../lib/importers';
 import { startChapter } from '../lib/pipeline';
 import { getSettings, updateSettings, useSettings } from '../lib/settings';
 import { warmUpTranslator } from '../lib/translate';
@@ -25,18 +33,21 @@ function Thumb({ image, onRemove, label }: { image: ImportedImage; onRemove: () 
   );
 }
 
-export function NewChapter() {
+export function NewChapter({ initialUrl }: { initialUrl?: string }) {
   const t = useT();
   const settings = useSettings();
-  const [tab, setTab] = useState<'files' | 'urls'>('files');
+  const [tab, setTab] = useState<'files' | 'urls'>(initialUrl ? 'urls' : 'files');
   const [images, setImages] = useState<ImportedImage[]>([]);
   const [title, setTitle] = useState('');
   const [source, setSource] = useState(settings.sourceLang);
   const [target, setTarget] = useState(settings.targetLang);
-  const [urls, setUrls] = useState('');
+  const [urls, setUrls] = useState(initialUrl ?? '');
+  /** Chapter page the images came from, and the chapter it links to as "next". */
+  const [link, setLink] = useState<{ origin?: string; next?: string }>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const startButton = useRef<HTMLButtonElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
@@ -74,32 +85,52 @@ export function NewChapter() {
     return () => window.removeEventListener('paste', onPaste);
   });
 
-  const fetchUrls = async () => {
-    const lines = urls.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
+  const abort = useRef<AbortController | null>(null);
+
+  const fetchUrls = async (text = urls) => {
+    const lines = text.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
     if (lines.length === 0) return;
     setError(null);
     setBusy(t('new.readingPage'));
+    abort.current?.abort();
+    const controller = new AbortController();
+    abort.current = controller;
     try {
       const found = await urlsToImages(
         lines,
         getSettings().corsProxy,
         (done, total) => setBusy(t('new.fetching', { done, total })),
-        undefined,
+        controller.signal,
         () => setBusy(t('new.readingPage')),
       );
+      if (controller.signal.aborted) return;
       if (found.images.length === 0) setError(t('new.noImages'));
       setImages((prev) => [...prev, ...found.images]);
-      if (!title) setTitle(found.title || guessTitle(lines[0]));
+      setTitle((prev) => prev || found.title || guessTitle(lines[0]));
+      const page = lines.find((l) => !isImageUrl(l));
+      if (found.images.length > 0 && page) setLink((prev) => ({ origin: prev.origin ?? page, next: found.nextUrl ?? prev.next }));
+      // Opened on a link: everything is ready, show the button that starts the translation.
+      if (found.images.length > 0 && text === initialUrl) {
+        requestAnimationFrame(() => startButton.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+      }
     } catch (err) {
+      if (controller.signal.aborted) return;
       if (err instanceof ImportError) {
         setError(t(err.code === 'PAGE_UNREACHABLE' ? 'new.pageUnreachable' : 'new.imageUnreachable', { url: err.url }));
       } else {
         setError(t('error.generic', { message: (err as Error).message }));
       }
     } finally {
-      setBusy(null);
+      if (!controller.signal.aborted) setBusy(null);
     }
   };
+
+  // Opened on a chapter link ("import the next chapter"): fetch it right away.
+  // Downloads still running when the screen is left are dropped.
+  useEffect(() => {
+    if (initialUrl) void fetchUrls(initialUrl);
+    return () => abort.current?.abort();
+  }, []);
 
   const start = async () => {
     if (images.length === 0) return;
@@ -114,7 +145,8 @@ export function NewChapter() {
         images,
         sourceLang: source,
         targetLang: target,
-        origin: tab === 'urls' ? urls.split(/\s+/)[0] : undefined,
+        origin: link.origin,
+        nextUrl: link.next,
       });
       void startChapter(chapter.id);
       navigate(`/read/${encodeURIComponent(chapter.id)}`);
@@ -208,20 +240,34 @@ export function NewChapter() {
             spellCheck={false}
           />
           <p className="muted small">{t('new.urlsHint')}</p>
-          <button className="btn" onClick={fetchUrls} disabled={!urls.trim() || busy !== null}>
+          <button className="btn" onClick={() => void fetchUrls()} disabled={!urls.trim() || busy !== null}>
             <Icon name="download" size={18} /> {t('new.fetch')}
           </button>
         </div>
       )}
 
-      {busy && <p className="notice">{busy}</p>}
-      {error && <p className="notice error">{error}</p>}
+      {busy && (
+        <p className="notice" role="status">
+          {busy}
+        </p>
+      )}
+      {error && (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      )}
 
       {images.length > 0 && (
         <section className="selection">
           <div className="section-head">
             <h2>{images.length === 1 ? t('new.image') : t('new.images', { n: images.length })}</h2>
-            <button className="btn ghost small" onClick={() => setImages([])}>
+            <button
+              className="btn ghost small"
+              onClick={() => {
+                setImages([]);
+                setLink({});
+              }}
+            >
               {t('new.clear')}
             </button>
           </div>
@@ -241,7 +287,7 @@ export function NewChapter() {
       <section className="options">
         <label className="field">
           <span>{t('new.chapterTitle')}</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Chapitre 1" />
+          <input value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} placeholder={t('new.titlePlaceholder')} />
         </label>
         <div className="lang-row">
           <label className="field">
@@ -257,7 +303,7 @@ export function NewChapter() {
         <p className="muted small">
           {t('new.engine', { engine: engineLabel })} · <a href="#/settings">{t('nav.settings')}</a>
         </p>
-        <button className="btn primary big" disabled={images.length === 0 || busy !== null} onClick={start}>
+        <button ref={startButton} className="btn primary big" disabled={images.length === 0 || busy !== null} onClick={start}>
           <Icon name="sparkles" /> {t('new.start')}
         </button>
       </section>
