@@ -43,6 +43,10 @@
   --border: #2e2b3b;
   --accent: #8b6cff;
   --accent-2: #ff6b9d;
+  --ok: #3ccf8e;
+  --error: #ff6b81;
+  --shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  --reader-bg: #0b0a0f;
   color-scheme: dark;
 }
 
@@ -106,6 +110,27 @@ h2 {
 .spacer {
   flex: 1;
 }
+/* Two-line button label: action on top, what it applies to below. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.25;
+  text-align: left;
+}
+.stack small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78em;
+  font-weight: 500;
+  opacity: 0.8;
+}
+.btn:has(.stack) {
+  max-width: 100%;
+}
 
 /* ---------- buttons & inputs ---------- */
 
@@ -131,6 +156,13 @@ h2 {
 }
 .btn:hover:not(:disabled) {
   border-color: var(--accent);
+}
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.link:focus-visible,
+.card-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .btn:active:not(:disabled) {
   transform: scale(0.97);
@@ -353,6 +385,38 @@ textarea {
   flex-wrap: wrap;
   margin-top: 16px;
 }
+.btn.resume {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+.btn.resume svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.shelf-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.search {
+  position: relative;
+  flex: 1 1 200px;
+  display: flex;
+  align-items: center;
+}
+.search svg {
+  position: absolute;
+  left: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.search input {
+  padding-left: 36px;
+  border-radius: 999px;
+}
 
 .section-head {
   display: flex;
@@ -424,19 +488,41 @@ textarea {
 .badge.busy {
   background: var(--accent);
 }
+.badge.read {
+  background: rgba(0, 0, 0, 0.7);
+}
+.read-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.5);
+}
+.read-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transform-origin: left;
+}
 .card-body {
   padding: 10px 12px 12px;
 }
+/* Two lines: chapters of a series only differ by the end of their title. */
 .card-body h3 {
   font-size: 0.95rem;
-  margin: 0 0 2px;
-  white-space: nowrap;
+  line-height: 1.25;
+  margin: 0 0 4px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  padding-right: 28px;
+  overflow-wrap: anywhere;
 }
 .card-body p {
   margin: 0;
+  padding-right: 26px;
 }
 .card-delete {
   position: absolute;
@@ -691,16 +777,43 @@ textarea {
 
 /* ---------- reader ---------- */
 
+/* The reader is dark whatever the theme: its controls follow. */
 .reader {
   min-height: 100vh;
   background: var(--reader-bg);
   color: #f1eff8;
+  --surface: #24222f;
+  --surface-2: #2e2b3b;
+  --border: #3a3649;
+  --text: #f1eff8;
+  --muted: #a19db6;
+  --accent: #8b6cff;
+  --accent-2: #ff6b9d;
+  --error: #ff6b81;
+  color-scheme: dark;
 }
 
-.reader-bar {
+/* Bar + status line. Slides away while reading, comes back on scroll up or tap. */
+.reader-top {
   position: sticky;
   top: 0;
   z-index: 30;
+  transition: transform 0.22s ease;
+}
+.reader-top.hidden {
+  transform: translateY(-100%);
+}
+/* While a chapter is being translated its progress line stays in sight. */
+.reader-top.hidden.running {
+  transform: translateY(calc(-100% + 3px));
+}
+/* Keyboard users must see what they focus (a click leaves focus too: not enough to keep the bar). */
+.reader-top.hidden:has(:focus-visible) {
+  transform: none;
+}
+
+.reader-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -736,7 +849,7 @@ textarea {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -1px;
+  bottom: 0;
   height: 3px;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
   transform-origin: left;
@@ -767,11 +880,6 @@ textarea {
 
 .menu-wrap {
   position: relative;
-}
-.menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
 }
 .menu {
   position: absolute;
@@ -811,9 +919,6 @@ textarea {
 }
 
 .reader-status {
-  position: sticky;
-  top: 55px;
-  z-index: 25;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -854,9 +959,63 @@ textarea {
   max-width: none;
   margin: 0;
 }
-.hint {
-  padding: 24px 16px;
-  color: #a19db6;
+.chapter-end {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 44px 16px 8px;
+  text-align: center;
+}
+.chapter-end-label {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.chapter-end h2 {
+  margin-bottom: 22px;
+  overflow-wrap: anywhere;
+}
+.chapter-end-actions {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 26px;
+}
+.chapter-end-actions .btn {
+  width: 100%;
+}
+.chapter-end-actions .btn.big {
+  justify-content: space-between;
+  padding-left: 22px;
+  padding-right: 18px;
+}
+.chapter-end-actions .btn.big svg:first-child {
+  margin-right: 4px;
+}
+.chapter-end-actions .btn.big .stack {
+  flex: 1;
+}
+
+/* Page counter, shown with the bar. */
+.reader-pos {
+  position: fixed;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  z-index: 20;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(15, 14, 20, 0.8);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+.reader-pos.hidden {
+  opacity: 0;
 }
 
 .page {
@@ -1028,6 +1187,7 @@ textarea {
   transform: translateX(-50%);
   width: min(560px, 100%);
   max-height: 80vh;
+  max-height: 80dvh;
   overflow: auto;
   padding: 16px 18px calc(16px + env(safe-area-inset-bottom));
   border-radius: 18px 18px 0 0;
@@ -1092,6 +1252,16 @@ textarea {
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 6px;
+}
+
+/* Save / cancel stay in reach while the form scrolls on a small screen. */
+.sheet > .sheet-actions {
+  position: sticky;
+  bottom: calc(-16px - env(safe-area-inset-bottom));
+  margin: 6px -18px calc(-16px - env(safe-area-inset-bottom));
+  padding: 10px 18px calc(14px + env(safe-area-inset-bottom));
+  background: #1f1d27;
+  border-top: 1px solid var(--border);
 }
 
 .modal-backdrop {
@@ -1162,9 +1332,6 @@ textarea {
   }
   .segmented button {
     flex: 1;
-  }
-  .reader-status {
-    top: 96px;
   }
   .grid {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));

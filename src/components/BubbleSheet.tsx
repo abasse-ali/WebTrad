@@ -109,8 +109,8 @@ export function BubbleSheet({ draft, busy, t, onChange, onSave, onCancel, onDele
       </label>
 
       <div className="sheet-actions">
-        <button className="btn danger ghost" onClick={onDelete}>
-          <Icon name="trash" size={16} /> {t('bubble.delete')}
+        <button className="btn danger ghost" onClick={onDelete} title={t('bubble.delete')} aria-label={t('bubble.delete')}>
+          <Icon name="trash" size={16} /> <span className="hide-sm">{t('bubble.delete')}</span>
         </button>
         <span className="spacer" />
         <button className="btn ghost" onClick={onCancel}>

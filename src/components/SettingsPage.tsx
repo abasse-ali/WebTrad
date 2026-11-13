@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { formatBytes, useT, type MessageKey } from '../i18n';
 import { useStorageEstimate } from '../hooks';
 import { clearAll } from '../lib/db';
+import { displayName } from '../lib/languages';
+import { clearAllPositions } from '../lib/progress';
 import { LLM_PRESETS, updateSettings, useSettings } from '../lib/settings';
 import { builtinAvailability, hasBuiltinTranslator } from '../lib/translate/chrome';
 import { testLlm } from '../lib/translate/llm';
 import { clearLayoutCache } from '../lib/layout';
-import type { FontId, OcrEngine, ProviderId } from '../lib/types';
+import type { FontId, OcrEngine, ProviderId, ThemeId } from '../lib/types';
 import { Icon } from './Icon';
 import { LangSelect } from './LangSelect';
 
@@ -22,15 +24,36 @@ export function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const preset = LLM_PRESETS.find((p) => p.id === s.llm.preset) ?? LLM_PRESETS[LLM_PRESETS.length - 1];
 
+  const [persisted, setPersisted] = useState<boolean | null>(null);
+
   useEffect(() => {
     if (!hasBuiltinTranslator()) {
       setBuiltin(t('settings.builtinMissing'));
       return;
     }
-    void builtinAvailability(s.sourceLang, s.targetLang).then((a) =>
-      setBuiltin(a === 'unavailable' ? `${t('settings.builtinMissing')} (${s.sourceLang} → ${s.targetLang})` : `${t('settings.builtinAvailable')} · ${a}`),
-    );
-  }, [s.sourceLang, s.targetLang, t]);
+    let alive = true;
+    setBuiltin('…');
+    // With auto-detection the pair is only known per chapter: probe a common one.
+    const source = s.sourceLang === 'auto' ? (s.targetLang === 'en' ? 'ko' : 'en') : s.sourceLang;
+    void builtinAvailability(source, s.targetLang).then((a) => {
+      if (!alive) return;
+      setBuiltin(
+        a === 'unavailable'
+          ? t('settings.builtinPair', { source: displayName(source, s.uiLang), target: displayName(s.targetLang, s.uiLang) })
+          : t(`settings.builtin.${a}` as MessageKey),
+      );
+    });
+    return () => {
+      alive = false;
+    };
+  }, [s.sourceLang, s.targetLang, s.uiLang, t]);
+
+  useEffect(() => {
+    void navigator.storage
+      ?.persisted?.()
+      .then(setPersisted)
+      .catch(() => undefined);
+  }, [cleared]);
 
   const runTest = async () => {
     setTesting(true);
@@ -48,6 +71,7 @@ export function SettingsPage() {
   const wipe = async () => {
     if (!window.confirm(t('settings.storage.confirm'))) return;
     await clearAll();
+    clearAllPositions();
     setCleared((n) => n + 1);
   };
 
@@ -62,6 +86,16 @@ export function SettingsPage() {
           <select value={s.uiLang} onChange={(e) => updateSettings({ uiLang: e.target.value as 'fr' | 'en' })}>
             <option value="fr">Français</option>
             <option value="en">English</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>{t('settings.theme')}</span>
+          <select value={s.theme} onChange={(e) => updateSettings({ theme: e.target.value as ThemeId })}>
+            {(['auto', 'light', 'dark'] as ThemeId[]).map((id) => (
+              <option key={id} value={id}>
+                {t(`settings.theme.${id}` as MessageKey)}
+              </option>
+            ))}
           </select>
         </label>
         <div className="two">
@@ -224,7 +258,7 @@ export function SettingsPage() {
           <span>{t('settings.uppercase')}</span>
         </label>
         <label className="field">
-          <span>{t('settings.exportMax', { n: s.exportMaxMB > 0 ? `${s.exportMaxMB} Mo` : t('settings.exportMax.none') })}</span>
+          <span>{t('settings.exportMax', { n: s.exportMaxMB > 0 ? formatBytes(s.exportMaxMB * 1_000_000) : t('settings.exportMax.none') })}</span>
           <input
             type="range"
             min={0}
@@ -257,6 +291,9 @@ export function SettingsPage() {
           <p className="muted">
             {t('settings.storage.used', { used: formatBytes(storage.usage), quota: formatBytes(storage.quota) })}
           </p>
+        )}
+        {persisted !== null && (
+          <p className="muted small">{t(persisted ? 'settings.storage.persisted' : 'settings.storage.volatile')}</p>
         )}
         <button className="btn danger ghost" onClick={wipe}>
           <Icon name="trash" size={16} /> {t('settings.storage.clear')}

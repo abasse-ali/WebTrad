@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useSettings } from './lib/settings';
+import { getSettings, useSettings } from './lib/settings';
 
 const fr = {
   'app.tagline': 'Traducteur de webtoons, manhwa, manhua et mangas',
@@ -13,6 +13,7 @@ const fr = {
   'common.retry': 'Réessayer',
   'common.test': 'Tester',
   'common.pages': '{n} pages',
+  'common.onePage': '1 page',
   'common.page': 'page',
   'common.from': 'De',
   'common.to': 'Vers',
@@ -47,6 +48,13 @@ const fr = {
   'library.status.partial': '{done}/{total} pages',
   'library.status.error': 'Erreurs',
   'library.status.new': 'En attente',
+  'library.resume': 'Reprendre la lecture',
+  'library.read': 'Lu',
+  'library.search': 'Rechercher un chapitre',
+  'library.sort': 'Trier',
+  'library.sort.recent': 'Récents',
+  'library.sort.title': 'Titre',
+  'library.noMatch': 'Aucun chapitre ne correspond à « {query} ».',
 
   'new.title': 'Nouveau chapitre',
   'new.tab.files': 'Fichiers',
@@ -72,6 +80,7 @@ const fr = {
   'new.noImages': 'Aucune image valide trouvée.',
   'new.engine': 'Moteur : {engine}',
   'new.remove': 'Retirer',
+  'new.titlePlaceholder': 'Chapitre 1',
 
   'reader.back': 'Bibliothèque',
   'reader.mode.translated': 'Traduit',
@@ -107,7 +116,13 @@ const fr = {
   'reader.page.error': 'Erreur',
   'reader.page.noText': 'Aucun texte détecté',
   'reader.page.retry': 'Relancer cette page',
-  'reader.tapHint': 'Astuce : touchez une bulle pour voir le texte original.',
+  'reader.page.interrupted': 'Le traitement s’est interrompu deux fois sur cette page (image trop lourde pour l’appareil ?).',
+  'reader.rename': 'Renommer le chapitre',
+  'reader.end.title': 'Fin du chapitre',
+  'reader.end.next': 'Chapitre suivant',
+  'reader.end.previous': 'Chapitre précédent',
+  'reader.end.import': 'Importer le chapitre suivant',
+  'reader.tapHint': 'Astuce : touchez une bulle pour voir le texte original, l’image pour afficher ou masquer la barre.',
   'reader.reading': 'Lecture du texte de la zone…',
   'reader.applyLanguages': 'Appliquer et retraduire',
 
@@ -128,6 +143,10 @@ const fr = {
   'settings.title': 'Réglages',
   'settings.general': 'Général',
   'settings.uiLang': 'Langue de l’interface',
+  'settings.theme': 'Apparence',
+  'settings.theme.auto': 'Automatique (comme l’appareil)',
+  'settings.theme.light': 'Claire',
+  'settings.theme.dark': 'Sombre',
   'settings.defaultSource': 'Langue source par défaut',
   'settings.defaultTarget': 'Langue de lecture par défaut',
   'settings.translation': 'Traduction',
@@ -146,6 +165,10 @@ const fr = {
     'Meilleure qualité : Gemini, Groq, OpenRouter (offres gratuites) ou un modèle local (Ollama, LM Studio).',
   'settings.builtinAvailable': 'Disponible dans ce navigateur',
   'settings.builtinMissing': 'Non disponible dans ce navigateur',
+  'settings.builtinPair': 'Non disponible pour {source} → {target}',
+  'settings.builtin.downloadable': 'Disponible · modèle téléchargé à la première utilisation',
+  'settings.builtin.downloading': 'Disponible · téléchargement du modèle en cours',
+  'settings.builtin.available': 'Disponible · modèle prêt sur cet appareil',
   'settings.email': 'E-mail pour MyMemory (facultatif)',
   'settings.llm': 'Moteur IA (compatible OpenAI)',
   'settings.llm.preset': 'Fournisseur',
@@ -181,6 +204,8 @@ const fr = {
   'settings.storage.used': '{used} utilisés sur {quota}',
   'settings.storage.clear': 'Effacer toute la bibliothèque',
   'settings.storage.confirm': 'Effacer définitivement tous les chapitres ?',
+  'settings.storage.persisted': 'Stockage protégé : le navigateur ne supprimera pas la bibliothèque pour libérer de la place.',
+  'settings.storage.volatile': 'Le navigateur peut effacer la bibliothèque s’il manque de place. Installez l’appli sur l’écran d’accueil pour la protéger.',
   'settings.about': 'À propos',
   'settings.about.text':
     'WebTrad est open source et gratuit. OCR : Tesseract.js. Aucun serveur : vos chapitres restent dans votre navigateur.',
@@ -202,6 +227,7 @@ const en: Record<MessageKey, string> = {
   'common.retry': 'Retry',
   'common.test': 'Test',
   'common.pages': '{n} pages',
+  'common.onePage': '1 page',
   'common.page': 'page',
   'common.from': 'From',
   'common.to': 'To',
@@ -236,6 +262,13 @@ const en: Record<MessageKey, string> = {
   'library.status.partial': '{done}/{total} pages',
   'library.status.error': 'Errors',
   'library.status.new': 'Waiting',
+  'library.resume': 'Continue reading',
+  'library.read': 'Read',
+  'library.search': 'Search a chapter',
+  'library.sort': 'Sort',
+  'library.sort.recent': 'Recent',
+  'library.sort.title': 'Title',
+  'library.noMatch': 'No chapter matches “{query}”.',
 
   'new.title': 'New chapter',
   'new.tab.files': 'Files',
@@ -261,6 +294,7 @@ const en: Record<MessageKey, string> = {
   'new.noImages': 'No valid image found.',
   'new.engine': 'Engine: {engine}',
   'new.remove': 'Remove',
+  'new.titlePlaceholder': 'Chapter 1',
 
   'reader.back': 'Library',
   'reader.mode.translated': 'Translated',
@@ -296,7 +330,13 @@ const en: Record<MessageKey, string> = {
   'reader.page.error': 'Error',
   'reader.page.noText': 'No text found',
   'reader.page.retry': 'Retry this page',
-  'reader.tapHint': 'Tip: tap a bubble to see the original text.',
+  'reader.page.interrupted': 'Processing stopped twice on this page (image too heavy for the device?).',
+  'reader.rename': 'Rename chapter',
+  'reader.end.title': 'End of chapter',
+  'reader.end.next': 'Next chapter',
+  'reader.end.previous': 'Previous chapter',
+  'reader.end.import': 'Import the next chapter',
+  'reader.tapHint': 'Tip: tap a bubble to see the original text, the artwork to show or hide the bar.',
   'reader.reading': 'Reading the text of the box…',
   'reader.applyLanguages': 'Apply and translate again',
 
@@ -317,6 +357,10 @@ const en: Record<MessageKey, string> = {
   'settings.title': 'Settings',
   'settings.general': 'General',
   'settings.uiLang': 'Interface language',
+  'settings.theme': 'Appearance',
+  'settings.theme.auto': 'Automatic (follow the device)',
+  'settings.theme.light': 'Light',
+  'settings.theme.dark': 'Dark',
   'settings.defaultSource': 'Default source language',
   'settings.defaultTarget': 'Default reading language',
   'settings.translation': 'Translation',
@@ -335,6 +379,10 @@ const en: Record<MessageKey, string> = {
     'Best quality: Gemini, Groq, OpenRouter (free tiers) or a local model (Ollama, LM Studio).',
   'settings.builtinAvailable': 'Available in this browser',
   'settings.builtinMissing': 'Not available in this browser',
+  'settings.builtinPair': 'Not available for {source} → {target}',
+  'settings.builtin.downloadable': 'Available · model downloaded on first use',
+  'settings.builtin.downloading': 'Available · model is downloading',
+  'settings.builtin.available': 'Available · model ready on this device',
   'settings.email': 'E-mail for MyMemory (optional)',
   'settings.llm': 'AI engine (OpenAI-compatible)',
   'settings.llm.preset': 'Provider',
@@ -369,6 +417,8 @@ const en: Record<MessageKey, string> = {
   'settings.storage.used': '{used} used of {quota}',
   'settings.storage.clear': 'Erase the whole library',
   'settings.storage.confirm': 'Permanently erase every chapter?',
+  'settings.storage.persisted': 'Protected storage: the browser will not delete the library to free up space.',
+  'settings.storage.volatile': 'The browser may clear the library when it runs low on space. Install the app on the home screen to protect it.',
   'settings.about': 'About',
   'settings.about.text':
     'WebTrad is free and open source. OCR: Tesseract.js. No server: your chapters stay in your browser.',
@@ -391,15 +441,22 @@ export function useT(): Translate {
   return useMemo<Translate>(() => (key, vars) => translate(uiLang, key, vars), [uiLang]);
 }
 
+const UNITS = { fr: ['o', 'Ko', 'Mo', 'Go'], en: ['B', 'kB', 'MB', 'GB'] };
+
 /** Sizes in decimal units (1 Mo = 1 000 000 o), like phones and file managers show them. */
-export function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number, lang: 'fr' | 'en' = getSettings().uiLang): string {
   if (!Number.isFinite(bytes)) return '—';
-  const units = ['o', 'Ko', 'Mo', 'Go'];
+  const units = UNITS[lang] ?? UNITS.fr;
   let i = 0;
   let v = bytes;
   while (v >= 1000 && i < units.length - 1) {
     v /= 1000;
     i++;
   }
-  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0).replace(/\.0$/, '')} ${units[i]}`;
+}
+
+/** "1 page" / "12 pages". */
+export function pageCount(t: Translate, n: number): string {
+  return n === 1 ? t('common.onePage') : t('common.pages', { n });
 }
