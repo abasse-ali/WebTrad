@@ -15,6 +15,8 @@ export interface OcrLine extends Box {
   confidence: number;
   /** Read with high confidence: may start a text block on its own. */
   strong?: boolean;
+  /** Slope of the baseline in degrees, clockwise (0 when unknown). */
+  angle?: number;
 }
 
 export interface TextBlock extends Box {
@@ -41,6 +43,8 @@ export function isVerticalBox(b: Box): boolean {
 export function cleanLine(text: string, rules: LangRules): string {
   let t = text.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
   if (rules.noSpaces) t = t.replace(CJK_GAP, '$1');
+  // A lone capital I is often read as a bar: "| am waiting".
+  if (isLatin(rules)) t = t.replace(/(^|\s)\|(?=\s+[\p{Ll}'’])/gu, '$1I');
   if (isLatin(rules)) t = stripJunkTokens(t);
   // Stray symbols Tesseract likes to add around bubble borders.
   t = t.replace(/^[|\\/_\-=~`'"“”‘’,.:;]+(?=\p{L})/u, '').replace(/(?<=[\p{L}!?.…])[|\\/_=~`]+$/u, '');

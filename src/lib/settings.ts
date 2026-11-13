@@ -91,7 +91,7 @@ const defaultLlm: LlmSettings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  v: 2,
+  v: 3,
   uiLang: browserUiLang(),
   theme: 'auto',
   sourceLang: 'auto',
@@ -102,7 +102,7 @@ export const DEFAULT_SETTINGS: Settings = {
   llm: defaultLlm,
   minConfidence: 40,
   font: 'comic',
-  uppercase: false,
+  letterCase: 'original',
   corsProxy: '',
   exportMaxMB: 30,
 };
@@ -114,7 +114,11 @@ function load(): Settings {
     const parsed = JSON.parse(raw) as Partial<Settings>;
     // v2: the source language is detected automatically by default.
     if ((parsed.v ?? 1) < 2) parsed.sourceLang = 'auto';
-    return { ...DEFAULT_SETTINGS, ...parsed, v: 2, llm: { ...defaultLlm, ...(parsed.llm ?? {}) } };
+    // v3: the UPPERCASE switch became "same case as the original" by default.
+    const legacy = parsed as { uppercase?: boolean };
+    if ((parsed.v ?? 1) < 3 && legacy.uppercase) parsed.letterCase = 'upper';
+    delete legacy.uppercase;
+    return { ...DEFAULT_SETTINGS, ...parsed, v: 3, llm: { ...defaultLlm, ...(parsed.llm ?? {}) } };
   } catch {
     return DEFAULT_SETTINGS;
   }

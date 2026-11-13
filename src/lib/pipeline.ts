@@ -1,10 +1,11 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, type DecodedImage } from './image';
-import { detectBubbles, innerBox, sampleBackground } from './imageproc';
+import { detectBubbles, innerBox } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
+  lookOfText,
   finishLanguageDetection,
   ocrPage,
   setOcrStatusListener,
@@ -88,6 +89,11 @@ function toBubble(d: DetectedText, translation: string): Bubble {
     fontSize: d.fontSize,
     fill: d.fill,
     outline: d.outline || undefined,
+    color: d.color,
+    rotation: d.rotation,
+    align: d.align,
+    patch: d.patch,
+    patchBox: d.patchBox,
   };
 }
 
@@ -158,9 +164,10 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
         if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
         if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
       }
-      const bg = sampleBackground(px, { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale });
       const vertical = box.h > box.w * 1.6;
       const lines = Math.max(1, f.text.split('\n').length);
+      const fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / lines));
+      const look = lookOfText(px, box, scale, fontSize, Boolean(area));
       bubbles.push({
         id: uid(),
         ...box,
@@ -168,9 +175,12 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
         original: f.text,
         translation: f.translation,
         vertical,
-        fontSize: Math.max(10, Math.min(60, (vertical ? box.w : box.h) / lines)),
-        fill: bg.fill,
-        outline: bg.uniformity < 0.6 || undefined,
+        fontSize,
+        fill: look.fill,
+        outline: look.outline || undefined,
+        color: look.color,
+        patch: look.patch,
+        patchBox: look.patchBox,
       });
     }
     if (top + h >= H) break;

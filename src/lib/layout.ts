@@ -1,6 +1,6 @@
 import { contrastColor } from './imageproc';
 import { targetLanguage } from './languages';
-import type { Bubble, FontId } from './types';
+import type { Bubble, FontId, LetterCase } from './types';
 import type { Box } from './text';
 
 export const FONTS: Record<FontId, { family: string; weight: number }> = {
@@ -13,7 +13,7 @@ export const LINE_HEIGHT = 1.12;
 
 export interface LayoutOptions {
   font: FontId;
-  uppercase: boolean;
+  letterCase: LetterCase;
   target: string;
 }
 
@@ -32,6 +32,11 @@ export interface BubbleLayout {
   family: string;
   weight: number;
   rtl: boolean;
+  /** Tilt in degrees, clockwise, around the centre of `area`. */
+  rotation: number;
+  align: 'left' | 'center' | 'right';
+  /** Repaired artwork drawn over `erase` instead of a flat colour. */
+  patch?: string;
 }
 
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -192,13 +197,15 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   if (!text || b.hidden) return null;
   // Only OCR measures the line box itself; AI boxes include the line spacing.
   const capsSource = b.confidence !== undefined && isAllCaps(b.original);
-  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, opts, page.width, capsSource]);
+  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length]);
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
   const target = targetLanguage(opts.target);
   const font = FONTS[opts.font] ?? FONTS.comic;
-  const display = opts.uppercase && !target.noSpaces ? text.toLocaleUpperCase(opts.target) : text;
+  // Same case as the source: scanlations lettered in capitals stay in capitals.
+  const upper = opts.letterCase === 'upper' || (opts.letterCase === 'original' && isAllCaps(b.original));
+  const display = upper && !target.noSpaces ? text.toLocaleUpperCase(opts.target) : text;
   const fill = b.fill ?? '#ffffff';
   const original = Math.max(8, b.fontSize ?? 22);
 
@@ -217,6 +224,11 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     area = clampBox({ x: b.x - padX, y: b.y - padY, w: b.w + padX * 2, h: b.h + padY * 2 }, page.width, page.height);
     erase = area;
     radius = Math.min(padX, padY) * 1.5;
+  }
+  if (b.patch && b.patchBox) {
+    // Lettering over artwork: the repaired artwork replaces the flat fill.
+    erase = b.patchBox;
+    radius = 0;
   }
   // Vertical source text (manga) leaves a tall, narrow box: widen it a bit.
   if (!b.area && b.vertical && area.w < area.h * 0.6) {
@@ -261,6 +273,9 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     padding,
     fill,
     color: b.color ?? contrastColor(fill),
+    rotation: b.rotation ?? 0,
+    align: b.align ?? 'center',
+    patch: b.patch && b.patchBox ? b.patch : undefined,
     outline: Boolean(b.outline),
     fontSize: Math.floor(size * 4) / 4,
     lines,
@@ -288,9 +303,22 @@ function roundRect(c: CanvasRenderingContext2D, b: Box, r: number) {
   c.closePath();
 }
 
-/** Paints translated bubbles on a canvas that already holds the original page. */
-export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]): void {
+/** Colour of the stroke drawn around letters set over artwork. */
+export function outlineColor(color: string): string {
+  return contrastColor(color);
+}
+
+/**
+ * Paints translated bubbles on a canvas that already holds the original page.
+ * `patches` holds the decoded repaired artwork of the layouts that have one.
+ */
+export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[], patches?: Map<string, CanvasImageSource>): void {
   for (const l of layouts) {
+    const patch = l.patch ? patches?.get(l.patch) : undefined;
+    if (patch) {
+      c.drawImage(patch, l.erase.x, l.erase.y, l.erase.w, l.erase.h);
+      continue;
+    }
     c.fillStyle = l.fill;
     roundRect(c, l.erase, l.radius);
     c.fill();
@@ -298,22 +326,26 @@ export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]
   for (const l of layouts) {
     c.save();
     c.font = `${l.weight} ${l.fontSize}px ${l.family}`;
-    c.textAlign = 'center';
+    c.textAlign = l.align;
     c.textBaseline = 'middle';
     c.direction = l.rtl ? 'rtl' : 'ltr';
     const lh = l.fontSize * LINE_HEIGHT;
     const total = l.lines.length * lh;
     const cx = l.area.x + l.area.w / 2;
-    let y = l.area.y + l.area.h / 2 - total / 2 + lh / 2;
+    const cy = l.area.y + l.area.h / 2;
+    c.translate(cx, cy);
+    if (l.rotation) c.rotate((l.rotation * Math.PI) / 180);
+    const x = l.align === 'left' ? -l.area.w / 2 + l.padding : l.align === 'right' ? l.area.w / 2 - l.padding : 0;
+    let y = -total / 2 + lh / 2;
     for (const line of l.lines) {
       if (l.outline) {
         c.lineJoin = 'round';
         c.lineWidth = Math.max(2, l.fontSize * 0.18);
-        c.strokeStyle = l.color === '#ffffff' ? '#000000' : '#ffffff';
-        c.strokeText(line, cx, y);
+        c.strokeStyle = outlineColor(l.color);
+        c.strokeText(line, x, y);
       }
       c.fillStyle = l.color;
-      c.fillText(line, cx, y);
+      c.fillText(line, x, y);
       y += lh;
     }
     c.restore();

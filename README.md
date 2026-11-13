@@ -38,6 +38,23 @@ pièces, pas d’abonnement, pas de serveur. L’OCR tourne dans le navigateur e
 **Mode « OCR par IA » (optionnel)** : avec une clé gratuite Google Gemini, le modèle lit *et* traduit chaque page en
 une seule requête. C’est nettement meilleur sur les mangas japonais, où Tesseract est moyen.
 
+## Texte sur les objets et mise en forme
+
+La traduction reprend l’apparence du texte qu’elle remplace, dans les bulles comme sur le décor (enseignes, écrans,
+affiches, cris dessinés sur l’image…) :
+
+- **couleur** des lettres relevée sur l’original ; lettres à **contour** rendues avec un contour ;
+- **casse** : majuscules si l’original est en majuscules (*Réglages → Rendu → Casse du texte*) ;
+- **inclinaison** : un texte penché est redressé pour être relu en entier, puis la traduction est posée avec le même
+  angle (réglable dans l’éditeur de bulle) ;
+- **alignement** à gauche ou à droite conservé pour les blocs de plusieurs lignes ;
+- **décor reconstitué** : hors des bulles unies, seules les lettres sont effacées et le dessin est recomposé
+  dessous, au lieu d’un rectangle de couleur (`inpaintText` dans `src/lib/imageproc.ts`).
+
+La police et la graisse d’origine ne sont pas reproduites, et un bloc aux lignes de tailles différentes (titre +
+sous-titre) est rendu d’une seule taille. Les chapitres déjà traduits gardent leur ancien rendu : utilisez
+*Réanalyser tout (OCR)* pour en profiter.
+
 ## Lecture en série
 
 - **Reprise** : la bibliothèque propose de reprendre le chapitre en cours, à l’endroit exact où vous l’avez laissé
@@ -119,8 +136,8 @@ La clé est enregistrée uniquement dans votre navigateur et n’est envoyée qu
 
 - La qualité de l’OCR local est très bonne sur les webtoons/manhwa (texte horizontal net), correcte sur les mangas ;
   les onomatopées dessinées à la main ne sont généralement pas lues.
-- L’effacement remplit la zone de texte avec la couleur de fond : parfait dans les bulles unies, plus visible sur du
-  texte posé sur un dessin (utilisez *Garder le texte original* ou ajustez la couleur dans l’éditeur).
+- L’OCR local lit mal le texte peu contrasté sur le décor, très incliné (au-delà d’environ 15°) ou déformé : il
+  reste alors tel quel. Le mode « OCR par IA » en trouve davantage ; une zone peut aussi être ajoutée à la main.
 - Le point d’accès Google Traduction utilisé est public mais non officiel ; en cas de limitation, WebTrad bascule sur
   MyMemory.
 

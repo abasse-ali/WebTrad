@@ -45,6 +45,13 @@ export interface Bubble {
   outline?: boolean;
   /** Text colour (auto: black or white depending on fill). */
   color?: string;
+  /** Tilt of the original lettering in degrees, clockwise. */
+  rotation?: number;
+  /** Alignment of the original lines (centred when undefined). */
+  align?: 'left' | 'right';
+  /** Artwork repaired under the lettering (data URL) and the rectangle it covers. */
+  patch?: string;
+  patchBox?: { x: number; y: number; w: number; h: number };
   /** Multiplier applied to the auto-fitted font size. */
   fontScale?: number;
   /** When true the original text is left untouched on the page. */
@@ -74,6 +81,8 @@ export type ProviderId = 'auto' | 'chrome' | 'google' | 'mymemory' | 'llm';
 export type OcrEngine = 'tesseract' | 'vision';
 export type FontId = 'comic' | 'sans' | 'serif';
 export type ThemeId = 'auto' | 'light' | 'dark';
+/** `original`: capitals when the source lettering is in capitals. */
+export type LetterCase = 'original' | 'upper' | 'normal';
 export type ReaderMode = 'translated' | 'original' | 'compare';
 
 export interface LlmSettings {
@@ -96,7 +105,7 @@ export interface Settings {
   llm: LlmSettings;
   minConfidence: number;
   font: FontId;
-  uppercase: boolean;
+  letterCase: LetterCase;
   corsProxy: string;
   /** Maximum size of an exported .cbz in megabytes (0 = no limit). */
   exportMaxMB: number;

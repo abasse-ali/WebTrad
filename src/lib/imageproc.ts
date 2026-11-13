@@ -228,3 +228,176 @@ export function contrastColor(fill: string): string {
   const lum = (((v >> 16) & 255) * 299 + ((v >> 8) & 255) * 587 + (v & 255) * 114) / 1000;
   return lum > 140 ? '#111111' : '#ffffff';
 }
+
+// --- look of the original lettering ---------------------------------------------
+
+export interface InkInfo {
+  /** Colour of the letters as #rrggbb (near-black and near-white are snapped). */
+  color: string;
+  /** Exact colours to erase: the letters and, when they are outlined, their outline. */
+  tones: [number, number, number][];
+}
+
+const colorDistance = (data: Uint8ClampedArray, i: number, c: readonly number[]) =>
+  Math.abs(data[i] - c[0]) + Math.abs(data[i + 1] - c[1]) + Math.abs(data[i + 2] - c[2]);
+
+function medianOf(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)] ?? 0;
+}
+
+const toHex = (c: readonly number[]) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+
+export function parseHex(hex: string): [number, number, number] {
+  const v = parseInt(hex.slice(1), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+/**
+ * Colour of the lettering inside a box: the pixels that stand out from the
+ * background, darker or lighter, whichever group is bigger. The other group,
+ * when sizeable, is the outline of the letters.
+ */
+export function sampleInk(px: Pixels, box: Box, background: string): InkInfo | null {
+  const { data, width: W, height: H } = px;
+  const bg = parseHex(background);
+  const bgLum = (bg[0] * 299 + bg[1] * 587 + bg[2] * 114) / 1000;
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const x1 = Math.min(W, Math.round(box.x + box.w));
+  const y1 = Math.min(H, Math.round(box.y + box.h));
+  const step = Math.max(1, Math.round(Math.sqrt(((x1 - x0) * (y1 - y0)) / 20000)));
+  const dark: number[][] = [[], [], []];
+  const light: number[][] = [[], [], []];
+  // Pixels of each group that sit right next to the background: an outline
+  // touches it, the letters it surrounds do not.
+  let darkEdge = 0;
+  let lightEdge = 0;
+  const isBackground = (x: number, y: number) => x < 0 || x >= W || colorDistance(data, (y * W + x) * 4, bg) < 110;
+  for (let y = y0; y < y1; y += step) {
+    for (let x = x0; x < x1; x += step) {
+      const i = (y * W + x) * 4;
+      if (colorDistance(data, i, bg) < 110) continue;
+      const isDark = luminance(data, i) < bgLum;
+      const edge = isBackground(x - 3, y) || isBackground(x + 3, y) ? 1 : 0;
+      if (isDark) darkEdge += edge;
+      else lightEdge += edge;
+      const group = isDark ? dark : light;
+      group[0].push(data[i]);
+      group[1].push(data[i + 1]);
+      group[2].push(data[i + 2]);
+    }
+  }
+  let [main, other] = dark[0].length >= light[0].length ? [dark, light] : [light, dark];
+  if (main[0].length < 12) return null;
+  const outlined = other[0].length >= Math.max(12, main[0].length * 0.25);
+  if (outlined) {
+    // Outlined letters: the outline can weigh as much as the letters. The
+    // letters are the group that is cut off from the background.
+    const edgeShare = (g: number[][]) => (g === dark ? darkEdge : lightEdge) / g[0].length;
+    if (edgeShare(main) > edgeShare(other) * 1.5) [main, other] = [other, main];
+  }
+  const rgb: [number, number, number] = [medianOf(main[0]), medianOf(main[1]), medianOf(main[2])];
+  const tones = [rgb];
+  if (outlined) tones.push([medianOf(other[0]), medianOf(other[1]), medianOf(other[2])]);
+  const lum = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000;
+  const spread = Math.max(...rgb) - Math.min(...rgb);
+  const color = lum < 60 && spread < 40 ? '#111111' : lum > 228 && spread < 30 ? '#ffffff' : toHex(rgb);
+  return { color, tones };
+}
+
+/**
+ * Removes lettering drawn over artwork: pixels close to the ink colours are
+ * masked (plus a margin for anti-aliasing) and filled from their surroundings,
+ * layer by layer from the edge of each letter inwards. Returns the repaired
+ * crop, or null when too much of the box would have to be invented.
+ */
+export function inpaintText(
+  px: Pixels,
+  box: Box,
+  tones: readonly (readonly number[])[],
+  margin: number,
+  /** Limits what may be erased (page coordinates of `px`), e.g. to a tilted band. */
+  within?: (x: number, y: number) => boolean,
+): Pixels | null {
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const w = Math.min(px.width, Math.round(box.x + box.w)) - x0;
+  const h = Math.min(px.height, Math.round(box.y + box.h)) - y0;
+  if (w < 4 || h < 4 || tones.length === 0) return null;
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const start = ((y0 + y) * px.width + x0) * 4;
+    out.set(px.data.subarray(start, start + w * 4), y * w * 4);
+  }
+  let mask = new Uint8Array(w * h);
+  for (let p = 0; p < mask.length; p++) {
+    if (within && !within(x0 + (p % w), y0 + Math.floor(p / w))) continue;
+    if (tones.some((c) => colorDistance(out, p * 4, c) < 120)) mask[p] = 1;
+  }
+  // Grow the mask over the blurred rim of the letters.
+  const grow = Math.max(1, Math.min(6, Math.round(margin)));
+  for (let pass = 0; pass < grow; pass++) {
+    const next = mask.slice();
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (mask[p]) continue;
+        if ((x > 0 && mask[p - 1]) || (x < w - 1 && mask[p + 1]) || (y > 0 && mask[p - w]) || (y < h - 1 && mask[p + w])) next[p] = 1;
+      }
+    }
+    mask = next;
+  }
+  let masked = 0;
+  for (let p = 0; p < mask.length; p++) masked += mask[p];
+  if (masked === 0 || masked > mask.length * 0.75) return null;
+  const hole = mask.slice();
+  // Onion peel: every pass fills the masked pixels that touch known ones.
+  for (let guard = 0; masked > 0 && guard < w + h; guard++) {
+    const filled: number[] = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (!mask[p]) continue;
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            const yy = y + dy;
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+            const q = yy * w + xx;
+            if (mask[q]) continue;
+            r += out[q * 4];
+            g += out[q * 4 + 1];
+            b += out[q * 4 + 2];
+            n++;
+          }
+        }
+        if (n === 0) continue;
+        out[p * 4] = r / n;
+        out[p * 4 + 1] = g / n;
+        out[p * 4 + 2] = b / n;
+        out[p * 4 + 3] = 255;
+        filled.push(p);
+      }
+    }
+    if (filled.length === 0) return null; // nothing known to start from
+    for (const p of filled) mask[p] = 0;
+    masked -= filled.length;
+  }
+  // Soften the filled area so the layers do not show.
+  for (let pass = 0; pass < 2; pass++) {
+    const src = out.slice();
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const p = y * w + x;
+        if (!hole[p]) continue;
+        for (let c = 0; c < 3; c++) {
+          out[p * 4 + c] =
+            (src[p * 4 + c] * 4 + src[(p - 1) * 4 + c] + src[(p + 1) * 4 + c] + src[(p - w) * 4 + c] + src[(p + w) * 4 + c]) / 8;
+        }
+      }
+    }
+  }
+  return { data: out, width: w, height: h };
+}

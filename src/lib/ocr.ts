@@ -1,6 +1,15 @@
 import { createWorker, type Worker } from 'tesseract.js';
-import { bitmapPixels, pixelsToCanvas, type DecodedImage } from './image';
-import { detectBubbles, innerBox, maskedCrop, sampleBackground, type BubbleRegion, type Pixels } from './imageproc';
+import { bitmapPixels, context2d, createCanvas, pixelsToCanvas, type DecodedImage } from './image';
+import {
+  detectBubbles,
+  innerBox,
+  inpaintText,
+  maskedCrop,
+  sampleBackground,
+  sampleInk,
+  type BubbleRegion,
+  type Pixels,
+} from './imageproc';
 import { sourceLanguage, type SourceLanguage } from './languages';
 import {
   classifyScript,
@@ -31,6 +40,14 @@ export interface DetectedText {
   fontSize: number;
   fill: string;
   outline: boolean;
+  /** Colour of the original letters. */
+  color?: string;
+  /** Tilt of the original lines in degrees, clockwise. */
+  rotation?: number;
+  align?: 'left' | 'right';
+  /** Artwork repaired under the lettering, for text that is not in a bubble. */
+  patch?: string;
+  patchBox?: Box;
 }
 
 type StatusFn = (message: string, progress?: number) => void;
@@ -109,11 +126,28 @@ function linesOf(result: Awaited<ReturnType<typeof recognize>>, scale: number, d
           h: (line.bbox.y1 - line.bbox.y0) / scale,
           text: line.text,
           confidence: line.confidence,
+          angle: lineAngle(line),
         });
       }
     }
   }
   return out;
+}
+
+/**
+ * Slope of a line in degrees. The centres of its first and last words give a
+ * steadier answer than Tesseract's baseline, which flattens tilted text.
+ */
+function lineAngle(line: { words?: { bbox: { x0: number; y0: number; x1: number; y1: number } }[]; baseline?: { x0: number; y0: number; x1: number; y1: number }; bbox: { y0: number; y1: number } }): number {
+  const words = line.words ?? [];
+  const deg = (dy: number, dx: number) => (Math.atan2(dy, dx) * 180) / Math.PI;
+  if (words.length >= 2) {
+    const a = words[0].bbox;
+    const b = words[words.length - 1].bbox;
+    const dx = (b.x0 + b.x1) / 2 - (a.x0 + a.x1) / 2;
+    if (dx > (line.bbox.y1 - line.bbox.y0) * 2) return deg((b.y0 + b.y1) / 2 - (a.y0 + a.y1) / 2, dx);
+  }
+  return line.baseline ? deg(line.baseline.y1 - line.baseline.y0, line.baseline.x1 - line.baseline.x0) : 0;
 }
 
 function keepLines(lines: RawLine[], rules: LangRules, minConfidence: number): RawLine[] {
@@ -202,8 +236,97 @@ function fontSizeOf(lines: RawLine[], vertical: boolean): number {
   return median(lines.map((l) => (vertical ? l.w : l.h))) || 20;
 }
 
-function backgroundFor(px: Pixels, box: Box, scale: number) {
-  return sampleBackground(px, { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale }, 3);
+/** Copy of a crop turned back by `degrees`, on a white ground. */
+function straightened(source: HTMLCanvasElement, degrees: number): HTMLCanvasElement {
+  const out = createCanvas(source.width, source.height);
+  const c = context2d(out);
+  c.fillStyle = '#ffffff';
+  c.fillRect(0, 0, out.width, out.height);
+  c.translate(out.width / 2, out.height / 2);
+  c.rotate((-degrees * Math.PI) / 180);
+  c.drawImage(source, -source.width / 2, -source.height / 2);
+  return out;
+}
+
+/** Tilt of a block: lettering on signs and objects is rarely level. */
+function rotationOf(lines: RawLine[], vertical: boolean): number | undefined {
+  if (vertical) return undefined;
+  const angles = lines.filter((l) => l.text.length >= 3 && l.w > l.h * 1.5).map((l) => l.angle ?? 0);
+  if (angles.length === 0) return undefined;
+  const angle = median(angles);
+  // Small slopes are OCR jitter; steep ones are not something Tesseract reads.
+  return Math.abs(angle) >= 2.5 && Math.abs(angle) <= 45 ? Math.round(angle * 10) / 10 : undefined;
+}
+
+/** Left- or right-aligned lines (anything else is laid out centred). */
+function alignOf(lines: RawLine[], vertical: boolean): 'left' | 'right' | undefined {
+  if (vertical || lines.length < 2) return undefined;
+  const width = Math.max(...lines.map((l) => l.x + l.w)) - Math.min(...lines.map((l) => l.x));
+  const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
+  const left = spread(lines.map((l) => l.x));
+  const right = spread(lines.map((l) => l.x + l.w));
+  if (left < width * 0.06 && right > width * 0.2) return 'left';
+  if (right < width * 0.06 && left > width * 0.2) return 'right';
+  return undefined;
+}
+
+export interface TextLook {
+  fill: string;
+  outline: boolean;
+  color?: string;
+  patch?: string;
+  patchBox?: Box;
+}
+
+/**
+ * How the original lettering looks, so the translation can look the same:
+ * colour behind it, colour of the letters and, for text drawn over artwork
+ * (signs, objects, sound effects…), the artwork repaired underneath.
+ * `box` is in page pixels, `px` the page scaled by `scale`.
+ */
+export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number, flat: boolean, rotation = 0): TextLook {
+  const scaled = { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale };
+  // Over artwork, look a little further out: right around outlined letters
+  // there is only their outline.
+  const bg = sampleBackground(px, scaled, flat ? 3 : Math.max(3, Math.round(fontSize * scale * 0.25)));
+  const ink = sampleInk(px, scaled, bg.fill);
+  const outlined = !flat && (ink?.tones.length ?? 0) > 1;
+  const look: TextLook = { fill: bg.fill, outline: !flat && (outlined || bg.uniformity < 0.6), color: ink?.color };
+  // A level line in a plain bubble is erased perfectly with one colour;
+  // anything else gets the artwork under the letters repaired.
+  if (flat || !ink) return look;
+  const pad = Math.max(4, fontSize * 0.35);
+  const x = Math.max(0, Math.floor((box.x - pad) * scale));
+  const y = Math.max(0, Math.floor((box.y - pad) * scale));
+  const area = {
+    x,
+    y,
+    w: Math.min(px.width, Math.ceil((box.x + box.w + pad) * scale)) - x,
+    h: Math.min(px.height, Math.ceil((box.y + box.h + pad) * scale)) - y,
+  };
+  // The upright box of tilted lines takes in what sits above and below them:
+  // only the tilted band the lines really occupy may be erased.
+  let within: ((x: number, y: number) => boolean) | undefined;
+  const t = (rotation * Math.PI) / 180;
+  const cos = Math.cos(t);
+  const sin = Math.abs(Math.sin(t));
+  if (rotation && cos * cos - sin * sin > 0.2) {
+    const halfH = ((scaled.h * cos - scaled.w * sin) / (cos * cos - sin * sin) / 2 + fontSize * scale * 0.3);
+    const cx = scaled.x + scaled.w / 2;
+    const cy = scaled.y + scaled.h / 2;
+    const sinT = Math.sin(t);
+    within = (px0, py0) => Math.abs(-(px0 - cx) * sinT + (py0 - cy) * cos) <= halfH;
+  }
+  try {
+    const repaired = inpaintText(px, area, ink.tones, Math.max(1.5, fontSize * scale * 0.08), within);
+    if (repaired) {
+      look.patch = pixelsToCanvas(repaired).toDataURL('image/jpeg', 0.92);
+      look.patchBox = { x: area.x / scale, y: area.y / scale, w: area.w / scale, h: area.h / scale };
+    }
+  } catch {
+    /* the flat fill is used instead */
+  }
+  return look;
 }
 
 // --- page OCR -----------------------------------------------------------------
@@ -247,36 +370,56 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
     const preferVertical = Boolean(lang.vertical) && region.inkBox.h > region.inkBox.w * 1.15;
     const res = await recognizeBlock(canvas, lang, preferVertical, opts.minConfidence, scale, crop.x / scale, crop.y / scale);
     if (!res) continue;
-    const textBox = unionBox(res.lines);
     const fontSize = fontSizeOf(res.lines, res.vertical);
+    const readBox = unionBox(res.lines);
     // A bright region much bigger than its text is a white page background
     // holding artwork, not a speech bubble: only the text itself is used then.
     const regionArea = (region.w / scale) * (region.h / scale);
-    const isBubble = regionArea <= textBox.w * textBox.h * 12;
+    const isBubble = regionArea <= readBox.w * readBox.h * 12;
     // Erase the dark pixels right around the text too (OCR boxes miss
     // periods, dots, accents…) but never the artwork further away.
     const margin = Math.max(6, fontSize * 0.8);
     const ink = intersect(
       { x: region.inkBox.x / scale, y: region.inkBox.y / scale, w: region.inkBox.w / scale, h: region.inkBox.h / scale },
-      { x: textBox.x - margin, y: textBox.y - margin, w: textBox.w + margin * 2, h: textBox.h + margin * 2 },
+      { x: readBox.x - margin, y: readBox.y - margin, w: readBox.w + margin * 2, h: readBox.h + margin * 2 },
     );
-    const box = ink ? unionBox([textBox, ink]) : textBox;
+    const rotation = rotationOf(res.lines, res.vertical);
+    let text = res.text;
+    let confidence = res.confidence;
+    let textBox = readBox;
+    if (rotation !== undefined) {
+      // Tilted lettering is read badly (whole lines go missing): straighten
+      // the crop and read it again.
+      const level = await recognizeBlock(straightened(canvas, rotation), lang, false, opts.minConfidence, scale, 0, 0);
+      if (level && scriptLetters(level.text, rules) > scriptLetters(text, rules) + 2) {
+        text = level.text;
+        confidence = level.confidence;
+        // Its boxes are in the straightened image: fall back on the ink of the region.
+        textBox = unionBox([textBox, { x: region.inkBox.x / scale, y: region.inkBox.y / scale, w: region.inkBox.w / scale, h: region.inkBox.h / scale }]);
+      }
+    }
+    // Tilted text (a poster, a sign) or text on a bright piece of artwork:
+    // only what was read is replaced, by repairing the artwork under it.
+    const flat = isBubble && rotation === undefined;
+    const box = ink && flat ? unionBox([textBox, ink]) : textBox;
     let area: Box | undefined;
-    if (isBubble) {
+    if (flat) {
       const inner = innerBox(region, (box.x + box.w / 2) * scale, (box.y + box.h / 2) * scale, box.h * scale);
       if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
       if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
     }
-    const bg = backgroundFor(px, box, scale);
+    // A big bright region holding artwork is treated like text over artwork.
+    const look = lookOfText(px, box, scale, fontSize, flat, rotation);
     found.push({
       box,
       area,
-      text: res.text,
-      confidence: res.confidence,
+      text,
+      confidence,
       vertical: res.vertical,
       fontSize,
-      fill: bg.fill,
+      ...look,
       outline: false,
+      rotation,
     });
     claimed.push(isBubble ? regionBox(region, scale) : box);
   }
@@ -340,25 +483,26 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
     }
     if (!isMeaningful(text, rules) || isNoiseBlock(text, confidence, rules)) continue;
     const box = { x: block.x, y: block.y, w: block.w, h: block.h };
-    const bg = backgroundFor(px, box, scale);
+    const fontSize = fontSizeOf(lineBoxes, vertical);
     found.push({
       box,
       text,
       confidence,
       vertical,
-      fontSize: fontSizeOf(lineBoxes, vertical),
-      fill: bg.fill,
-      outline: bg.uniformity < 0.6,
+      fontSize,
+      ...lookOfText(px, box, scale, fontSize, false, rotationOf(lineBoxes, vertical)),
+      rotation: rotationOf(lineBoxes, vertical),
+      align: alignOf(lineBoxes, vertical),
     });
   }
 
   return dedupeBlocks(found.map((f) => ({ ...f, ...f.box }))).map(({ x: _x, y: _y, w: _w, h: _h, ...rest }) => rest);
 }
 
-const MAX_REREADS = 12;
+const MAX_REREADS = 24;
 
 function worthRereading(block: TextBlock, rules: LangRules): boolean {
-  if (block.vertical || block.lines.length > 3 || block.confidence < 55) return false;
+  if (block.vertical || block.lines.length > 3 || block.confidence < 45) return false;
   return scriptLetters(block.text, rules) >= (isLatin(rules) ? 4 : 2) && plausibility(block.text, rules) >= 0.75;
 }
 
@@ -407,7 +551,7 @@ export async function ocrRegion(
   box: Box,
   sourceCode: string,
   minConfidence: number,
-): Promise<{ text: string; confidence: number; vertical: boolean; fill: string; fontSize: number } | null> {
+): Promise<{ text: string; confidence: number; vertical: boolean; fill: string; fontSize: number; color?: string; rotation?: number } | null> {
   const lang = sourceLanguage(sourceCode);
   const crop = clampBox(box, bitmap.width, bitmap.height);
   // Small lettering is read better when enlarged.
@@ -424,6 +568,8 @@ export async function ocrRegion(
     vertical: res.vertical,
     fill: bg.fill,
     fontSize: fontSizeOf(res.lines, res.vertical),
+    color: sampleInk(px, { x: 0, y: 0, w: px.width, h: px.height }, bg.fill)?.color,
+    rotation: rotationOf(res.lines, res.vertical),
   };
 }
 

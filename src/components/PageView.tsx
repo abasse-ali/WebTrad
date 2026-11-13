@@ -2,7 +2,7 @@ import { memo, useRef, useState, type CSSProperties, type PointerEvent as ReactP
 import type { MessageKey, Translate } from '../i18n';
 import { useNearViewport } from '../hooks';
 import { INTERRUPTED } from '../lib/db';
-import { LINE_HEIGHT, layoutBubble, type BubbleLayout, type LayoutOptions } from '../lib/layout';
+import { LINE_HEIGHT, layoutBubble, outlineColor, type BubbleLayout, type LayoutOptions } from '../lib/layout';
 import type { Box } from '../lib/text';
 import type { Bubble, Page } from '../lib/types';
 import { Icon } from './Icon';
@@ -10,7 +10,7 @@ import { Icon } from './Icon';
 const pct = (v: number, total: number) => `${(v / total) * 100}%`;
 
 function outlineShadow(l: BubbleLayout, width: number): string {
-  const c = l.color === '#ffffff' ? '#000' : '#fff';
+  const c = outlineColor(l.color);
   const d = `${((l.fontSize * 0.08) / width) * 100}cqw`;
   const n = `calc(-1 * ${d})`;
   return [`${d} 0`, `${n} 0`, `0 ${d}`, `0 ${n}`, `${d} ${d}`, `${n} ${n}`, `${d} ${n}`, `${n} ${d}`]
@@ -51,6 +51,9 @@ function TranslatedLayer({
           lineHeight: LINE_HEIGHT,
           color: l.color,
           textShadow: l.outline ? outlineShadow(l, W) : undefined,
+          alignItems: l.align === 'left' ? 'flex-start' : l.align === 'right' ? 'flex-end' : 'center',
+          textAlign: l.align,
+          transform: l.rotation ? `rotate(${l.rotation}deg)` : undefined,
         };
         return (
           <div
@@ -71,7 +74,7 @@ function TranslatedLayer({
                 top: pct(l.erase.y, H),
                 width: pct(l.erase.w, W),
                 height: pct(l.erase.h, H),
-                background: l.fill,
+                background: l.patch ? `center / 100% 100% no-repeat url("${l.patch}")` : l.fill,
                 borderRadius: cq(l.radius),
               }}
             />
@@ -328,7 +331,7 @@ export const PageView = memo(PageViewImpl, (a, b) => {
     a.selectedId === b.selectedId &&
     a.busyIds.join() === b.busyIds.join() &&
     a.opts.font === b.opts.font &&
-    a.opts.uppercase === b.opts.uppercase &&
+    a.opts.letterCase === b.opts.letterCase &&
     a.opts.target === b.opts.target &&
     a.t === b.t
   );

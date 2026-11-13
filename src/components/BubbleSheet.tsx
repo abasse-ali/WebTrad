@@ -82,6 +82,19 @@ export function BubbleSheet({ draft, busy, t, onChange, onSave, onCancel, onDele
             onChange={(e) => onChange({ ...draft, fontScale: Number(e.target.value) })}
           />
         </label>
+        <label className="field">
+          <span>
+            {t('bubble.rotation')} · {Math.round(draft.rotation ?? 0)}°
+          </span>
+          <input
+            type="range"
+            min={-45}
+            max={45}
+            step={1}
+            value={draft.rotation ?? 0}
+            onChange={(e) => onChange({ ...draft, rotation: Number(e.target.value) || undefined })}
+          />
+        </label>
         <div className="colors">
           <label className="color">
             <input type="color" value={draft.fill ?? '#ffffff'} onChange={(e) => onChange({ ...draft, fill: e.target.value })} />

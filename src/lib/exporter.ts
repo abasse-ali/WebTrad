@@ -16,7 +16,7 @@ export async function fontsReady(): Promise<void> {
 export function pageLayouts(page: Page, target: string): BubbleLayout[] {
   const s = getSettings();
   return page.bubbles
-    .map((b) => layoutBubble(b, page, { font: s.font, uppercase: s.uppercase, target }))
+    .map((b) => layoutBubble(b, page, { font: s.font, letterCase: s.letterCase, target }))
     .filter((l): l is BubbleLayout => l !== null);
 }
 
@@ -37,7 +37,18 @@ async function renderCanvas(page: Page, target: string): Promise<HTMLCanvasEleme
   ctx.scale(k, k);
   ctx.drawImage(bitmap.source, 0, 0);
   bitmap.close();
-  drawLayouts(ctx, pageLayouts(page, target));
+  const layouts = pageLayouts(page, target);
+  const patches = new Map<string, CanvasImageSource>();
+  await Promise.all(
+    layouts.map(async (l) => {
+      if (!l.patch || patches.has(l.patch)) return;
+      const img = new Image();
+      img.src = l.patch;
+      // A patch that does not decode falls back to the flat fill.
+      await img.decode().then(() => patches.set(l.patch!, img), () => undefined);
+    }),
+  );
+  drawLayouts(ctx, layouts, patches);
   return canvas;
 }
 
