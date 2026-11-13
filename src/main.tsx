@@ -3,12 +3,15 @@ import { createRoot } from 'react-dom/client';
 import '@fontsource/comic-neue/700.css';
 import './styles.css';
 import { App } from './App';
+import { resumeInterrupted } from './lib/pipeline';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
   </StrictMode>,
 );
+
+void resumeInterrupted();
 
 // Offline support: cache the app shell and the OCR engine after first use.
 if ('serviceWorker' in navigator && import.meta.env.PROD) {

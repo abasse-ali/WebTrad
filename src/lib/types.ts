@@ -63,6 +63,8 @@ export interface Page {
   blob: Blob;
   status: PageStatus;
   error?: string;
+  /** Times the app died while this page was being processed (crash-loop guard). */
+  stalled?: number;
   /** Incremented on every change (cheap equality check for the UI). */
   rev?: number;
   bubbles: Bubble[];

@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from 'react';
-import { getChapter, getPages, patchChapter, patchPage, uid } from './db';
+import { getChapter, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, type DecodedImage } from './image';
 import { detectBubbles, innerBox, sampleBackground } from './imageproc';
+import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
   finishLanguageDetection,
@@ -37,6 +38,7 @@ let snapshot = new Map(jobs);
 
 function emit() {
   snapshot = new Map(jobs);
+  setProcessing([...jobs.values()].some((j) => j.running));
   listeners.forEach((l) => l());
 }
 
@@ -220,7 +222,7 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   try {
     if (useVision) {
       const bubbles = await visionPage(bitmap, chapter, signal);
-      await patchPage(page.id, { bubbles, status: 'done' });
+      await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
       return 'llm';
     }
     const detected = await ocrPage(bitmap, chapter.sourceLang, { minConfidence: settings.minConfidence, signal });
@@ -230,7 +232,7 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
     setJob(chapter.id, { phase: 'translate' });
     const result = await translateBubbles(bubbles, chapter, signal);
     bubbles = result.bubbles;
-    await patchPage(page.id, { bubbles, status: 'done' });
+    await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
     return result.engine;
   } finally {
     bitmap.close();
@@ -275,6 +277,32 @@ export async function stopChapter(chapterId: string): Promise<void> {
   await runs.get(chapterId);
 }
 
+let recovery: Promise<void> | null = null;
+
+/**
+ * Run once at start-up: a job that died with the previous session (tab
+ * reloaded, phone locked, browser killed in the background) is picked up
+ * where it stopped, without re-reading the pages that were finished.
+ */
+export function resumeInterrupted(): Promise<void> {
+  recovery ??= (async () => {
+    try {
+      // Another tab is working: its in-flight pages are not leftovers.
+      if (await otherTabIsProcessing()) return;
+      for (const id of await resetStalePages()) {
+        await refreshStats(id);
+        // Only what was still queued: pages in error (the one that may have
+        // killed the tab included) wait for the reader to retry them by hand.
+        const pending = (await getPages(id)).filter((p) => p.status === 'pending').map((p) => p.id);
+        if (pending.length > 0) void startChapter(id, { pageIds: pending });
+      }
+    } catch {
+      /* the library still works; the chapter keeps its "Resume" button */
+    }
+  })();
+  return recovery;
+}
+
 let ocrQueue: Promise<unknown> = Promise.resolve();
 
 /** Processes a chapter in the background (one chapter at a time). */
@@ -313,7 +341,7 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
           await patchPage(page.id, { status: 'translating', error: undefined });
           const result = await translateBubbles(page.bubbles, chapter, controller.signal);
           engine = result.engine;
-          await patchPage(page.id, { bubbles: result.bubbles, status: 'done' });
+          await patchPage(page.id, { bubbles: result.bubbles, status: 'done', stalled: 0 });
         } else {
           engine = await processPage(page, chapter, controller.signal);
         }
