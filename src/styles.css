@@ -219,6 +219,7 @@ h2 {
 input,
 select,
 textarea {
+  max-width: 100%;
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -287,10 +288,42 @@ textarea {
 
 /* ---------- app shell ---------- */
 
+/*
+ * Nothing may scroll the page sideways. Safari sizes some controls (a
+ * <select> by its longest option, for instance) wider than Chromium does,
+ * and one wide element was enough to let the whole page slide left on an
+ * iPhone. `clip` (unlike `hidden`) keeps the sticky top bars working.
+ */
+.app,
+.reader {
+  max-width: 100%;
+  overflow-x: clip;
+}
+
 .app {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+/* Flex and grid items may shrink below the width of their content. */
+.content,
+.field,
+.panel,
+.two > *,
+.lang-row > *,
+.choice > span,
+.sheet-grid > * {
+  min-width: 0;
+}
+/* Long words, addresses and error messages wrap instead of widening the page. */
+.panel,
+.notice,
+.choice,
+.page-chip,
+.chapter-end,
+.card-body,
+.reader-status {
+  overflow-wrap: anywhere;
 }
 
 .topbar {
