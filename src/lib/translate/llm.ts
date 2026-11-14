@@ -1,5 +1,6 @@
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { englishName } from '../languages';
-import { getSettings } from '../settings';
+import { LLM_PRESETS, getSettings } from '../settings';
 import type { LlmSettings } from '../types';
 import { TranslateError, type TranslationEngine } from './types';
 
@@ -16,33 +17,84 @@ interface ChatMessage {
   content: string | ContentPart[];
 }
 
-export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
-  const base = llm.baseUrl.trim().replace(/\/+$/, '');
-  if (!base || !llm.model.trim()) throw new TranslateError('AI engine not configured', 'llm', false);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (llm.apiKey.trim()) headers.Authorization = `Bearer ${llm.apiKey.trim()}`;
-  let res: Response;
-  try {
-    res = await fetch(`${base}/chat/completions`, {
-      method: 'POST',
+interface RawResponse {
+  status: number;
+  text: string;
+}
+
+/**
+ * One HTTP call to the AI provider. The iPhone app goes through the phone's
+ * own network stack: providers that refuse calls from web pages (CORS, e.g.
+ * NVIDIA) still answer it. The web version uses fetch.
+ */
+async function call(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown, signal?: AbortSignal): Promise<RawResponse> {
+  if (Capacitor.isNativePlatform()) {
+    const res = await CapacitorHttp.request({
+      url,
+      method,
       headers,
-      signal,
-      body: JSON.stringify({ model: llm.model.trim(), temperature: 0.2, messages }),
+      data: body,
+      responseType: 'text',
+      connectTimeout: 20_000,
+      readTimeout: 180_000,
     });
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    return { status: res.status, text: typeof res.data === 'string' ? res.data : JSON.stringify(res.data) };
+  }
+  const res = await fetch(url, { method, headers, signal, body: body === undefined ? undefined : JSON.stringify(body) });
+  return { status: res.status, text: await res.text() };
+}
+
+function authHeaders(llm: LlmSettings): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (llm.apiKey.trim()) headers.Authorization = `Bearer ${llm.apiKey.trim()}`;
+  return headers;
+}
+
+function baseOf(llm: LlmSettings): string {
+  return llm.baseUrl.trim().replace(/\/+$/, '');
+}
+
+async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
+  let res: RawResponse;
+  try {
+    res = await call(method, `${baseOf(llm)}${path}`, authHeaders(llm), body, signal);
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw err;
-    throw new TranslateError(`AI endpoint unreachable (${(err as Error).message}). Check the URL and CORS.`, 'llm');
+    const hint = Capacitor.isNativePlatform()
+      ? 'Check the URL and the network.'
+      : 'Check the URL. If the provider refuses calls from web pages (CORS, e.g. NVIDIA), use the iPhone app.';
+    throw new TranslateError(`AI endpoint unreachable (${(err as Error).message}). ${hint}`, 'llm');
   }
-  if (!res.ok) {
-    let detail = '';
-    try {
-      detail = (await res.text()).slice(0, 300);
-    } catch {
-      /* ignore */
-    }
-    throw new TranslateError(`AI endpoint HTTP ${res.status} ${detail}`, 'llm', res.status === 429 || res.status >= 500);
+  if (res.status < 200 || res.status >= 300) {
+    throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
-  const data = (await res.json()) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
+  try {
+    return JSON.parse(res.text);
+  } catch {
+    throw new TranslateError('AI answer is not valid JSON', 'llm');
+  }
+}
+
+/** Models the key gives access to (OpenAI-compatible /models), sorted by name. */
+export async function listModels(llm: LlmSettings): Promise<string[]> {
+  if (!baseOf(llm)) throw new TranslateError('AI engine not configured', 'llm', false);
+  const data = (await request(llm, 'GET', '/models')) as { data?: { id?: string }[] };
+  return (data.data ?? [])
+    .map((m) => m.id ?? '')
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+  if (!baseOf(llm) || !llm.model.trim()) throw new TranslateError('AI engine not configured', 'llm', false);
+  const data = (await request(
+    llm,
+    'POST',
+    '/chat/completions',
+    { model: llm.model.trim(), temperature: 0.2, messages },
+    signal,
+  )) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
   const content = data.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((p) => p.text ?? '').join('');
@@ -112,11 +164,20 @@ export interface VisionBubble {
   translation: string;
 }
 
-const SYSTEM_VISION = `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
+function visionPrompt(order: 'yxyx' | 'xyxy'): string {
+  const box = order === 'xyxy' ? '[xmin, ymin, xmax, ymax]' : '[ymin, xmin, ymax, xmax]';
+  const key = order === 'xyxy' ? 'bbox_2d' : 'box_2d';
+  return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
 Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, sound effects, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers and credits.
-For each one give its bounding box as [ymin, xmin, ymax, xmax] normalised to 0-1000 (tight around the lettering), the exact original text, and a natural translation in the requested language.
+For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a natural translation in the requested language.
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
-Answer with JSON only: {"source_language":"<code>","bubbles":[{"box_2d":[ymin,xmin,ymax,xmax],"text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;
+Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;
+}
+
+/** Box order the configured provider is best at. */
+function boxOrderOf(llm: LlmSettings): 'yxyx' | 'xyxy' {
+  return LLM_PRESETS.find((p) => p.id === llm.preset)?.boxOrder ?? 'yxyx';
+}
 
 export async function visionTranslate(
   imageDataUrl: string,
@@ -124,11 +185,14 @@ export async function visionTranslate(
   target: string,
   signal?: AbortSignal,
   llm: LlmSettings = getSettings().llm,
+  /** Size of the image sent: models that answer in pixels are brought back to 0-1000. */
+  size?: { width: number; height: number },
 ): Promise<{ bubbles: VisionBubble[]; sourceLanguage?: string }> {
+  const order = boxOrderOf(llm);
   const answer = await chat(
     llm,
     [
-      { role: 'system', content: SYSTEM_VISION },
+      { role: 'system', content: visionPrompt(order) },
       {
         role: 'user',
         content: [
@@ -149,11 +213,25 @@ export async function visionTranslate(
   const list = Array.isArray(parsed) ? parsed : (parsed.bubbles ?? []);
   const sourceLanguage = Array.isArray(parsed) ? undefined : parsed.source_language;
   const out: VisionBubble[] = [];
+  const boxes: { box: number[]; xyxy: boolean; item: { text?: unknown; translation?: unknown } }[] = [];
   for (const raw of list) {
-    const item = raw as { box_2d?: unknown; box?: unknown; text?: unknown; translation?: unknown };
-    const box = (item.box_2d ?? item.box) as unknown;
+    const item = raw as { box_2d?: unknown; bbox_2d?: unknown; bbox?: unknown; box?: unknown; text?: unknown; translation?: unknown };
+    // The key tells the order when the model picked its own habit.
+    const xyxy = item.bbox_2d !== undefined || item.bbox !== undefined ? true : item.box_2d !== undefined ? false : order === 'xyxy';
+    const box = (item.box_2d ?? item.bbox_2d ?? item.bbox ?? item.box) as unknown;
     if (!Array.isArray(box) || box.length !== 4 || !box.every((v) => typeof v === 'number')) continue;
-    const [y0, x0, y1, x1] = box as number[];
+    boxes.push({ box: box as number[], xyxy, item });
+  }
+  // Coordinates above 1000 are pixels of the image sent.
+  const inPixels = size !== undefined && boxes.some((b) => b.box.some((v) => v > 1000));
+  for (const { box, xyxy, item } of boxes) {
+    let [y0, x0, y1, x1] = xyxy ? [box[1], box[0], box[3], box[2]] : box;
+    if (inPixels && size) {
+      y0 = (y0 / size.height) * 1000;
+      y1 = (y1 / size.height) * 1000;
+      x0 = (x0 / size.width) * 1000;
+      x1 = (x1 / size.width) * 1000;
+    }
     if (y1 <= y0 || x1 <= x0) continue;
     out.push({
       box: [y0, x0, y1, x1],

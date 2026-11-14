@@ -6,7 +6,7 @@ import { displayName } from '../lib/languages';
 import { clearAllPositions } from '../lib/progress';
 import { LLM_PRESETS, updateSettings, useSettings } from '../lib/settings';
 import { builtinAvailability, hasBuiltinTranslator } from '../lib/translate/chrome';
-import { testLlm } from '../lib/translate/llm';
+import { listModels, testLlm } from '../lib/translate/llm';
 import { clearLayoutCache } from '../lib/layout';
 import type { FontId, LetterCase, OcrEngine, ProviderId, ThemeId } from '../lib/types';
 import { Icon } from './Icon';
@@ -22,6 +22,25 @@ export function SettingsPage() {
   const [builtin, setBuiltin] = useState<string>('…');
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
+  const [models, setModels] = useState<string[] | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  const loadModels = async () => {
+    setModelsError(null);
+    try {
+      const list = await listModels(s.llm);
+      setModels(list);
+      if (list.length === 0) setModelsError(t('settings.llm.noModels'));
+    } catch (err) {
+      setModels(null);
+      setModelsError((err as Error).message);
+    }
+  };
+  // Vision models first: the AI OCR mode needs one.
+  const visionFirst = (list: string[]) => {
+    const vision = /(vl|vision|qwen3\.5|llama-4|gemma-3|phi-4-multimodal|pixtral|mistral-(large|medium)-3|kimi-k2\.5|nemotron.*vl)/i;
+    return [...list.filter((m) => vision.test(m)), ...list.filter((m) => !vision.test(m))];
+  };
   const preset = LLM_PRESETS.find((p) => p.id === s.llm.preset) ?? LLM_PRESETS[LLM_PRESETS.length - 1];
 
   const [persisted, setPersisted] = useState<boolean | null>(null);
@@ -202,7 +221,19 @@ export function SettingsPage() {
           <div className="two">
             <label className="field">
               <span>{t('settings.llm.model')}</span>
-              <input value={s.llm.model} spellCheck={false} onChange={(e) => updateSettings({ llm: { ...s.llm, model: e.target.value } })} />
+              <input
+                value={s.llm.model}
+                spellCheck={false}
+                list="llm-models"
+                onChange={(e) => updateSettings({ llm: { ...s.llm, model: e.target.value } })}
+              />
+              {models && (
+                <datalist id="llm-models">
+                  {visionFirst(models).map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              )}
             </label>
             <label className="field">
               <span>
@@ -229,9 +260,16 @@ export function SettingsPage() {
             <button className="btn" onClick={runTest} disabled={testing || !s.llm.baseUrl}>
               <Icon name="check" size={16} /> {t('common.test')}
             </button>
+            <button className="btn ghost" onClick={() => void loadModels()} disabled={!s.llm.baseUrl}>
+              {t('settings.llm.listModels')}
+            </button>
             {testing && <span className="muted small">{t('common.loading')}</span>}
             {test && <span className={`small ${test.ok ? 'ok' : 'error'}`}>{test.text}</span>}
           </div>
+          {models && models.length > 0 && (
+            <p className="muted small">{t('settings.llm.modelsFound', { n: models.length })}</p>
+          )}
+          {modelsError && <p className="small error">{modelsError}</p>}
         </section>
       )}
 

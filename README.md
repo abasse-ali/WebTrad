@@ -164,6 +164,10 @@ Dans *Réglages → Moteur de traduction → IA*, choisissez un fournisseur comp
 
 - **Google Gemini** – clé gratuite sur [aistudio.google.com/apikey](https://aistudio.google.com/apikey), lit aussi les
   images (mode OCR par IA) ;
+- **NVIDIA** – clé gratuite (« nvapi-… ») sur [build.nvidia.com](https://build.nvidia.com/settings/api-keys), avec
+  des modèles qui lisent les images (mode OCR par IA, onomatopées comprises) ; « Lister les modèles » montre ceux de
+  votre compte. Dans l’application iPhone, les appels passent par le réseau de l’iPhone ; sur le site web, NVIDIA
+  peut refuser les appels venant d’un navigateur (CORS) ;
 - **Groq**, **OpenRouter** (modèles `:free`) ;
 - **Ollama** / **LM Studio** en local (100 % hors ligne ; lancer Ollama avec `OLLAMA_ORIGINS=*`).
 
