@@ -183,7 +183,9 @@ La clé est enregistrée uniquement dans votre navigateur et n’est envoyée qu
 ## Limites connues
 
 - La qualité de l’OCR local est très bonne sur les webtoons/manhwa (texte horizontal net), correcte sur les mangas ;
-  les onomatopées dessinées à la main ne sont généralement pas lues.
+  les onomatopées dessinées à la main ne sont généralement pas lues. Sur les pages étroites (720 px), les bulles
+  sont lues agrandies et les bulles « pensée » à bord flou sur fond clair sont reconnues ; un mot d’une seule lettre
+  isolé (« I… ») reste souvent manqué : ajoutez une zone à la main ou utilisez le mode « OCR par IA ».
 - L’OCR local lit mal le texte peu contrasté sur le décor, très incliné (au-delà d’environ 15°) ou déformé : il
   reste alors tel quel. Le mode « OCR par IA » en trouve davantage ; une zone peut aussi être ajoutée à la main.
 - Le point d’accès Google Traduction utilisé est public mais non officiel ; en cas de limitation, WebTrad bascule sur

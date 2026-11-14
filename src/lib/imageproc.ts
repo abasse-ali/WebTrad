@@ -101,11 +101,30 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
         }
       }
     }
-    if (ink < 30 || ink > c.area * 0.6) continue;
+    // A few dozen ink pixels already make a short word ("I...") at small sizes.
+    if (ink < 6 || ink > c.area * 0.6) continue;
     const inkBox = { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 };
     // Text should sit well inside the bubble, not be a line hugging its border.
     if (inkBox.w < 6 || inkBox.h < 6) continue;
     regions.push({ x: c.x0, y: c.y0, w: c.x1 - c.x0 + 1, h, spans, area: c.area, inkBox, ink });
+  }
+  return regions;
+}
+
+/**
+ * Bubbles of every kind. Thought bubbles with a soft, grainy rim on a light
+ * background (pink, grey) blend into it at the usual threshold and come out
+ * as one huge rejected area: a stricter pass finds their pure-white inside.
+ */
+export function detectAllBubbles(px: Pixels): BubbleRegion[] {
+  const regions = detectBubbles(px);
+  const overlap = (a: Box, b: Box) => {
+    const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    return w > 0 && h > 0 ? (w * h) / Math.min(a.w * a.h, b.w * b.h) : 0;
+  };
+  for (const strict of detectBubbles(px, { bright: 240 })) {
+    if (!regions.some((r) => overlap(r, strict) > 0.5)) regions.push(strict);
   }
   return regions;
 }
@@ -297,7 +316,17 @@ export function sampleInk(px: Pixels, box: Box, background: string): InkInfo | n
     const edgeShare = (g: number[][]) => (g === dark ? darkEdge : lightEdge) / g[0].length;
     if (edgeShare(main) > edgeShare(other) * 1.5) [main, other] = [other, main];
   }
-  const rgb: [number, number, number] = [medianOf(main[0]), medianOf(main[1]), medianOf(main[2])];
+  // Small lettering is mostly anti-aliased edge: take the half of the pixels
+  // furthest from the background (the core of the strokes), not all of them.
+  const core = (g: number[][]): number[][] => {
+    const idx = g[0].map((_, i) => i);
+    const lum = (i: number) => (g[0][i] * 299 + g[1][i] * 587 + g[2][i] * 114) / 1000;
+    idx.sort((a, b) => Math.abs(lum(b) - bgLum) - Math.abs(lum(a) - bgLum));
+    const keep = idx.slice(0, Math.max(6, Math.ceil(idx.length / 2)));
+    return [keep.map((i) => g[0][i]), keep.map((i) => g[1][i]), keep.map((i) => g[2][i])];
+  };
+  const strokes = core(main);
+  const rgb: [number, number, number] = [medianOf(strokes[0]), medianOf(strokes[1]), medianOf(strokes[2])];
   const tones = [rgb];
   if (outlined) tones.push([medianOf(other[0]), medianOf(other[1]), medianOf(other[2])]);
   const lum = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000;
@@ -400,4 +429,105 @@ export function inpaintText(
     }
   }
   return { data: out, width: w, height: h };
+}
+
+/**
+ * Erases the lettering of a plain bubble without leaving its outline: inside
+ * `rect`, every pixel of the bubble interior that differs from the fill (the
+ * letters, their anti-aliasing, stray dots OCR boxes missed) is painted with
+ * the fill. Pixels outside the bubble shape are kept, so nothing sticks out
+ * of a round or grainy bubble. Returns the repaired crop of `rect`.
+ */
+export function cleanBubble(px: Pixels, region: BubbleRegion, rect: Box, fill: string): { pixels: Pixels; x: number; y: number } {
+  const color = parseHex(fill);
+  const x0 = Math.max(region.x, Math.floor(rect.x));
+  const y0 = Math.max(region.y, Math.floor(rect.y));
+  const x1 = Math.min(region.x + region.w, Math.ceil(rect.x + rect.w));
+  const y1 = Math.min(region.y + region.h, Math.ceil(rect.y + rect.h));
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+  const out = new Uint8ClampedArray(w * h * 4);
+  const mask = new Uint8Array(w * h);
+  const inside = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const r = y0 + y - region.y;
+    const minX = region.spans[r * 2];
+    const maxX = region.spans[r * 2 + 1];
+    for (let x = 0; x < w; x++) {
+      const si = ((y0 + y) * px.width + (x0 + x)) * 4;
+      const di = (y * w + x) * 4;
+      out[di] = px.data[si];
+      out[di + 1] = px.data[si + 1];
+      out[di + 2] = px.data[si + 2];
+      out[di + 3] = 255;
+      const ax = x0 + x;
+      // Two pixels away from the rim: the outline of the bubble stays.
+      if (minX < 0 || ax < minX + 2 || ax > maxX - 2) continue;
+      inside[y * w + x] = 1;
+      if (colorDistance(px.data, si, color) > 45) mask[y * w + x] = 1;
+    }
+  }
+  // One more pixel around each letter for the faint edge of anti-aliasing.
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (!inside[p] || mask[p] === 1) continue;
+      if ((x > 0 && mask[p - 1] === 1) || (x < w - 1 && mask[p + 1] === 1) || (y > 0 && mask[p - w] === 1) || (y < h - 1 && mask[p + w] === 1)) mask[p] = 2;
+    }
+  }
+  for (let p = 0; p < mask.length; p++) {
+    if (!mask[p]) continue;
+    out[p * 4] = color[0];
+    out[p * 4 + 1] = color[1];
+    out[p * 4 + 2] = color[2];
+  }
+  return { pixels: { data: out, width: w, height: h }, x: x0, y: y0 };
+}
+
+/**
+ * Tilt of the lettering inside a region, in degrees clockwise: the angle at
+ * which the ink pixels line up best in rows (projection profile). Does not
+ * depend on how the OCR cut the text into lines. 0 when there is too little ink.
+ */
+export function textSkew(px: Pixels, region: BubbleRegion, maxAngle = 25): number {
+  const { data, width: W } = px;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const { x: bx, y: by, w: bw, h: bh } = region.inkBox;
+  const step = Math.max(1, Math.round(Math.sqrt((bw * bh) / 20000)));
+  for (let y = by; y < by + bh; y += step) {
+    const r = y - region.y;
+    const minX = region.spans[r * 2];
+    const maxX = region.spans[r * 2 + 1];
+    if (minX < 0) continue;
+    for (let x = Math.max(bx, minX + 3); x < Math.min(bx + bw, maxX - 2); x += step) {
+      if (luminance(data, (y * W + x) * 4) < 140) {
+        xs.push(x - bx);
+        ys.push(y - by);
+      }
+    }
+  }
+  if (xs.length < 40) return 0;
+  const diag = Math.ceil(Math.hypot(bw, bh)) + 2;
+  const bins = new Float64Array(diag * 2);
+  let best = 0;
+  let bestScore = -1;
+  for (let a = -maxAngle; a <= maxAngle; a += 0.5) {
+    const t = (a * Math.PI) / 180;
+    const sin = Math.sin(t);
+    const cos = Math.cos(t);
+    bins.fill(0);
+    for (let i = 0; i < xs.length; i++) {
+      const v = Math.round(-xs[i] * sin + ys[i] * cos) + diag;
+      bins[v]++;
+    }
+    // Sharp rows (all the ink of a line in few bins) give a high sum of squares.
+    let score = 0;
+    for (let i = 0; i < bins.length; i++) score += bins[i] * bins[i];
+    if (score > bestScore + 1e-9 || (Math.abs(score - bestScore) < 1e-9 && Math.abs(a) < Math.abs(best))) {
+      bestScore = score;
+      best = a;
+    }
+  }
+  return best;
 }
