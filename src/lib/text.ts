@@ -75,6 +75,35 @@ export function fixCapsConfusions(text: string): string {
     .join(' ');
 }
 
+const STRAY_SYMBOL = /^[%&$§#*@+=~^|<>«»"“”'’`°_\\/[\](){}]+$/u;
+
+/**
+ * Removes what OCR makes of the specks of grainy or spiky bubble rims from
+ * text lettered in capitals: lone digits ("3 AND I…"), symbols ("% TISSUES"),
+ * a lone consonant, and lowercase debris before or after the text
+ * ("…THE EVENT. ki", "…OFF ME... fo Bene som").
+ */
+export function trimStrayTokens(text: string): string {
+  const letters = text.replace(/[^A-Za-z]/g, '');
+  const upper = letters.replace(/[^A-Z]/g, '').length;
+  const caps = letters.length >= 3 && upper / letters.length >= 0.8;
+  if (!caps) return text;
+  // Lone digits are debris, unless the text holds real numbers.
+  const numbers = (text.match(/\d{2,}/g) ?? []).length > 0;
+  let tokens = text.split(/\s+/).filter(Boolean);
+  tokens = tokens.filter((t) => {
+    if (STRAY_SYMBOL.test(t)) return false;
+    if (!numbers && /^\d[.,:;!?…]*$/.test(t)) return false;
+    if (/^[B-HJ-NP-Z]$/.test(t)) return false;
+    return true;
+  });
+  while (tokens.length && /[a-z]/.test(tokens[tokens.length - 1])) tokens.pop();
+  // A lone letter after the end of the sentence ("…AGAIN...? A") is a speck too.
+  if (tokens.length >= 2 && /^[A-Z]$/.test(tokens[tokens.length - 1]) && /[.!?…]$/.test(tokens[tokens.length - 2])) tokens.pop();
+  while (tokens.length && /[a-z]/.test(tokens[0])) tokens.shift();
+  return tokens.join(' ');
+}
+
 const INTERJECTION =
   /^(?:[A-Z]{1,2}-)*(?:H+M+|H+N+G*H*|M+|S+H+|P+S+T+|T+S+K+|B+R+|G+R+|Z+|A+R*G+H+|U+G+H+|N+G+H*|E+H+|A+H+|O+H+|U+H+|H+U+H+|H+A+H+|H+E+H+|O+W+|W+O+W+|O+U+C+H+|H+E+Y+|N+O+|I|A|O)$/;
 

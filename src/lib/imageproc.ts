@@ -130,7 +130,7 @@ export function detectAllBubbles(px: Pixels): BubbleRegion[] {
 }
 
 /** Copies a region to a new RGBA buffer, painting everything outside the bubble white. */
-export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels: Pixels; x: number; y: number } {
+export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels: Pixels; x: number; y: number; ink: Box | null } {
   const x0 = Math.max(0, region.x - pad);
   const y0 = Math.max(0, region.y - pad);
   const x1 = Math.min(px.width, region.x + region.w + pad);
@@ -138,15 +138,41 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
   const w = x1 - x0;
   const h = y1 - y0;
   const out = new Uint8ClampedArray(w * h * 4).fill(255);
+  // The inner edge of the bubble is left white: the specks of grainy or spiky
+  // rims were read as stray characters ("3 AND I SHOULD… &", "% TISSUES").
+  const bandX = Math.max(3, Math.round(region.w * 0.07));
+  const bandY = Math.max(3, Math.round(region.h * 0.07));
+  // Ink left once the rim is blanked: the lettering alone.
+  let ix0 = Infinity, iy0 = Infinity, ix1 = -1, iy1 = -1;
+  const top = new Int32Array(region.w).fill(-1);
+  const bottom = new Int32Array(region.w).fill(-1);
+  for (let r = 0; r < region.h; r++) {
+    const minX = region.spans[r * 2];
+    const maxX = region.spans[r * 2 + 1];
+    if (minX < 0) continue;
+    for (let x = minX; x <= maxX; x++) {
+      const c = x - region.x;
+      if (top[c] < 0) top[c] = r;
+      bottom[c] = r;
+    }
+  }
   for (let y = y0; y < y1; y++) {
     const r = y - region.y;
     if (r < 0 || r >= region.h) continue;
     const minX = region.spans[r * 2];
     const maxX = region.spans[r * 2 + 1];
     if (minX < 0) continue;
-    const from = Math.max(minX, x0);
-    const to = Math.min(maxX, x1 - 1);
+    const from = Math.max(minX + bandX, x0);
+    const to = Math.min(maxX - bandX, x1 - 1);
     for (let x = from; x <= to; x++) {
+      const c = x - region.x;
+      if (r < top[c] + bandY || r > bottom[c] - bandY) continue;
+      if (luminance(px.data, (y * px.width + x) * 4) < 128) {
+        if (x < ix0) ix0 = x;
+        if (x > ix1) ix1 = x;
+        if (y < iy0) iy0 = y;
+        if (y > iy1) iy1 = y;
+      }
       const si = (y * px.width + x) * 4;
       const di = ((y - y0) * w + (x - x0)) * 4;
       out[di] = px.data[si];
@@ -154,7 +180,8 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
       out[di + 2] = px.data[si + 2];
     }
   }
-  return { pixels: { data: out, width: w, height: h }, x: x0, y: y0 };
+  const ink = ix1 >= 0 ? { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 } : null;
+  return { pixels: { data: out, width: w, height: h }, x: x0, y: y0, ink };
 }
 
 /** Largest axis-aligned rectangle centred on (cx, cy) that stays inside the bubble. */
@@ -530,4 +557,33 @@ export function textSkew(px: Pixels, region: BubbleRegion, maxAngle = 25): numbe
     }
   }
   return best;
+}
+
+/**
+ * Colour inside a bubble, away from its rim and its text: the median of the
+ * region's own pixels. Sampling around the text box instead picked the grey
+ * of a grainy rim whenever the text came close to it.
+ */
+export function regionFill(px: Pixels, region: BubbleRegion): string {
+  const { data, width: W } = px;
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  const step = Math.max(1, Math.round(Math.sqrt(region.area / 4000)));
+  const band = Math.max(3, Math.round(Math.min(region.w, region.h) * 0.1));
+  for (let r = band; r < region.h - band; r += step) {
+    const minX = region.spans[r * 2];
+    const maxX = region.spans[r * 2 + 1];
+    if (minX < 0) continue;
+    for (let x = minX + band; x <= maxX - band; x += step) {
+      const i = ((region.y + r) * W + x) * 4;
+      // Bright pixels only: the bubble itself, not its lettering.
+      if (luminance(data, i) < 150) continue;
+      rs.push(data[i]);
+      gs.push(data[i + 1]);
+      bs.push(data[i + 2]);
+    }
+  }
+  if (rs.length === 0) return '#ffffff';
+  return toHex([medianOf(rs), medianOf(gs), medianOf(bs)]);
 }

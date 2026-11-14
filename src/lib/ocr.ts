@@ -5,6 +5,7 @@ import {
   detectAllBubbles,
   innerBox,
   parseHex,
+  regionFill,
   textSkew,
   inpaintText,
   maskedCrop,
@@ -24,6 +25,7 @@ import {
   isLikelyLettering,
   isMeaningful,
   isNoiseBlock,
+  trimStrayTokens,
   joinLines,
   plausibility,
   scriptLetters,
@@ -235,9 +237,11 @@ async function recognizeBlock(
     );
     const weight = lines.reduce((s, l) => s + l.text.length, 0) || 1;
     const confidence = lines.reduce((s, l) => s + l.confidence * l.text.length, 0) / weight;
-    const lettering = lenient && isLatin(rules) && confidence >= 55 && isLikelyLettering(text);
-    if (!lettering && isNoiseBlock(text, confidence, rules)) continue;
-    const candidate = { text, confidence, lines, vertical: mode.vertical };
+    const text2 = lenient && isLatin(rules) ? trimStrayTokens(text) : text;
+    if (!text2) continue;
+    const lettering = lenient && isLatin(rules) && confidence >= 55 && isLikelyLettering(text2);
+    if (!lettering && isNoiseBlock(text2, confidence, rules)) continue;
+    const candidate = { text: text2, confidence, lines, vertical: mode.vertical };
     if (!best || candidate.confidence > best.confidence) best = candidate;
     if (confidence >= 75) break;
   }
@@ -290,6 +294,14 @@ function alignOf(lines: RawLine[], vertical: boolean): 'left' | 'right' | undefi
   if (left < width * 0.06 && right > width * 0.2) return 'left';
   if (right < width * 0.06 && left > width * 0.2) return 'right';
   return undefined;
+}
+
+function contrastOf(a: string, b: string): number {
+  const lum = (hex: string) => {
+    const [r, g, bl] = parseHex(hex);
+    return (r * 299 + g * 587 + bl * 114) / 1000;
+  };
+  return Math.abs(lum(a) - lum(b));
 }
 
 export interface TextLook {
@@ -412,14 +424,16 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
     const readArea = readBox.w * readBox.h;
     // A short line in a big bubble is still a bubble: round or boxy shape,
     // and no ink inside it beyond what was read.
-    const inkArea = (region.inkBox.w / scale) * (region.inkBox.h / scale);
+    // The lettering's own ink: the specks of a grainy or spiky rim do not count.
+    const letterInk = crop.ink ?? region.inkBox;
+    const inkArea = (letterInk.w / scale) * (letterInk.h / scale);
     const roundish = region.area >= region.w * region.h * 0.6;
     const isBubble = regionArea <= readArea * 12 || (roundish && inkArea <= readArea * 4 + (fontSizeOf(res.lines, res.vertical) * 3) ** 2);
     // Erase the dark pixels right around the text too (OCR boxes miss
     // periods, dots, accents…) but never the artwork further away.
     const margin = Math.max(6, fontSize * 0.8);
     const ink = intersect(
-      { x: region.inkBox.x / scale, y: region.inkBox.y / scale, w: region.inkBox.w / scale, h: region.inkBox.h / scale },
+      { x: letterInk.x / scale, y: letterInk.y / scale, w: letterInk.w / scale, h: letterInk.h / scale },
       { x: readBox.x - margin, y: readBox.y - margin, w: readBox.w + margin * 2, h: readBox.h + margin * 2 },
     );
     // Measured on the ink itself: OCR boxes of enlarged, tilted text are cut
@@ -455,6 +469,8 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
     // A big bright region holding artwork is treated like text over artwork.
     const look = lookOfText(px, box, scale, fontSize, flat, rotation);
     if (flat) {
+      look.fill = regionFill(px, region);
+      if (look.color && contrastOf(look.color, look.fill) < 80) look.color = undefined;
       // Erase within the bubble's own shape: every stray letter goes, the
       // outline stays, and nothing square sticks out of a round bubble.
       const pad = Math.max(2, fontSize * 0.5) * scale;
