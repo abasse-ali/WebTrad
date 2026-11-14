@@ -418,6 +418,96 @@ textarea {
   flex-wrap: wrap;
   margin-top: 16px;
 }
+.quick-link {
+  display: flex;
+  gap: 8px;
+  flex: 1 1 100%;
+  max-width: 640px;
+}
+.quick-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.quick-field:focus-within {
+  border-color: var(--accent);
+}
+.quick-field > svg {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.quick-field input {
+  border: none;
+  background: transparent;
+  padding: 10px 4px;
+  outline: none;
+}
+.quick-field input:focus {
+  outline: none;
+}
+.quick-link .btn.primary {
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+.quick-status {
+  position: fixed;
+  z-index: 70;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 24px));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 16px;
+  border-radius: 16px;
+  background: #1f1d27;
+  color: #f1eff8;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  font-size: 0.9rem;
+  --surface: #2a2735;
+  --surface-2: #34313f;
+  --border: #423e52;
+  --text: #f1eff8;
+  animation: rise-toast 0.18s ease-out;
+}
+.quick-status.error {
+  background: #3a1520;
+}
+.quick-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.spinner {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes rise-toast {
+  from {
+    transform: translate(-50%, 20px);
+    opacity: 0;
+  }
+}
+
 .btn.resume {
   padding-top: 9px;
   padding-bottom: 9px;

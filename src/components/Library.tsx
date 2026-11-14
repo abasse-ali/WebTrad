@@ -8,6 +8,7 @@ import { clearPosition, getLastRead, loadPosition } from '../lib/progress';
 import { useSettings } from '../lib/settings';
 import type { Chapter } from '../lib/types';
 import { Icon } from './Icon';
+import { QuickLink } from './QuickImport';
 
 type Sort = 'recent' | 'title';
 const SORT_KEY = 'webtrad.librarySort';
@@ -78,8 +79,9 @@ export function Library({ onNew }: { onNew: () => void }) {
           <h1>{t('hero.title')}</h1>
           {!hasChapters && <p>{t('hero.text')}</p>}
           <div className="hero-actions">
-            <button className="btn primary big" onClick={onNew}>
-              <Icon name="plus" /> {t('hero.cta')}
+            <QuickLink />
+            <button className="btn ghost" onClick={onNew}>
+              <Icon name="image" size={18} /> {t('quick.files')}
             </button>
             {resume && (
               <a className="btn big resume" href={`#/read/${encodeURIComponent(resume.id)}`}>

@@ -4,6 +4,7 @@ import { useSettings } from './lib/settings';
 import { navigate, useRoute } from './router';
 import { Icon } from './components/Icon';
 import { Library } from './components/Library';
+import { QuickStatus } from './components/QuickImport';
 import { NewChapter } from './components/NewChapter';
 import { Reader } from './components/Reader';
 import { SettingsPage } from './components/SettingsPage';
@@ -24,7 +25,14 @@ export function App() {
     window.scrollTo(0, 0);
   }, [screen]);
 
-  if (route.name === 'reader') return <Reader key={route.id} id={route.id} />;
+  if (route.name === 'reader') {
+    return (
+      <>
+        <Reader key={route.id} id={route.id} />
+        <QuickStatus />
+      </>
+    );
+  }
 
   return (
     <div className="app">
@@ -55,6 +63,7 @@ export function App() {
         {route.name === 'new' && <NewChapter key={route.key} initialUrl={route.url} handoff={route.handoff} />}
         {route.name === 'settings' && <SettingsPage />}
       </main>
+      <QuickStatus />
       <footer className="footer">
         <span>WebTrad · {t('common.free')} · open source</span>
       </footer>
