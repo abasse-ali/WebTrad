@@ -52,7 +52,7 @@ export function App() {
       </header>
       <main className="content">
         {route.name === 'library' && <Library onNew={() => navigate('/new')} />}
-        {route.name === 'new' && <NewChapter key={route.url ?? ''} initialUrl={route.url} />}
+        {route.name === 'new' && <NewChapter key={route.key} initialUrl={route.url} handoff={route.handoff} />}
         {route.name === 'settings' && <SettingsPage />}
       </main>
       <footer className="footer">

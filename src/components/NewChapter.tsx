@@ -5,10 +5,14 @@ import {
   createChapter,
   filesToImages,
   guessTitle,
+  importFromHandoff,
   isImageUrl,
   urlsToImages,
   type ImportedImage,
+  type PageHandoff,
+  type UrlImportResult,
 } from '../lib/importers';
+import { bookmarkletCode, currentAppUrl } from '../lib/bookmarklet';
 import { startChapter } from '../lib/pipeline';
 import { getSettings, updateSettings, useSettings } from '../lib/settings';
 import { warmUpTranslator } from '../lib/translate';
@@ -33,15 +37,18 @@ function Thumb({ image, onRemove, label }: { image: ImportedImage; onRemove: () 
   );
 }
 
-export function NewChapter({ initialUrl }: { initialUrl?: string }) {
+export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; handoff?: PageHandoff }) {
   const t = useT();
   const settings = useSettings();
-  const [tab, setTab] = useState<'files' | 'urls'>(initialUrl ? 'urls' : 'files');
+  const [tab, setTab] = useState<'files' | 'urls'>(initialUrl || handoff ? 'urls' : 'files');
   const [images, setImages] = useState<ImportedImage[]>([]);
   const [title, setTitle] = useState('');
   const [source, setSource] = useState(settings.sourceLang);
   const [target, setTarget] = useState(settings.targetLang);
-  const [urls, setUrls] = useState(initialUrl ?? '');
+  // Images sent by the bookmark stay listed: on an iPhone they can be copied into the home-screen app.
+  const [urls, setUrls] = useState(initialUrl ?? handoff?.images.join('\n') ?? '');
+  /** The website turns away automatic readers: show the bookmark that works around it. */
+  const [blockedUrl, setBlockedUrl] = useState<string | null>(null);
   /** Chapter page the images came from, and the chapter it links to as "next". */
   const [link, setLink] = useState<{ origin?: string; next?: string }>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -87,35 +94,31 @@ export function NewChapter({ initialUrl }: { initialUrl?: string }) {
 
   const abort = useRef<AbortController | null>(null);
 
-  const fetchUrls = async (text = urls) => {
-    const lines = text.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
-    if (lines.length === 0) return;
+  /** Runs one link import and adds what it found. */
+  const runImport = async (load: (signal: AbortSignal) => Promise<UrlImportResult>, page: string | undefined, fallbackTitle: string, auto: boolean) => {
     setError(null);
+    setBlockedUrl(null);
     setBusy(t('new.readingPage'));
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
     try {
-      const found = await urlsToImages(
-        lines,
-        getSettings().corsProxy,
-        (done, total) => setBusy(t('new.fetching', { done, total })),
-        controller.signal,
-        () => setBusy(t('new.readingPage')),
-      );
+      const found = await load(controller.signal);
       if (controller.signal.aborted) return;
       if (found.images.length === 0) setError(t('new.noImages'));
       setImages((prev) => [...prev, ...found.images]);
-      setTitle((prev) => prev || found.title || guessTitle(lines[0]));
-      const page = lines.find((l) => !isImageUrl(l));
+      setTitle((prev) => prev || found.title || fallbackTitle);
       if (found.images.length > 0 && page) setLink((prev) => ({ origin: prev.origin ?? page, next: found.nextUrl ?? prev.next }));
       // Opened on a link: everything is ready, show the button that starts the translation.
-      if (found.images.length > 0 && text === initialUrl) {
+      if (found.images.length > 0 && auto) {
         requestAnimationFrame(() => startButton.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
       }
     } catch (err) {
       if (controller.signal.aborted) return;
-      if (err instanceof ImportError) {
+      if (err instanceof ImportError && err.code === 'PAGE_BLOCKED') {
+        setBlockedUrl(err.url);
+        setError(t('new.pageBlocked', { host: hostOf(err.url) }));
+      } else if (err instanceof ImportError) {
         setError(t(err.code === 'PAGE_UNREACHABLE' ? 'new.pageUnreachable' : 'new.imageUnreachable', { url: err.url }));
       } else {
         setError(t('error.generic', { message: (err as Error).message }));
@@ -125,10 +128,31 @@ export function NewChapter({ initialUrl }: { initialUrl?: string }) {
     }
   };
 
-  // Opened on a chapter link ("import the next chapter"): fetch it right away.
-  // Downloads still running when the screen is left are dropped.
+  const onProgress = (done: number, total: number) => setBusy(t('new.fetching', { done, total }));
+
+  const fetchUrls = (text = urls, auto = false) => {
+    const lines = text.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
+    if (lines.length === 0) return;
+    return runImport(
+      (signal) => urlsToImages(lines, getSettings().corsProxy, onProgress, signal, () => setBusy(t('new.readingPage'))),
+      lines.find((l) => !isImageUrl(l)),
+      guessTitle(lines[0]),
+      auto,
+    );
+  };
+
+  // Opened on a chapter link ("import the next chapter") or by the WebTrad
+  // bookmark: fetch right away. Downloads still running when the screen is
+  // left are dropped.
   useEffect(() => {
-    if (initialUrl) void fetchUrls(initialUrl);
+    if (handoff) {
+      void runImport(
+        (signal) => importFromHandoff(handoff, getSettings().corsProxy, onProgress, signal),
+        handoff.page,
+        handoff.page ? guessTitle(handoff.page) : '',
+        true,
+      );
+    } else if (initialUrl) void fetchUrls(initialUrl, true);
     return () => abort.current?.abort();
   }, []);
 
@@ -256,6 +280,7 @@ export function NewChapter({ initialUrl }: { initialUrl?: string }) {
           {error}
         </p>
       )}
+      {tab === 'urls' && <BookmarkHelp open={blockedUrl !== null} pageUrl={blockedUrl} />}
 
       {images.length > 0 && (
         <section className="selection">
@@ -308,5 +333,68 @@ export function NewChapter({ initialUrl }: { initialUrl?: string }) {
         </button>
       </section>
     </div>
+  );
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+/** How to import from a website that turns away automatic readers: the WebTrad bookmark. */
+function BookmarkHelp({ open, pageUrl }: { open: boolean; pageUrl: string | null }) {
+  const t = useT();
+  const code = useMemo(() => bookmarkletCode(currentAppUrl()), []);
+  const link = useRef<HTMLAnchorElement>(null);
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(open);
+  useEffect(() => {
+    if (open) setExpanded(true);
+  }, [open]);
+  // React refuses "javascript:" links in JSX: the address is set by hand.
+  useEffect(() => {
+    link.current?.setAttribute('href', code);
+  }, [code, expanded]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+    } catch {
+      window.prompt(t('bookmark.copyPrompt'), code);
+    }
+  };
+
+  return (
+    <details className="bookmark-help" open={expanded} onToggle={(e) => setExpanded((e.target as HTMLDetailsElement).open)}>
+      <summary>{t('bookmark.title')}</summary>
+      <p>{t('bookmark.intro')}</p>
+      {pageUrl && (
+        <p>
+          <a className="btn small" href={pageUrl} target="_blank" rel="noreferrer">
+            <Icon name="link" size={14} /> {t('bookmark.openPage', { host: hostOf(pageUrl) })}
+          </a>
+        </p>
+      )}
+      <div className="row gap">
+        <a ref={link} className="btn primary small bookmarklet" onClick={(e) => e.preventDefault()} draggable>
+          <Icon name="download" size={14} /> WebTrad
+        </a>
+        <button className="btn small" onClick={() => void copy()}>
+          <Icon name={copied ? 'check' : 'link'} size={14} /> {copied ? t('bookmark.copied') : t('bookmark.copy')}
+        </button>
+      </div>
+      <p className="muted small">{t('bookmark.desktop')}</p>
+      <ol className="small">
+        <li>{t('bookmark.ios.1')}</li>
+        <li>{t('bookmark.ios.2')}</li>
+        <li>{t('bookmark.ios.3')}</li>
+        <li>{t('bookmark.ios.4')}</li>
+      </ol>
+      <p className="muted small">{t('bookmark.pwa')}</p>
+    </details>
   );
 }
