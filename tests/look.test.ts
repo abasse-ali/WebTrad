@@ -115,3 +115,21 @@ describe('textSkew', () => {
     }
   });
 });
+
+describe('trimStrayTokens', () => {
+  it('drops what rim specks become', async () => {
+    const { trimStrayTokens } = await import('../src/lib/text');
+    expect(trimStrayTokens('4 MISSED THE EVENT. ki')).toBe('MISSED THE EVENT.');
+    expect(trimStrayTokens('3 AND I SHOULD HAVE & NO PROBLEM PUSHING HIM OFF ME... fo Bene som')).toBe(
+      'AND I SHOULD HAVE NO PROBLEM PUSHING HIM OFF ME...',
+    );
+    expect(trimStrayTokens('WHERE WERE THE % TISSUES AGAIN...? »')).toBe('WHERE WERE THE TISSUES AGAIN...?');
+    expect(trimStrayTokens('THIS IS SO 3 HUMILIATING... A')).toBe('THIS IS SO HUMILIATING...');
+  });
+  it('keeps real numbers, words and mixed-case text', async () => {
+    const { trimStrayTokens } = await import('../src/lib/text');
+    expect(trimStrayTokens('I SCORED 120 POINTS IN 3 GAMES!')).toBe('I SCORED 120 POINTS IN 3 GAMES!');
+    expect(trimStrayTokens('I... A CAT?')).toBe('I... A CAT?');
+    expect(trimStrayTokens('Where were the tissues 3')).toBe('Where were the tissues 3');
+  });
+});
