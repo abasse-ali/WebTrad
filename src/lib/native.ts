@@ -15,7 +15,7 @@ interface BrowserPage {
 }
 
 interface WebTradBrowserPlugin {
-  open(options: { url?: string; labels: Record<string, string> }): Promise<BrowserPage>;
+  open(options: { url?: string; labels: Record<string, string>; auto?: boolean }): Promise<BrowserPage>;
   download(options: { urls: string[]; referer?: string }): Promise<{ files: { url: string; path: string }[]; failed: number }>;
   addListener(event: 'progress', listener: (e: { done: number; total: number }) => void): Promise<PluginListenerHandle>;
 }
@@ -39,8 +39,9 @@ export async function importFromBrowser(
   url: string | undefined,
   labels: Record<string, string>,
   onProgress?: (done: number, total: number) => void,
+  auto = false,
 ): Promise<BrowserImport | null> {
-  const found = await WebTradBrowser.open({ url, labels });
+  const found = await WebTradBrowser.open({ url, labels, auto });
   if (found.cancelled || !found.images?.length) return null;
   const urls = pickChapterImages(found.images);
   onProgress?.(0, urls.length);

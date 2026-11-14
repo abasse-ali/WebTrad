@@ -13,7 +13,10 @@ import WebKit
  * session (cookies, user agent, referer), as the page itself would.
  *
  * JavaScript API (src/lib/native.ts):
- *   open({ url?, labels }) -> { cancelled: true } | { images, title, page, next }
+ *   open({ url?, labels, auto? }) -> { cancelled: true } | { images, title, page, next }
+ *     auto: the page is opened behind a progress card and its images are taken
+ *     as soon as they show up (paste a link and read). The browser itself only
+ *     appears when the website asks for a check the reader has to tap.
  *   download({ urls, referer }) -> { files: [{ url, path }], failed }
  *   event "progress" { done, total } while downloading
  */
@@ -31,6 +34,7 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func open(_ call: CAPPluginCall) {
         let start = call.getString("url").flatMap { URL(string: $0) }
+        let auto = call.getBool("auto") ?? false
         var labels: [String: String] = [:]
         for (key, value) in call.getObject("labels") ?? [:] {
             if let text = value as? String { labels[key] = text }
@@ -40,7 +44,7 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("No view controller")
                 return
             }
-            let browser = BrowserViewController(start: start, labels: labels) { [weak self] result, agent in
+            let browser = BrowserViewController(start: start, labels: labels, auto: auto && start != nil) { [weak self] result, agent in
                 if let agent = agent { self?.userAgent = agent }
                 if let result = result {
                     call.resolve(result)
@@ -149,6 +153,13 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
 
     private let start: URL?
     private let labels: [String: String]
+    /// Waiting for the images on its own (see `probe`).
+    private var auto: Bool
+    private var probing = false
+    private var probeTimer: Timer?
+    private var giveUpTimer: Timer?
+    private let overlay = UIView()
+    private let overlayLabel = UILabel()
     private let completion: ([String: Any]?, String?) -> Void
     private var finished = false
 
@@ -160,9 +171,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private var forwardItem: UIBarButtonItem!
     private var grabItem: UIBarButtonItem!
 
-    init(start: URL?, labels: [String: String], completion: @escaping ([String: Any]?, String?) -> Void) {
+    init(start: URL?, labels: [String: String], auto: Bool, completion: @escaping ([String: Any]?, String?) -> Void) {
         self.start = start
         self.labels = labels
+        self.auto = auto
         self.completion = completion
         super.init(nibName: nil, bundle: nil)
     }
@@ -229,12 +241,81 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         navigationController?.isToolbarHidden = false
         updateButtons()
 
+        if auto { setUpOverlay() }
+
         let saved = UserDefaults.standard.string(forKey: Self.lastUrlKey).flatMap { URL(string: $0) }
         if let url = start ?? saved {
             webView.load(URLRequest(url: url))
             address.text = url.absoluteString
         } else {
             address.becomeFirstResponder()
+        }
+    }
+
+    // MARK: automatic mode
+
+    private func setUpOverlay() {
+        overlay.backgroundColor = .systemBackground
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        let spinner = UIActivityIndicatorView(style: .large)
+        spinner.startAnimating()
+        overlayLabel.text = label("loading", "Opening the chapter…")
+        overlayLabel.textAlignment = .center
+        overlayLabel.numberOfLines = 0
+        overlayLabel.font = .preferredFont(forTextStyle: .headline)
+        let show = UIButton(type: .system)
+        show.setTitle(label("showPage", "Show the page"), for: .normal)
+        show.addTarget(self, action: #selector(showPage), for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [spinner, overlayLabel, show])
+        stack.axis = .vertical
+        stack.spacing = 18
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        overlay.addSubview(stack)
+        view.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 32),
+            stack.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -32)
+        ])
+        // Regular checks: lazy pages and anti-bot redirects finish loading late.
+        probeTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.probe() }
+        // Still nothing: the website probably wants a tap (check box, consent…).
+        giveUpTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            self?.stopAuto(message: self?.label("manual", "Finish opening the chapter, then tap “Get pages”."))
+        }
+    }
+
+    @objc private func showPage() {
+        stopAuto(message: label("manual", "Finish opening the chapter, then tap “Get pages”."))
+    }
+
+    private func stopAuto(message: String?) {
+        guard auto else { return }
+        auto = false
+        probeTimer?.invalidate()
+        giveUpTimer?.invalidate()
+        UIView.animate(withDuration: 0.25, animations: { self.overlay.alpha = 0 }, completion: { _ in self.overlay.removeFromSuperview() })
+        navigationItem.prompt = message
+    }
+
+    /// Looks for the chapter images; takes them once the page clearly holds a chapter.
+    private func probe() {
+        guard auto, !probing, !finished, !webView.isLoading else { return }
+        probing = true
+        collect { [weak self] found in
+            guard let self = self else { return }
+            self.probing = false
+            guard self.auto, let found = found else { return }
+            if found["blocked"] as? Bool == true {
+                self.overlayLabel.text = self.label("checking", "The website is checking the browser…")
+                return
+            }
+            if found["ready"] as? Bool == true { self.finish(found) }
         }
     }
 
@@ -259,6 +340,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private func finish(_ result: [String: Any]?) {
         guard !finished else { return }
         finished = true
+        probeTimer?.invalidate()
+        giveUpTimer?.invalidate()
         webView.evaluateJavaScript("navigator.userAgent") { [weak self] value, _ in
             guard let self = self else { return }
             let agent = value as? String
@@ -301,20 +384,33 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         /(^|[\\s_-])next/i.test(a.className + ' ' + a.id) ||
         /^\\s*(next|suivant|chapitre suivant|next chapter|다음|次|下一)/i.test(a.textContent || ''));
     const next = nx && /^https?:/.test(nx.href) ? nx.href : '';
-    return JSON.stringify({ images, title: document.title, page: location.href, next });
+    // A chapter: at least 3 images in one folder (logos and ads live elsewhere).
+    const folders = {};
+    for (const u of images) { const f = u.slice(0, u.lastIndexOf('/') + 1); folders[f] = (folders[f] || 0) + 1; }
+    const ready = Object.values(folders).some((n) => n >= 3);
+    const blocked = /^(just a moment|attention required|access denied|checking your browser|ddos-guard)/i.test(document.title.trim());
+    return JSON.stringify({ images, title: document.title, page: location.href, next, ready, blocked });
     """
 
-    @objc private func grab() {
-        grabItem.isEnabled = false
-        grabItem.title = label("collecting", "Reading the page…")
-        webView.callAsyncJavaScript(Self.collector, arguments: [:], in: nil, in: .page) { [weak self] result in
-            guard let self = self else { return }
-            self.grabItem.isEnabled = true
-            self.grabItem.title = self.label("grab", "Get pages")
+    /// Runs the collector in the page and returns what it found.
+    private func collect(_ done: @escaping ([String: Any]?) -> Void) {
+        webView.callAsyncJavaScript(Self.collector, arguments: [:], in: nil, in: .page) { result in
             var found: [String: Any]?
             if case .success(let value) = result, let json = value as? String, let data = json.data(using: .utf8) {
                 found = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             }
+            done(found)
+        }
+    }
+
+    @objc private func grab() {
+        stopAuto(message: nil)
+        grabItem.isEnabled = false
+        grabItem.title = label("collecting", "Reading the page…")
+        collect { [weak self] found in
+            guard let self = self else { return }
+            self.grabItem.isEnabled = true
+            self.grabItem.title = self.label("grab", "Get pages")
             let images = found?["images"] as? [String] ?? []
             if images.isEmpty {
                 let alert = UIAlertController(title: nil, message: self.label("noImages", "No image found on this page."), preferredStyle: .alert)
@@ -363,6 +459,9 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         updateButtons()
+        if auto {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.probe() }
+        }
         if let url = webView.url, url.scheme == "https" || url.scheme == "http" {
             UserDefaults.standard.set(url.absoluteString, forKey: Self.lastUrlKey)
         }

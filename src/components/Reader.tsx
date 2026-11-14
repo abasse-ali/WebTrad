@@ -10,6 +10,7 @@ import { ocrRegion } from '../lib/ocr';
 import { cancelChapter, startChapter, stopChapter, translateBubbles, useJob } from '../lib/pipeline';
 import { clearPosition, loadPosition, savePosition, setLastRead, type ReadingPosition } from '../lib/progress';
 import { guessNextUrl, neighbours } from '../lib/series';
+import { quickImport } from '../lib/quick';
 import { useSettings } from '../lib/settings';
 import type { Box } from '../lib/text';
 import type { Bubble, Chapter, Page, ReaderMode } from '../lib/types';
@@ -559,8 +560,9 @@ export function Reader({ id }: { id: string }) {
                   ? t('reader.queued')
                   : job.phase === 'detect'
                     ? t('reader.phase.detect')
-                    : job.phase === 'download' && job.message
-                      ? `${t('reader.phase.download')} · ${job.message}`
+                    : job.phase === 'download'
+                      ? // Raw OCR engine messages ("loading tesseract core") mean nothing to a reader.
+                        `${t('reader.phase.download')}${job.message?.match(/\d+%/) ? ` · ${job.message.match(/\d+%/)![0]}` : '…'}`
                       : t('reader.progress', {
                           page: (job.pageIndex ?? 0) + 1,
                           phase: t(phaseKey[job.phase] ?? 'reader.phase.ocr'),
@@ -623,7 +625,15 @@ export function Reader({ id }: { id: string }) {
                 </a>
               )}
               {nextImport && (
-                <a className="btn primary big" href={`#/new?url=${encodeURIComponent(nextImport)}`}>
+                <a
+                  className="btn primary big"
+                  href={`#/new?url=${encodeURIComponent(nextImport)}`}
+                  onClick={(e) => {
+                    // Like a reading app: straight to the next chapter, translated as it opens.
+                    e.preventDefault();
+                    void quickImport(nextImport);
+                  }}
+                >
                   <Icon name="download" />
                   <span className="stack">
                     <span>{t('reader.end.import')}</span>

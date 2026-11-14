@@ -14,6 +14,7 @@ import {
 } from '../lib/importers';
 import { bookmarkletCode, currentAppUrl } from '../lib/bookmarklet';
 import { importFromBrowser, isNativeApp } from '../lib/native';
+import { browserLabels, isKnownBlocked, rememberBlocked } from '../lib/quick';
 import { startChapter } from '../lib/pipeline';
 import { getSettings, updateSettings, useSettings } from '../lib/settings';
 import { warmUpTranslator } from '../lib/translate';
@@ -149,17 +150,7 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
     runImport(
       () => {
         setBusy(t('browser.opened'));
-        return importFromBrowser(
-          url,
-          {
-            grab: t('browser.grab'),
-            close: t('common.close'),
-            address: t('browser.address'),
-            collecting: t('browser.collecting'),
-            noImages: t('new.noImages'),
-          },
-          onProgress,
-        );
+        return importFromBrowser(url, browserLabels(t), onProgress, Boolean(url));
       },
       url,
       url ? guessTitle(url) : '',
@@ -450,32 +441,3 @@ function BookmarkHelp({ open, pageUrl }: { open: boolean; pageUrl: string | null
   );
 }
 
-const BLOCKED_KEY = 'webtrad.blockedHosts';
-
-function blockedHosts(): string[] {
-  try {
-    const list = JSON.parse(localStorage.getItem(BLOCKED_KEY) ?? '[]') as unknown;
-    return Array.isArray(list) ? list.filter((h): h is string => typeof h === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-/** Websites that turned the relays away once will do it again. */
-function rememberBlocked(url: string): void {
-  try {
-    const host = new URL(url).hostname;
-    const list = blockedHosts().filter((h) => h !== host);
-    localStorage.setItem(BLOCKED_KEY, JSON.stringify([host, ...list].slice(0, 50)));
-  } catch {
-    /* ignore */
-  }
-}
-
-function isKnownBlocked(url: string): boolean {
-  try {
-    return blockedHosts().includes(new URL(url).hostname);
-  } catch {
-    return false;
-  }
-}

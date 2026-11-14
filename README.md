@@ -6,6 +6,14 @@ WebTrad reprend le principe d’[OpenToon](https://www.opentoon.co/#how) (import
 lire les bulles traduites), mais sous forme d’**application web** et **sans aucun coût** : pas de compte, pas de
 pièces, pas d’abonnement, pas de serveur. L’OCR tourne dans le navigateur et les chapitres restent sur votre appareil.
 
+## Collez un lien, lisez
+
+Comme OpenToon : collez le lien d’un chapitre sur l’accueil et touchez **Lire**. Le lecteur s’ouvre aussitôt et
+les pages se traduisent dans l’ordre pendant que vous lisez. En fin de chapitre, **Lire le chapitre suivant**
+enchaîne de la même façon. Dans l’application iPhone, un site protégé s’ouvre en arrière-plan dans le navigateur
+intégré et ses pages sont récupérées toutes seules ; le navigateur ne s’affiche que si le site demande une
+vérification à toucher.
+
 ## Fonctionnalités
 
 | OpenToon (app mobile, payante) | WebTrad (web, gratuit) |
