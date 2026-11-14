@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, type DecodedImage } from './image';
-import { detectBubbles, innerBox } from './imageproc';
+import { detectAllBubbles, innerBox } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -129,7 +129,7 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
   const overlap = sliceH < H ? Math.round(sliceH * 0.12) : 0;
   const scale = Math.min(1, Math.sqrt(12_000_000 / (W * H)));
   const px = bitmapPixels(bitmap, scale);
-  const regions = detectBubbles(px);
+  const regions = detectAllBubbles(px);
   const bubbles: Bubble[] = [];
   for (let top = 0; top < H; top += sliceH - overlap) {
     const h = Math.min(sliceH, H - top);

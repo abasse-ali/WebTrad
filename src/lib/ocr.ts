@@ -1,8 +1,11 @@
 import { createWorker, type Worker } from 'tesseract.js';
 import { bitmapPixels, context2d, createCanvas, pixelsToCanvas, type DecodedImage } from './image';
 import {
-  detectBubbles,
+  cleanBubble,
+  detectAllBubbles,
   innerBox,
+  parseHex,
+  textSkew,
   inpaintText,
   maskedCrop,
   sampleBackground,
@@ -18,6 +21,7 @@ import {
   groupLines,
   guessLatinLanguage,
   isLatin,
+  isLikelyLettering,
   isMeaningful,
   isNoiseBlock,
   joinLines,
@@ -150,16 +154,22 @@ function lineAngle(line: { words?: { bbox: { x0: number; y0: number; x1: number;
   return line.baseline ? deg(line.baseline.y1 - line.baseline.y0, line.baseline.x1 - line.baseline.x0) : 0;
 }
 
-function keepLines(lines: RawLine[], rules: LangRules, minConfidence: number): RawLine[] {
+/**
+ * `lenient`: the lines come from a speech bubble, where short texts ("I...",
+ * "UGH!", "HNGH!") are real lettering, not artwork misread as text.
+ */
+function keepLines(lines: RawLine[], rules: LangRules, minConfidence: number, lenient = false): RawLine[] {
   return lines
     .map((l) => ({ ...l, text: cleanLine(l.text, rules) }))
-    .filter(
-      (l) =>
-        l.confidence >= minConfidence &&
+    .filter((l) => {
+      if (l.confidence < minConfidence) return false;
+      if (lenient && isLatin(rules) && l.confidence >= 55 && isLikelyLettering(l.text)) return true;
+      return (
         isMeaningful(l.text, rules) &&
         // Lines that look like misread artwork are dropped unless read very confidently.
-        (l.confidence >= STRONG_LINE || !isNoiseBlock(l.text, l.confidence, rules)),
-    );
+        (l.confidence >= STRONG_LINE || !isNoiseBlock(l.text, l.confidence, rules))
+      );
+    });
 }
 
 function intersect(a: Box, b: Box): Box | null {
@@ -203,6 +213,7 @@ async function recognizeBlock(
   scale: number,
   dx: number,
   dy: number,
+  lenient = false,
 ): Promise<RecognizedText | null> {
   const rules = rulesFor(lang);
   const modes: { vertical: boolean }[] = [];
@@ -216,7 +227,7 @@ async function recognizeBlock(
   for (const mode of modes) {
     const tessLang = mode.vertical ? lang.tesseract[1] : lang.tesseract[0];
     const result = await recognize(tessLang, canvas, mode.vertical ? '5' : '6');
-    const lines = keepLines(linesOf(result, scale, dx, dy), rules, minConfidence);
+    const lines = keepLines(linesOf(result, scale, dx, dy), rules, minConfidence, lenient);
     if (lines.length === 0) continue;
     const text = joinLines(
       lines.map((l) => l.text),
@@ -224,7 +235,8 @@ async function recognizeBlock(
     );
     const weight = lines.reduce((s, l) => s + l.text.length, 0) || 1;
     const confidence = lines.reduce((s, l) => s + l.confidence * l.text.length, 0) / weight;
-    if (isNoiseBlock(text, confidence, rules)) continue;
+    const lettering = lenient && isLatin(rules) && confidence >= 55 && isLikelyLettering(text);
+    if (!lettering && isNoiseBlock(text, confidence, rules)) continue;
     const candidate = { text, confidence, lines, vertical: mode.vertical };
     if (!best || candidate.confidence > best.confidence) best = candidate;
     if (confidence >= 75) break;
@@ -234,6 +246,16 @@ async function recognizeBlock(
 
 function fontSizeOf(lines: RawLine[], vertical: boolean): number {
   return median(lines.map((l) => (vertical ? l.w : l.h))) || 20;
+}
+
+/** Copy of a canvas scaled by `k` (smooth), or the canvas itself for k = 1. */
+function enlarged(source: HTMLCanvasElement, k: number): HTMLCanvasElement {
+  if (k <= 1) return source;
+  const out = createCanvas(source.width * k, source.height * k);
+  const c = context2d(out);
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(source, 0, 0, out.width, out.height);
+  return out;
 }
 
 /** Copy of a crop turned back by `degrees`, on a white ground. */
@@ -292,6 +314,15 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
   const ink = sampleInk(px, scaled, bg.fill);
   const outlined = !flat && (ink?.tones.length ?? 0) > 1;
   const look: TextLook = { fill: bg.fill, outline: !flat && (outlined || bg.uniformity < 0.6), color: ink?.color };
+  if (flat && look.color) {
+    // Letters barely different from their background were misjudged: let the
+    // renderer pick black or white for the fill instead.
+    const lum = (hex: string) => {
+      const [r, g, b] = parseHex(hex);
+      return (r * 299 + g * 587 + b * 114) / 1000;
+    };
+    if (Math.abs(lum(look.color) - lum(look.fill)) < 80) look.color = undefined;
+  }
   // A level line in a plain bubble is erased perfectly with one colour;
   // anything else gets the artwork under the letters repaired.
   if (flat || !ink) return look;
@@ -360,22 +391,30 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
   const claimed: Box[] = [];
 
   // 1. Speech bubbles.
-  const regions = detectBubbles(px)
+  const regions = detectAllBubbles(px)
     .sort((a, b) => b.ink - a.ink)
     .slice(0, 60);
+  // Narrow pages (720 px webtoons) have lettering only ~9 px tall, below what
+  // the OCR reads reliably: bubbles are read enlarged.
+  const up = Math.min(2.5, Math.max(1, 1400 / px.width));
   for (const region of regions) {
     if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const crop = maskedCrop(px, region);
-    const canvas = pixelsToCanvas(crop.pixels);
+    const canvas = enlarged(pixelsToCanvas(crop.pixels), up);
     const preferVertical = Boolean(lang.vertical) && region.inkBox.h > region.inkBox.w * 1.15;
-    const res = await recognizeBlock(canvas, lang, preferVertical, opts.minConfidence, scale, crop.x / scale, crop.y / scale);
+    const res = await recognizeBlock(canvas, lang, preferVertical, opts.minConfidence, scale * up, crop.x / scale, crop.y / scale, true);
     if (!res) continue;
     const fontSize = fontSizeOf(res.lines, res.vertical);
     const readBox = unionBox(res.lines);
     // A bright region much bigger than its text is a white page background
     // holding artwork, not a speech bubble: only the text itself is used then.
     const regionArea = (region.w / scale) * (region.h / scale);
-    const isBubble = regionArea <= readBox.w * readBox.h * 12;
+    const readArea = readBox.w * readBox.h;
+    // A short line in a big bubble is still a bubble: round or boxy shape,
+    // and no ink inside it beyond what was read.
+    const inkArea = (region.inkBox.w / scale) * (region.inkBox.h / scale);
+    const roundish = region.area >= region.w * region.h * 0.6;
+    const isBubble = regionArea <= readArea * 12 || (roundish && inkArea <= readArea * 4 + (fontSizeOf(res.lines, res.vertical) * 3) ** 2);
     // Erase the dark pixels right around the text too (OCR boxes miss
     // periods, dots, accents…) but never the artwork further away.
     const margin = Math.max(6, fontSize * 0.8);
@@ -383,15 +422,20 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
       { x: region.inkBox.x / scale, y: region.inkBox.y / scale, w: region.inkBox.w / scale, h: region.inkBox.h / scale },
       { x: readBox.x - margin, y: readBox.y - margin, w: readBox.w + margin * 2, h: readBox.h + margin * 2 },
     );
-    const rotation = rotationOf(res.lines, res.vertical);
+    // Measured on the ink itself: OCR boxes of enlarged, tilted text are cut
+    // into level pieces and lose the slope.
+    const skew = res.vertical ? 0 : textSkew(px, region);
+    const rotation = Math.abs(skew) >= 2.5 ? skew : rotationOf(res.lines, res.vertical);
     let text = res.text;
     let confidence = res.confidence;
     let textBox = readBox;
     if (rotation !== undefined) {
       // Tilted lettering is read badly (whole lines go missing): straighten
       // the crop and read it again.
-      const level = await recognizeBlock(straightened(canvas, rotation), lang, false, opts.minConfidence, scale, 0, 0);
-      if (level && scriptLetters(level.text, rules) > scriptLetters(text, rules) + 2) {
+      const level = await recognizeBlock(straightened(canvas, rotation), lang, false, opts.minConfidence, scale * up, 0, 0, true);
+      const more = level ? scriptLetters(level.text, rules) - scriptLetters(text, rules) : 0;
+      // Straightened text is read better: keep it when it finds more, or as much more surely.
+      if (level && (more > 2 || (more >= -1 && level.confidence > confidence))) {
         text = level.text;
         confidence = level.confidence;
         // Its boxes are in the straightened image: fall back on the ink of the region.
@@ -410,6 +454,23 @@ export async function ocrPage(bitmap: DecodedImage, sourceCode: string, opts: Pa
     }
     // A big bright region holding artwork is treated like text over artwork.
     const look = lookOfText(px, box, scale, fontSize, flat, rotation);
+    if (flat) {
+      // Erase within the bubble's own shape: every stray letter goes, the
+      // outline stays, and nothing square sticks out of a round bubble.
+      const pad = Math.max(2, fontSize * 0.5) * scale;
+      try {
+        const cleaned = cleanBubble(
+          px,
+          region,
+          { x: box.x * scale - pad, y: box.y * scale - pad, w: box.w * scale + pad * 2, h: box.h * scale + pad * 2 },
+          look.fill,
+        );
+        look.patch = pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92);
+        look.patchBox = { x: cleaned.x / scale, y: cleaned.y / scale, w: cleaned.pixels.width / scale, h: cleaned.pixels.height / scale };
+      } catch {
+        /* the flat fill is used instead */
+      }
+    }
     found.push({
       box,
       area,
@@ -634,7 +695,7 @@ async function chooseChinese(samples: HTMLCanvasElement[]): Promise<string> {
 export async function detectPageLanguage(bitmap: DecodedImage): Promise<string | null> {
   const scale = Math.min(1, Math.sqrt(MAX_PIXELS / (bitmap.width * bitmap.height)));
   const px = bitmapPixels(bitmap, scale);
-  const samples = detectBubbles(px)
+  const samples = detectAllBubbles(px)
     .sort((a, b) => b.ink - a.ink)
     .slice(0, 5)
     .map((r) => pixelsToCanvas(maskedCrop(px, r).pixels));

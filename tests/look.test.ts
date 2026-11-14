@@ -80,6 +80,38 @@ describe('cleanLine', () => {
   it('reads a lone bar before a word as the pronoun I', () => {
     const latin = { script: /[A-Za-z]/u };
     expect(cleanLine('| am waiting at the station.', latin)).toBe('I am waiting at the station.');
-    expect(cleanLine('WHAT | SAID', latin)).toBe('WHAT SAID');
+    expect(cleanLine('WHAT | SAID', latin)).toBe('WHAT I SAID');
+    expect(cleanLine('| CAN’T BELIEVE 1 CAME', latin)).toBe('I CAN’T BELIEVE I CAME');
+    expect(cleanLine('THERE 1S NO END', latin)).toBe('THERE IS NO END');
+    expect(cleanLine('CHAPTER 10', latin)).toBe('CHAPTER 10');
+    expect(cleanLine('|...', latin)).toBe('I...');
+    expect(cleanLine('l…', latin)).toBe('I…');
+  });
+});
+
+describe('textSkew', () => {
+  it('measures the tilt of lettering from its ink', async () => {
+    const { textSkew } = await import('../src/lib/imageproc');
+    const W = 200;
+    const H = 120;
+    for (const angle of [-8, 0, 6]) {
+      const t = (angle * Math.PI) / 180;
+      // Two "lines" of dashes (letters) tilted by `angle` around the centre.
+      const px = image(W, H, (x, y) => {
+        const dx = x - 100;
+        const dy = y - 60;
+        const u = dx * Math.cos(t) + dy * Math.sin(t);
+        const v = -dx * Math.sin(t) + dy * Math.cos(t);
+        const inLine = (Math.abs(v + 12) < 4 || Math.abs(v - 12) < 4) && Math.abs(u) < 70 && Math.abs(u) % 10 < 6;
+        return inLine ? [20, 20, 20] : [255, 255, 255];
+      });
+      const spans = new Int32Array(H * 2);
+      for (let r = 0; r < H; r++) {
+        spans[r * 2] = 0;
+        spans[r * 2 + 1] = W - 1;
+      }
+      const region = { x: 0, y: 0, w: W, h: H, spans, area: W * H, inkBox: { x: 15, y: 15, w: 170, h: 90 }, ink: 1000 };
+      expect(Math.abs(textSkew(px, region) - angle)).toBeLessThanOrEqual(1);
+    }
   });
 });

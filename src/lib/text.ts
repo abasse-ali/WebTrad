@@ -45,10 +45,53 @@ export function cleanLine(text: string, rules: LangRules): string {
   if (rules.noSpaces) t = t.replace(CJK_GAP, '$1');
   // A lone capital I is often read as a bar: "| am waiting".
   if (isLatin(rules)) t = t.replace(/(^|\s)\|(?=\s+[\p{Ll}'’])/gu, '$1I');
+  // A lone "I…" is read as a bar or a lowercase L, then dropped as debris.
+  if (isLatin(rules)) t = t.replace(/^[|l1](?=\s*(?:\.{2,}|…|[!?]+)\s*$)/u, 'I');
+  if (isLatin(rules)) t = fixCapsConfusions(t);
   if (isLatin(rules)) t = stripJunkTokens(t);
   // Stray symbols Tesseract likes to add around bubble borders.
   t = t.replace(/^[|\\/_\-=~`'"“”‘’,.:;]+(?=\p{L})/u, '').replace(/(?<=[\p{L}!?.…])[|\\/_=~`]+$/u, '');
   return t.trim();
+}
+
+/**
+ * In text lettered in capitals, OCR reads the pronoun I as "|" or "1" and
+ * mixes up letters and digits inside words ("1S", "Y0U").
+ */
+export function fixCapsConfusions(text: string): string {
+  const letters = text.replace(/[^A-Za-z]/g, '');
+  if (letters.length < 3 || letters !== letters.toUpperCase()) return text;
+  const tokens = text.split(' ');
+  return tokens
+    .map((tok, i) => {
+      const next = tokens[i + 1] ?? '';
+      if ((tok === '|' || tok === '1' || tok === 'l') && /^[A-Z]/.test(next)) return 'I';
+      if (/^[|1]['’][A-Z]/.test(tok)) return 'I' + tok.slice(1); // "1'M" → "I'M"
+      if (/[A-Z]/.test(tok) && /[01]/.test(tok) && !/[2-9]/.test(tok) && /^[A-Z01'’-]+[!?.,…]*$/.test(tok)) {
+        return tok.replace(/1/g, 'I').replace(/0/g, 'O');
+      }
+      return tok;
+    })
+    .join(' ');
+}
+
+const INTERJECTION =
+  /^(?:[A-Z]{1,2}-)*(?:H+M+|H+N+G*H*|M+|S+H+|P+S+T+|T+S+K+|B+R+|G+R+|Z+|A+R*G+H+|U+G+H+|N+G+H*|E+H+|A+H+|O+H+|U+H+|H+U+H+|H+A+H+|H+E+H+|O+W+|W+O+W+|O+U+C+H+|H+E+Y+|N+O+|I|A|O)$/;
+
+/**
+ * Text that reads like comic lettering: capitals only, every word either a
+ * real-looking word or a known interjection ("HNGH", "UGH", "I"). Inside a
+ * speech bubble such short texts are real and must be kept.
+ */
+export function isLikelyLettering(text: string): boolean {
+  const words = text.match(/[\p{L}'’-]+/gu) ?? [];
+  if (words.length === 0 || words.length > 40) return false;
+  const letters = text.replace(/[^\p{L}]/gu, '');
+  if (letters !== letters.toUpperCase()) return false;
+  return words.every((w) => {
+    const bare = w.replace(/['’]/g, '').replace(/^-+|-+$/g, '');
+    return INTERJECTION.test(bare) || (bare.length >= 2 && VOWEL.test(bare));
+  });
 }
 
 export function isLatin(rules: LangRules): boolean {
