@@ -79,3 +79,20 @@ export async function shareFile(blob: Blob, filename: string): Promise<void> {
   const { uri } = await Filesystem.writeFile({ path: filename, data, directory: Directory.Cache });
   await Share.share({ title: filename, files: [uri] });
 }
+
+/** iPhone app: several images handed to the share sheet at once ("Save N images"). */
+export async function shareFiles(files: { blob: Blob; name: string }[]): Promise<void> {
+  const [{ Filesystem, Directory }, { Share }] = await Promise.all([import('@capacitor/filesystem'), import('@capacitor/share')]);
+  const uris: string[] = [];
+  for (const file of files) {
+    const data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file.blob);
+    });
+    const { uri } = await Filesystem.writeFile({ path: `export/${file.name}`, data, directory: Directory.Cache, recursive: true });
+    uris.push(uri);
+  }
+  await Share.share({ files: uris });
+}

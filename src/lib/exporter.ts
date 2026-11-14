@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { canvasToBlob, context2d, createCanvas, decodeImage } from './image';
 import { drawLayouts, layoutBubble, type BubbleLayout } from './layout';
-import { isNativeApp, shareFile } from './native';
+import { isNativeApp, shareFile, shareFiles } from './native';
 import { getSettings } from './settings';
 import type { Chapter, Page } from './types';
 
@@ -27,15 +27,36 @@ function release(canvas: HTMLCanvasElement): void {
   canvas.width = canvas.height = 0; // free memory early (iOS)
 }
 
-/** Draws the translated page on a canvas (kept below Safari's size limit). */
-async function renderCanvas(page: Page, target: string): Promise<HTMLCanvasElement> {
+/** What an exported page shows: the translation, or the original beside it. */
+export type ExportMode = 'translated' | 'compare';
+export type ExportFormat = 'cbz' | 'images';
+
+/** Gap between the original and the translation in "compare" pages, in page pixels. */
+const COMPARE_GAP = 16;
+const COMPARE_BACKGROUND = '#111016';
+
+/**
+ * Draws the page on a canvas (kept below Safari's size limit): translated,
+ * or in "compare" mode the original on the left and the translation on the
+ * right, as the reader's Compare view shows them.
+ */
+async function renderCanvas(page: Page, target: string, mode: ExportMode = 'translated'): Promise<HTMLCanvasElement> {
   await fontsReady();
   const bitmap = await decodeImage(page.blob);
+  const compare = mode === 'compare';
+  const fullWidth = compare ? bitmap.width * 2 + COMPARE_GAP : bitmap.width;
   // Safari refuses canvases above ~16.7 million pixels: shrink taller pages.
-  const k = Math.min(1, Math.sqrt(MAX_CANVAS_PIXELS / (bitmap.width * bitmap.height)));
-  const canvas = createCanvas(bitmap.width * k, bitmap.height * k);
+  const k = Math.min(1, Math.sqrt(MAX_CANVAS_PIXELS / (fullWidth * bitmap.height)));
+  const canvas = createCanvas(fullWidth * k, bitmap.height * k);
   const ctx = context2d(canvas);
   ctx.scale(k, k);
+  if (compare) {
+    ctx.fillStyle = COMPARE_BACKGROUND;
+    ctx.fillRect(0, 0, fullWidth, bitmap.height);
+    ctx.drawImage(bitmap.source, 0, 0);
+    // The translation is drawn on the right half.
+    ctx.translate(bitmap.width + COMPARE_GAP, 0);
+  }
   ctx.drawImage(bitmap.source, 0, 0);
   bitmap.close();
   const layouts = pageLayouts(page, target);
@@ -53,9 +74,9 @@ async function renderCanvas(page: Page, target: string): Promise<HTMLCanvasEleme
   return canvas;
 }
 
-/** Renders the translated page into an image file (full quality). */
-export async function renderPage(page: Page, target: string, type = 'image/jpeg'): Promise<Blob> {
-  const canvas = await renderCanvas(page, target);
+/** Renders the page into an image file (full quality). */
+export async function renderPage(page: Page, target: string, mode: ExportMode = 'translated', type = 'image/jpeg'): Promise<Blob> {
+  const canvas = await renderCanvas(page, target, mode);
   try {
     return await canvasToBlob(canvas, type, 0.92);
   } finally {
@@ -140,6 +161,7 @@ async function buildArchive(
   chapter: Chapter,
   pages: Page[],
   maxBytes: number,
+  mode: ExportMode,
   onProgress?: (done: number, total: number) => void,
 ): Promise<{ zip: Blob; untranslated: number }> {
   const zip = new JSZip();
@@ -154,7 +176,7 @@ async function buildArchive(
     const budget = maxBytes > 0 ? Math.max(20_000, (remainingBytes * areas[i]) / remainingArea) : Infinity;
     let size = 0;
     try {
-      const canvas = await renderCanvas(page, chapter.targetLang);
+      const canvas = await renderCanvas(page, chapter.targetLang, mode);
       try {
         const blob = Number.isFinite(budget) ? await encodeWithin(canvas, budget) : await canvasToBlob(canvas, 'image/jpeg', 0.92);
         zip.file(`${name}.jpg`, blob);
@@ -182,24 +204,68 @@ async function buildArchive(
   return { zip: out, untranslated };
 }
 
+export interface ExportOptions {
+  mode?: ExportMode;
+  format?: ExportFormat;
+  onProgress?: (done: number, total: number) => void;
+  /** Maximum size of a .cbz in megabytes (0 = no limit). */
+  maxMB?: number;
+}
+
 /**
- * Zips every translated page (CBZ-compatible), within `maxMB` megabytes
- * (0 = no limit). A page that cannot be rendered is added untranslated
- * instead of failing the whole export.
+ * Exports every page of the chapter, translated or side by side with the
+ * original. As a .cbz (within `maxMB`, a page that cannot be rendered is
+ * added untranslated instead of failing the whole export), or as separate
+ * images: the iPhone app hands them to the share sheet ("Save N images"),
+ * the web version downloads them in a .zip.
  */
-export async function exportChapter(
-  chapter: Chapter,
-  pages: Page[],
-  onProgress?: (done: number, total: number) => void,
-  maxMB = getSettings().exportMaxMB,
-): Promise<ExportResult> {
+export async function exportChapter(chapter: Chapter, pages: Page[], options: ExportOptions = {}): Promise<ExportResult> {
+  const { mode = 'translated', format = 'cbz', onProgress, maxMB = getSettings().exportMaxMB } = options;
+  const base = `${safeName(chapter.title)} [${chapter.targetLang}]${mode === 'compare' ? ' (comparer)' : ''}`;
+  if (format === 'images') return exportImages(chapter, pages, mode, base, onProgress);
   // Decimal megabytes, as phones and file managers count them, with a small margin.
   const limit = maxMB > 0 ? maxMB * 1_000_000 * 0.98 : 0;
-  let result = await buildArchive(chapter, pages, limit, onProgress);
+  let result = await buildArchive(chapter, pages, limit, mode, onProgress);
   // Pages that could not be shrunk (or added as originals) may overshoot: retry tighter.
   for (let pass = 1; limit > 0 && result.zip.size > limit && pass <= 2; pass++) {
-    result = await buildArchive(chapter, pages, limit * Math.pow(0.85, pass), onProgress);
+    result = await buildArchive(chapter, pages, limit * Math.pow(0.85, pass), mode, onProgress);
   }
-  downloadBlob(result.zip, `${safeName(chapter.title)} [${chapter.targetLang}].cbz`);
+  downloadBlob(result.zip, `${base}.cbz`);
   return { untranslated: result.untranslated, size: result.zip.size };
+}
+
+async function exportImages(
+  chapter: Chapter,
+  pages: Page[],
+  mode: ExportMode,
+  base: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<ExportResult> {
+  const digits = Math.max(3, String(pages.length).length);
+  const files: { blob: Blob; name: string }[] = [];
+  let untranslated = 0;
+  for (const [i, page] of pages.entries()) {
+    const name = `${base} - ${String(i + 1).padStart(digits, '0')}.jpg`;
+    try {
+      files.push({ blob: await renderPage(page, chapter.targetLang, mode), name });
+    } catch {
+      untranslated++;
+      try {
+        files.push({ blob: new Blob([await page.blob.arrayBuffer()], { type: page.blob.type || 'image/jpeg' }), name });
+      } catch {
+        /* page lost: left out */
+      }
+    }
+    onProgress?.(i + 1, pages.length);
+  }
+  const size = files.reduce((n, f) => n + f.blob.size, 0);
+  if (isNativeApp()) {
+    await shareFiles(files);
+  } else {
+    // Several separate downloads are blocked by browsers: one .zip holds them.
+    const zip = new JSZip();
+    files.forEach((f) => zip.file(f.name, f.blob));
+    downloadBlob(await zip.generateAsync({ type: 'blob', compression: 'STORE' }), `${base}.zip`);
+  }
+  return { untranslated, size };
 }

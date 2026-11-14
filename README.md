@@ -26,7 +26,7 @@ vérification à toucher.
 | Lecteur | Lecture **immersive** (la barre s’efface en défilant, revient en remontant ou en touchant l’image), reprise à l’endroit exact, **chapitre suivant / précédent** en fin de chapitre |
 | Toucher une bulle pour voir l’original | Oui, plus modes **Original** et **Comparer** (côte à côte) |
 | Éditer une bulle | Éditeur complet : texte, retraduction, re-OCR, taille, couleurs, déplacer/redimensionner/ajouter/supprimer des zones |
-| — | **Export .cbz** (ou page par page en JPEG) des pages traduites |
+| — | **Téléchargement de toutes les pages** traduites ou en mode **Comparer** (original à gauche, traduction à droite), en images (vers Photos sur iPhone) ou en **.cbz** |
 
 ## Comment ça marche
 

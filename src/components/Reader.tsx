@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { formatBytes, useT, type MessageKey } from '../i18n';
 import { useChapter, useDismiss } from '../hooks';
 import { deleteChapter, getPage, listChapters, patchChapter, patchPage, uid } from '../lib/db';
-import { downloadBlob, exportChapter, fontsReady, renderPage, safeName } from '../lib/exporter';
+import { downloadBlob, exportChapter, fontsReady, renderPage, safeName, type ExportFormat, type ExportMode } from '../lib/exporter';
+import { isNativeApp } from '../lib/native';
 import { clearLayoutCache, type LayoutOptions } from '../lib/layout';
 import { decodeImage } from '../lib/image';
 import { isImageUrl } from '../lib/importers';
@@ -354,14 +355,18 @@ export function Reader({ id }: { id: string }) {
   // --- chapter actions --------------------------------------------------------
   const [exporting, setExporting] = useState<string | null>(null);
 
-  const doExport = async () => {
+  const [exportOpen, setExportOpen] = useState(false);
+
+  const doExport = async (mode: ExportMode, format: ExportFormat) => {
     if (!chapter || !pages) return;
-    setMenuOpen(false);
+    setExportOpen(false);
     setExporting(t('reader.exporting', { done: 0, total: pages.length }));
     try {
-      const result = await exportChapter(chapter, pages, (done, total) =>
-        setExporting(t('reader.exporting', { done, total })),
-      );
+      const result = await exportChapter(chapter, pages, {
+        mode,
+        format,
+        onProgress: (done, total) => setExporting(t('reader.exporting', { done, total })),
+      });
       setNotice(
         t('reader.exported', { size: formatBytes(result.size) }) +
           (result.untranslated > 0 ? ' ' + t('reader.exportPartial', { n: result.untranslated }) : ''),
@@ -377,8 +382,10 @@ export function Reader({ id }: { id: string }) {
     if (!chapter || !pages) return;
     setMenuOpen(false);
     const page = pages.find((p) => p.index === current) ?? pages[0];
-    const blob = await renderPage(page, chapter.targetLang);
-    downloadBlob(blob, `${safeName(chapter.title)} - ${String(page.index + 1).padStart(3, '0')}.jpg`);
+    // In the Compare view the page is saved side by side too.
+    const compare = mode === 'compare';
+    const blob = await renderPage(page, chapter.targetLang, compare ? 'compare' : 'translated');
+    downloadBlob(blob, `${safeName(chapter.title)}${compare ? ' (comparer)' : ''} - ${String(page.index + 1).padStart(3, '0')}.jpg`);
   };
 
   const retranslateAll = () => {
@@ -446,7 +453,7 @@ export function Reader({ id }: { id: string }) {
   const progress = running && job && job.total > 0 ? (job.done + job.failed) / job.total : 0;
   const hasStatus = running || (pending > 0 && Boolean(pages)) || exporting !== null || notice !== null || editing;
   // Anything the reader must see or is interacting with keeps the bar in place.
-  const pinned = editing || menuOpen || langOpen || renameOpen || draft !== null || exporting !== null || attention;
+  const pinned = editing || menuOpen || langOpen || renameOpen || exportOpen || draft !== null || exporting !== null || attention;
   const hidden = barHidden && !pinned;
 
   // Next chapter: already in the library, or to import from the source website.
@@ -526,7 +533,7 @@ export function Reader({ id }: { id: string }) {
             </button>
             {menuOpen && (
               <div className="menu" role="menu">
-                <button role="menuitem" onClick={doExport} disabled={!pages?.length}>
+                <button role="menuitem" onClick={() => (setMenuOpen(false), setExportOpen(true))} disabled={!pages?.length}>
                   <Icon name="download" size={16} /> {t('reader.export')}
                 </button>
                 <button role="menuitem" onClick={downloadCurrentPage} disabled={!pages?.length}>
@@ -680,6 +687,14 @@ export function Reader({ id }: { id: string }) {
       )}
 
       {langOpen && chapter && <LanguageDialog source={chapter.sourceLang} target={chapter.targetLang} onApply={applyLanguages} onClose={() => setLangOpen(false)} />}
+      {exportOpen && (
+        <ExportDialog
+          pageCount={pages?.length ?? 0}
+          initialMode={mode === 'compare' ? 'compare' : 'translated'}
+          onExport={(m, f) => void doExport(m, f)}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
       {renameOpen && chapter && <RenameDialog title={chapter.title} onSave={rename} onClose={() => setRenameOpen(false)} />}
     </div>
   );
@@ -706,6 +721,59 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
         {children}
       </div>
     </div>
+  );
+}
+
+function ExportDialog({
+  pageCount,
+  initialMode,
+  onExport,
+  onClose,
+}: {
+  pageCount: number;
+  initialMode: ExportMode;
+  onExport: (mode: ExportMode, format: ExportFormat) => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [exportMode, setExportMode] = useState<ExportMode>(initialMode);
+  const [format, setFormat] = useState<ExportFormat>('images');
+  return (
+    <Modal title={t('export.title')} onClose={onClose}>
+      <fieldset className="choices">
+        <legend>{t('export.content')}</legend>
+        {(['translated', 'compare'] as const).map((m) => (
+          <label key={m} className={`choice ${exportMode === m ? 'active' : ''}`}>
+            <input type="radio" name="export-mode" checked={exportMode === m} onChange={() => setExportMode(m)} />
+            <span>
+              <strong>{t(`export.mode.${m}`)}</strong>
+              <small>{t(`export.mode.${m}.desc`)}</small>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      <fieldset className="choices">
+        <legend>{t('export.format')}</legend>
+        {(['images', 'cbz'] as const).map((f) => (
+          <label key={f} className={`choice ${format === f ? 'active' : ''}`}>
+            <input type="radio" name="export-format" checked={format === f} onChange={() => setFormat(f)} />
+            <span>
+              <strong>{t(`export.format.${f}`, { n: pageCount })}</strong>
+              <small>{t(isNativeApp() ? `export.format.${f}.app` : `export.format.${f}.desc`)}</small>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      <div className="sheet-actions">
+        <span className="spacer" />
+        <button className="btn ghost" onClick={onClose}>
+          {t('common.cancel')}
+        </button>
+        <button className="btn primary" onClick={() => onExport(exportMode, format)}>
+          <Icon name="download" size={16} /> {t('export.go')}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
