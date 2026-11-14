@@ -55,6 +55,38 @@ La police et la graisse d’origine ne sont pas reproduites, et un bloc aux lign
 sous-titre) est rendu d’une seule taille. Les chapitres déjà traduits gardent leur ancien rendu : utilisez
 *Réanalyser tout (OCR)* pour en profiter.
 
+## Application iPhone
+
+Certains sites (Cloudflare…) refusent tout lecteur automatique, et une page web n’a pas le droit de lire un autre
+site. L’**application iPhone** contourne ce problème sans rien forcer : elle a son propre navigateur intégré.
+
+1. *Nouveau → Liens → Ouvrir le site* (ou collez simplement le lien : un site protégé s’ouvre tout seul dans le
+   navigateur intégré).
+2. Allez sur le chapitre (la vérification du site ne se fait qu’une fois), puis touchez **Récupérer les pages** :
+   la page est parcourue jusqu’en bas, ses images sont téléchargées avec la session du navigateur, et le titre et le
+   lien du chapitre suivant sont repris.
+
+C’est la même appli que la version web (mêmes réglages, même lecteur), avec sa propre bibliothèque. Les exports
+passent par la feuille de partage (Enregistrer dans Fichiers, Photos…).
+
+### Installer sans Mac, gratuitement
+
+GitHub compile l’appli sur ses Mac à chaque mise à jour (`.github/workflows/ios.yml`) et publie la dernière version
+ici : [WebTrad.ipa](../../releases/latest/download/WebTrad.ipa). Elle n’est pas signée : on la signe à l’installation
+avec un identifiant Apple gratuit.
+
+1. Sur un PC Windows, installez [Sideloadly](https://sideloadly.io) (et iTunes / iCloud **hors Microsoft Store**,
+   comme indiqué sur leur site).
+2. Branchez l’iPhone, ouvrez Sideloadly, glissez `WebTrad.ipa`, saisissez votre identifiant Apple, *Start*.
+3. Sur l’iPhone : *Réglages → Confidentialité et sécurité → Mode développeur* (activer, redémarrer), puis
+   *Réglages → Général → VPN et gestion de l’appareil* → faire confiance à votre identifiant.
+
+Limite d’Apple pour un identifiant gratuit : l’appli doit être réinstallée **tous les 7 jours** (Sideloadly peut le
+faire automatiquement en Wi-Fi quand le PC est allumé ; AltStore est une alternative). La bibliothèque est conservée
+lors d’une réinstallation par-dessus.
+
+Pour compiler soi-même : `npm run ios:sync` puis ouvrir `ios/App/App.xcodeproj` dans Xcode (Mac).
+
 ## Lecture en série
 
 - **Reprise** : la bibliothèque propose de reprendre le chapitre en cours, à l’endroit exact où vous l’avez laissé
