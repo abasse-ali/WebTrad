@@ -138,7 +138,10 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
     const c = context2d(canvas);
     c.imageSmoothingQuality = 'high';
     c.drawImage(bitmap.source, 0, top, W, h, 0, 0, canvas.width, canvas.height);
-    const result = await visionTranslate(canvas.toDataURL('image/jpeg', 0.88), chapter.sourceLang, chapter.targetLang, signal);
+    const result = await visionTranslate(canvas.toDataURL('image/jpeg', 0.88), chapter.sourceLang, chapter.targetLang, signal, undefined, {
+      width: canvas.width,
+      height: canvas.height,
+    });
     const found = result.bubbles;
     const detected = normaliseSourceCode(result.sourceLanguage);
     if (chapter.sourceLang === AUTO && detected) {

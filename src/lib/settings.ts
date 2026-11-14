@@ -14,6 +14,11 @@ export interface LlmPreset {
   vision?: boolean;
   needsKey: boolean;
   note?: { fr: string; en: string };
+  /**
+   * Order of the box coordinates the model is best at: Gemini answers
+   * [ymin, xmin, ymax, xmax], Qwen-style vision models [xmin, ymin, xmax, ymax].
+   */
+  boxOrder?: 'yxyx' | 'xyxy';
 }
 
 export const LLM_PRESETS: LlmPreset[] = [
@@ -28,6 +33,20 @@ export const LLM_PRESETS: LlmPreset[] = [
     note: {
       fr: 'Clé gratuite sur Google AI Studio. Lit les images : idéal pour le mode « OCR par IA ».',
       en: 'Free key from Google AI Studio. Reads images: best for the “AI OCR” mode.',
+    },
+  },
+  {
+    id: 'nvidia',
+    label: 'NVIDIA (gratuit, build.nvidia.com)',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    model: 'qwen/qwen3.5-397b-a17b',
+    keyUrl: 'https://build.nvidia.com/settings/api-keys',
+    vision: true,
+    needsKey: true,
+    boxOrder: 'xyxy',
+    note: {
+      fr: 'Clé gratuite (commence par « nvapi- ») sur build.nvidia.com, compte NVIDIA Developer gratuit. Le modèle par défaut lit les images ; « Lister les modèles » montre ceux de votre compte. Dans l’application iPhone, aucun réglage de plus ; sur le site web, NVIDIA peut refuser les appels venant d’un navigateur.',
+      en: 'Free key (starts with “nvapi-”) on build.nvidia.com, free NVIDIA Developer account. The default model reads images; “List models” shows the ones of your account. Works as is in the iPhone app; on the website NVIDIA may refuse calls made from a browser.',
     },
   },
   {
