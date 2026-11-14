@@ -1,0 +1,64 @@
+name: iPhone app
+
+# Builds the iPhone app on a GitHub Mac. The .ipa is not signed: it is signed
+# on install with the owner's free Apple ID (Sideloadly / AltStore, see README).
+on:
+  push:
+    paths-ignore: ['**.md']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx cap sync ios
+      - name: Build the app (unsigned)
+        run: |
+          xcodebuild -version
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -n 200
+          test -d ios/build/Build/Products/Release-iphoneos/App.app
+      - name: Package WebTrad.ipa
+        run: |
+          mkdir -p ipa/Payload
+          cp -R ios/build/Build/Products/Release-iphoneos/App.app ipa/Payload/
+          (cd ipa && zip -qry ../WebTrad.ipa Payload)
+          ls -lh WebTrad.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WebTrad-ipa
+          path: WebTrad.ipa
+      - name: Publish as the latest release
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-${{ github.run_number }}
+          name: WebTrad iPhone ${{ github.run_number }}
+          body: |
+            Application iPhone de WebTrad (non signée).
+            Installation : voir « Application iPhone » dans le README.
+            Lien direct, toujours la dernière version : https://github.com/${{ github.repository }}/releases/latest/download/WebTrad.ipa
+          files: WebTrad.ipa
+          make_latest: true

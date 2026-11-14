@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { canvasToBlob, context2d, createCanvas, decodeImage } from './image';
 import { drawLayouts, layoutBubble, type BubbleLayout } from './layout';
+import { isNativeApp, shareFile } from './native';
 import { getSettings } from './settings';
 import type { Chapter, Page } from './types';
 
@@ -106,6 +107,11 @@ export async function encodeWithin(canvas: HTMLCanvasElement, budget: number): P
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {
+  if (isNativeApp()) {
+    // No downloads in an iPhone app: the share sheet saves or sends the file.
+    void shareFile(blob, filename).catch(() => undefined);
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

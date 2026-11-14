@@ -13,6 +13,7 @@ import {
   type UrlImportResult,
 } from '../lib/importers';
 import { bookmarkletCode, currentAppUrl } from '../lib/bookmarklet';
+import { importFromBrowser, isNativeApp } from '../lib/native';
 import { startChapter } from '../lib/pipeline';
 import { getSettings, updateSettings, useSettings } from '../lib/settings';
 import { warmUpTranslator } from '../lib/translate';
@@ -94,8 +95,13 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
 
   const abort = useRef<AbortController | null>(null);
 
-  /** Runs one link import and adds what it found. */
-  const runImport = async (load: (signal: AbortSignal) => Promise<UrlImportResult>, page: string | undefined, fallbackTitle: string, auto: boolean) => {
+  /** Runs one link import and adds what it found (null: the reader gave up). */
+  const runImport = async (
+    load: (signal: AbortSignal) => Promise<(UrlImportResult & { page?: string }) | null>,
+    pageUrl: string | undefined,
+    fallbackTitle: string,
+    auto: boolean,
+  ) => {
     setError(null);
     setBlockedUrl(null);
     setBusy(t('new.readingPage'));
@@ -104,7 +110,8 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
     abort.current = controller;
     try {
       const found = await load(controller.signal);
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || !found) return;
+      const page = found.page ?? pageUrl;
       if (found.images.length === 0) setError(t('new.noImages'));
       setImages((prev) => [...prev, ...found.images]);
       setTitle((prev) => prev || found.title || fallbackTitle);
@@ -116,6 +123,13 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
     } catch (err) {
       if (controller.signal.aborted) return;
       if (err instanceof ImportError && err.code === 'PAGE_BLOCKED') {
+        rememberBlocked(err.url);
+        if (isNativeApp()) {
+          // The iPhone app has its own browser, which the website lets in.
+          setBusy(null);
+          void openBrowser(err.url);
+          return;
+        }
         setBlockedUrl(err.url);
         setError(t('new.pageBlocked', { host: hostOf(err.url) }));
       } else if (err instanceof ImportError) {
@@ -130,9 +144,34 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
 
   const onProgress = (done: number, total: number) => setBusy(t('new.fetching', { done, total }));
 
+  /** iPhone app: browse to the chapter in the in-app browser, then "Get pages". */
+  const openBrowser = (url?: string) =>
+    runImport(
+      () => {
+        setBusy(t('browser.opened'));
+        return importFromBrowser(
+          url,
+          {
+            grab: t('browser.grab'),
+            close: t('common.close'),
+            address: t('browser.address'),
+            collecting: t('browser.collecting'),
+            noImages: t('new.noImages'),
+          },
+          onProgress,
+        );
+      },
+      url,
+      url ? guessTitle(url) : '',
+      true,
+    );
+
   const fetchUrls = (text = urls, auto = false) => {
     const lines = text.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
     if (lines.length === 0) return;
+    // A website known to turn readers away: straight to the in-app browser.
+    const page = lines.find((l) => !isImageUrl(l));
+    if (isNativeApp() && page && isKnownBlocked(page)) return openBrowser(page);
     return runImport(
       (signal) => urlsToImages(lines, getSettings().corsProxy, onProgress, signal, () => setBusy(t('new.readingPage'))),
       lines.find((l) => !isImageUrl(l)),
@@ -264,9 +303,21 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
             spellCheck={false}
           />
           <p className="muted small">{t('new.urlsHint')}</p>
-          <button className="btn" onClick={() => void fetchUrls()} disabled={!urls.trim() || busy !== null}>
-            <Icon name="download" size={18} /> {t('new.fetch')}
-          </button>
+          <div className="row gap">
+            <button className="btn" onClick={() => void fetchUrls()} disabled={!urls.trim() || busy !== null}>
+              <Icon name="download" size={18} /> {t('new.fetch')}
+            </button>
+            {isNativeApp() && (
+              <button
+                className="btn primary"
+                disabled={busy !== null}
+                onClick={() => void openBrowser(urls.split(/\s+/).find((l) => /^https?:\/\//i.test(l)))}
+              >
+                <Icon name="globe" size={18} /> {t('browser.open')}
+              </button>
+            )}
+          </div>
+          {isNativeApp() && <p className="muted small">{t('browser.hint')}</p>}
         </div>
       )}
 
@@ -280,7 +331,7 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
           {error}
         </p>
       )}
-      {tab === 'urls' && <BookmarkHelp open={blockedUrl !== null} pageUrl={blockedUrl} />}
+      {tab === 'urls' && !isNativeApp() && <BookmarkHelp open={blockedUrl !== null} pageUrl={blockedUrl} />}
 
       {images.length > 0 && (
         <section className="selection">
@@ -397,4 +448,34 @@ function BookmarkHelp({ open, pageUrl }: { open: boolean; pageUrl: string | null
       <p className="muted small">{t('bookmark.pwa')}</p>
     </details>
   );
+}
+
+const BLOCKED_KEY = 'webtrad.blockedHosts';
+
+function blockedHosts(): string[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(BLOCKED_KEY) ?? '[]') as unknown;
+    return Array.isArray(list) ? list.filter((h): h is string => typeof h === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Websites that turned the relays away once will do it again. */
+function rememberBlocked(url: string): void {
+  try {
+    const host = new URL(url).hostname;
+    const list = blockedHosts().filter((h) => h !== host);
+    localStorage.setItem(BLOCKED_KEY, JSON.stringify([host, ...list].slice(0, 50)));
+  } catch {
+    /* ignore */
+  }
+}
+
+function isKnownBlocked(url: string): boolean {
+  try {
+    return blockedHosts().includes(new URL(url).hostname);
+  } catch {
+    return false;
+  }
 }

@@ -86,6 +86,13 @@ const fr = {
   'bookmark.ios.4': 'Sur la page du chapitre, faites défiler jusqu’en bas (pour charger toutes les images), puis ouvrez les signets et touchez « WebTrad ».',
   'bookmark.pwa':
     'WebTrad s’ouvre alors dans Safari. Si vous utilisez l’appli installée sur l’écran d’accueil (elle a sa propre bibliothèque), les liens des images sont aussi copiés : collez-les dans Nouveau → Liens.',
+  'browser.open': 'Ouvrir le site',
+  'browser.opened': 'Navigateur ouvert : allez sur le chapitre puis touchez « Récupérer les pages ».',
+  'browser.hint':
+    'Sites protégés (Cloudflare…) : ouvrez le site dans WebTrad, allez sur le chapitre et touchez « Récupérer les pages ». La vérification du site ne se fait qu’une fois.',
+  'browser.grab': 'Récupérer les pages',
+  'browser.address': 'Adresse du site ou du chapitre',
+  'browser.collecting': 'Lecture de la page…',
   'new.fetch': 'Récupérer les images',
   'new.fetching': 'Téléchargement {done}/{total}…',
   'new.chapterTitle': 'Titre du chapitre',
@@ -320,6 +327,13 @@ const en: Record<MessageKey, string> = {
   'bookmark.ios.4': 'On the chapter page, scroll to the bottom (so every image loads), then open the bookmarks and tap “WebTrad”.',
   'bookmark.pwa':
     'WebTrad then opens in Safari. If you use the app installed on the home screen (it has its own library), the image links are copied too: paste them in New → Links.',
+  'browser.open': 'Open the website',
+  'browser.opened': 'Browser open: go to the chapter, then tap “Get pages”.',
+  'browser.hint':
+    'Protected websites (Cloudflare…): open the website in WebTrad, go to the chapter and tap “Get pages”. The website check is only needed once.',
+  'browser.grab': 'Get pages',
+  'browser.address': 'Address of the website or chapter',
+  'browser.collecting': 'Reading the page…',
   'new.fetch': 'Fetch images',
   'new.fetching': 'Downloading {done}/{total}…',
   'new.chapterTitle': 'Chapter title',
