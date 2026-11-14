@@ -36,10 +36,13 @@ export function SettingsPage() {
       setModelsError((err as Error).message);
     }
   };
-  // Vision models first: the AI OCR mode needs one.
-  const visionFirst = (list: string[]) => {
-    const vision = /(vl|vision|qwen3\.5|llama-4|gemma-3|phi-4-multimodal|pixtral|mistral-(large|medium)-3|kimi-k2\.5|nemotron.*vl)/i;
-    return [...list.filter((m) => vision.test(m)), ...list.filter((m) => !vision.test(m))];
+  // Models that read images, needed by the AI OCR mode (names as providers publish them).
+  const VISION = /(\bvl\b|-vl|vl-|vision|multimodal|qwen3\.5|qwen3-vl|llama-4|gemma-3|pixtral|mistral-(large|medium)-3|kimi-k2\.5|llava|paligemma|neva|kosmos|fuyu|cosmos-reason|nemotron.*vl|gemini)/i;
+  const visionModels = (models ?? []).filter((m) => VISION.test(m));
+  const textModels = (models ?? []).filter((m) => !VISION.test(m));
+  const pickModel = (model: string) => {
+    updateSettings({ llm: { ...s.llm, model } });
+    setTest(null);
   };
   const preset = LLM_PRESETS.find((p) => p.id === s.llm.preset) ?? LLM_PRESETS[LLM_PRESETS.length - 1];
 
@@ -77,8 +80,13 @@ export function SettingsPage() {
   const runTest = async () => {
     setTesting(true);
     setTest(null);
+    let llm = s.llm;
+    if (!llm.model.trim() && preset.model) {
+      llm = { ...llm, model: preset.model };
+      updateSettings({ llm });
+    }
     try {
-      const out = await testLlm(s.llm);
+      const out = await testLlm(llm);
       setTest({ ok: true, text: t('settings.llm.testOk', { text: out }) });
     } catch (err) {
       setTest({ ok: false, text: (err as Error).message });
@@ -224,16 +232,15 @@ export function SettingsPage() {
               <input
                 value={s.llm.model}
                 spellCheck={false}
-                list="llm-models"
+                autoCapitalize="off"
+                autoCorrect="off"
+                placeholder={preset.model}
                 onChange={(e) => updateSettings({ llm: { ...s.llm, model: e.target.value } })}
+                onBlur={(e) => {
+                  // An emptied field falls back to the provider's default model.
+                  if (!e.target.value.trim() && preset.model) pickModel(preset.model);
+                }}
               />
-              {models && (
-                <datalist id="llm-models">
-                  {visionFirst(models).map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-              )}
             </label>
             <label className="field">
               <span>
@@ -267,7 +274,29 @@ export function SettingsPage() {
             {test && <span className={`small ${test.ok ? 'ok' : 'error'}`}>{test.text}</span>}
           </div>
           {models && models.length > 0 && (
-            <p className="muted small">{t('settings.llm.modelsFound', { n: models.length })}</p>
+            <label className="field">
+              <span>{t('settings.llm.modelsFound', { n: models.length })}</span>
+              {/* A real list: iPhone Safari shows no suggestions for an empty text field. */}
+              <select value={models.includes(s.llm.model) ? s.llm.model : ''} onChange={(e) => e.target.value && pickModel(e.target.value)}>
+                <option value="">{t('settings.llm.pickModel')}</option>
+                {visionModels.length > 0 && (
+                  <optgroup label={t('settings.llm.visionModels')}>
+                    {visionModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label={t('settings.llm.textModels')}>
+                  {textModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </label>
           )}
           {modelsError && <p className="small error">{modelsError}</p>}
         </section>
