@@ -70,6 +70,22 @@ const fr = {
     'Impossible de lire {url} : le site est protégé (anti-robot, connexion requise) ou hors ligne. Téléchargez les images et importez-les depuis l’onglet Fichiers, ou configurez votre propre proxy dans les réglages.',
   'new.imageUnreachable':
     'Les images de {url} refusent le téléchargement (protection anti-copie). Configurez votre propre proxy dans les réglages ou importez les images depuis l’onglet Fichiers.',
+  'new.pageBlocked':
+    '{host} bloque la lecture automatique (protection anti-robots Cloudflare) : ni WebTrad ni ses relais ne peuvent lire la page à votre place. Ouvrez le chapitre dans votre navigateur puis touchez le favori « WebTrad » (voir ci-dessous), ou enregistrez les images et importez-les depuis l’onglet Fichiers.',
+  'bookmark.title': 'Site protégé ? Importer depuis la page ouverte',
+  'bookmark.intro':
+    'Certains sites (Cloudflare…) refusent les lecteurs automatiques mais s’ouvrent normalement dans votre navigateur. Le favori « WebTrad » récupère les images de la page que vous êtes en train de lire et les envoie à WebTrad. Les images sont ensuite téléchargées normalement : si le site les protège aussi, utilisez l’onglet Fichiers.',
+  'bookmark.openPage': 'Ouvrir la page sur {host}',
+  'bookmark.copy': 'Copier le code du favori',
+  'bookmark.copied': 'Code copié',
+  'bookmark.copyPrompt': 'Copiez ce code :',
+  'bookmark.desktop': 'Sur ordinateur : glissez le bouton « WebTrad » dans la barre de favoris, puis cliquez dessus sur la page du chapitre.',
+  'bookmark.ios.1': 'Sur iPhone / iPad : touchez « Copier le code du favori ».',
+  'bookmark.ios.2': 'Dans Safari, ajoutez n’importe quelle page aux favoris (bouton Partager → Ajouter un signet) et nommez-la « WebTrad ».',
+  'bookmark.ios.3': 'Ouvrez les signets → Modifier → « WebTrad », effacez l’adresse et collez le code à la place.',
+  'bookmark.ios.4': 'Sur la page du chapitre, faites défiler jusqu’en bas (pour charger toutes les images), puis ouvrez les signets et touchez « WebTrad ».',
+  'bookmark.pwa':
+    'WebTrad s’ouvre alors dans Safari. Si vous utilisez l’appli installée sur l’écran d’accueil (elle a sa propre bibliothèque), les liens des images sont aussi copiés : collez-les dans Nouveau → Liens.',
   'new.fetch': 'Récupérer les images',
   'new.fetching': 'Téléchargement {done}/{total}…',
   'new.chapterTitle': 'Titre du chapitre',
@@ -288,6 +304,22 @@ const en: Record<MessageKey, string> = {
     'Could not read {url}: the website is protected (anti-bot, login required) or offline. Download the images and import them from the Files tab, or set up your own proxy in the settings.',
   'new.imageUnreachable':
     'The images of {url} refuse to be downloaded (hotlink protection). Set up your own proxy in the settings or import the images from the Files tab.',
+  'new.pageBlocked':
+    '{host} turns away automatic readers (Cloudflare anti-bot protection): neither WebTrad nor its relays can read the page for you. Open the chapter in your browser and tap the “WebTrad” bookmark (see below), or save the images and import them from the Files tab.',
+  'bookmark.title': 'Protected website? Import from the open page',
+  'bookmark.intro':
+    'Some websites (Cloudflare…) refuse automatic readers but open normally in your browser. The “WebTrad” bookmark collects the images of the page you are reading and sends them to WebTrad. The images are then downloaded as usual: if the website protects them too, use the Files tab.',
+  'bookmark.openPage': 'Open the page on {host}',
+  'bookmark.copy': 'Copy the bookmark code',
+  'bookmark.copied': 'Code copied',
+  'bookmark.copyPrompt': 'Copy this code:',
+  'bookmark.desktop': 'On a computer: drag the “WebTrad” button to the bookmarks bar, then click it on the chapter page.',
+  'bookmark.ios.1': 'On iPhone / iPad: tap “Copy the bookmark code”.',
+  'bookmark.ios.2': 'In Safari, bookmark any page (Share button → Add Bookmark) and name it “WebTrad”.',
+  'bookmark.ios.3': 'Open the bookmarks → Edit → “WebTrad”, clear the address and paste the code instead.',
+  'bookmark.ios.4': 'On the chapter page, scroll to the bottom (so every image loads), then open the bookmarks and tap “WebTrad”.',
+  'bookmark.pwa':
+    'WebTrad then opens in Safari. If you use the app installed on the home screen (it has its own library), the image links are copied too: paste them in New → Links.',
   'new.fetch': 'Fetch images',
   'new.fetching': 'Downloading {done}/{total}…',
   'new.chapterTitle': 'Chapter title',

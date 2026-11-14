@@ -102,7 +102,15 @@ minuscules sont écartés) et le titre est déduit de la page.
 L’adresse `…/#/new?url=<adresse du chapitre>` ouvre directement l’import sur ce lien (c’est ce qu’utilise le bouton
 « Importer le chapitre suivant »).
 
-Limites : les sites qui exigent une connexion ou bloquent les robots (défi Cloudflare) ne peuvent pas être lus, et
+**Sites protégés (Cloudflare…)** : certains sites refusent tout lecteur automatique, relais compris. WebTrad le
+détecte et le dit clairement. Il propose alors le favori **« WebTrad »** (onglet *Liens* → *Site protégé ?*) : vous
+ouvrez le chapitre normalement dans votre navigateur, touchez le favori, et il envoie à WebTrad les adresses des
+images de la page affichée (images chargées en différé comprises), son titre et le lien du chapitre suivant. Rien
+n’est contourné : le favori lit seulement la page que vous regardez. Les images sont ensuite téléchargées comme
+d’habitude ; si le site les protège aussi, il reste l’import de fichiers. Sur iPhone, l’appli installée sur l’écran
+d’accueil a sa propre bibliothèque : le favori copie aussi la liste des images, à coller dans *Nouveau → Liens*.
+
+Limites : les sites qui exigent une connexion ne peuvent pas être lus, et
 les hébergeurs d’images qui exigent une page d’origine (Naver…) nécessitent votre propre proxy. Le plus simple est
 alors de déployer gratuitement `tools/cors-proxy-worker.js` sur Cloudflare Workers et d’indiquer :
 

@@ -107,9 +107,28 @@ export function routesFor(url: string, kind: Kind, proxy: string, referer?: stri
 /** Remembers which route works for each host so we don't retry dead ends. */
 const preferredRoute = new Map<string, string>();
 
+/**
+ * Recognises the page an anti-bot service shows instead of the website
+ * (Cloudflare "Just a moment…" / "Access denied", DDoS-Guard…). Relays get
+ * these with a 200 status: without this check the block page was taken for
+ * the chapter and its title ("Access denied | … used Cloudflare to restrict
+ * access") became the chapter title. Returns the service name, or null.
+ */
+export function blockedBy(html: string): string | null {
+  const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? '';
+  if (
+    /^(just a moment\.*|attention required!?.*cloudflare.*|access denied \|.*cloudflare.*|.*used cloudflare to restrict access.*|checking your browser.*)$/i.test(title) ||
+    /cf_chl_opt|cf-error-details|id="challenge-error-text"|cf-browser-verification/i.test(html)
+  ) {
+    return 'Cloudflare';
+  }
+  if (/^ddos-guard$/i.test(title) || /ddos-guard\.net\/(?:js|images)/i.test(html)) return 'DDoS-Guard';
+  return null;
+}
+
 export class ImportError extends Error {
   constructor(
-    readonly code: 'PAGE_UNREACHABLE' | 'IMAGE_UNREACHABLE',
+    readonly code: 'PAGE_UNREACHABLE' | 'PAGE_BLOCKED' | 'IMAGE_UNREACHABLE',
     readonly url: string,
     detail: string,
   ) {
@@ -136,6 +155,7 @@ async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSi
   const preferred = preferredRoute.get(host);
   if (preferred) routes.sort((a, b) => Number(b.id === preferred) - Number(a.id === preferred));
   const errors: string[] = [];
+  let blocked: string | null = null;
   for (const route of routes) {
     for (let attempt = 0; attempt < (route.retry ? 2 : 1); attempt++) {
       if (attempt > 0) await sleep(1500);
@@ -153,6 +173,15 @@ async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSi
           errors.push(`${route.id}: ${type || 'not an image'}`);
           break;
         }
+        if (kind === 'page' && !type.startsWith('image/')) {
+          const by = blockedBy(await res.clone().text());
+          if (by) {
+            // The anti-bot page, not the chapter: another route may get through.
+            blocked = by;
+            errors.push(`${route.id}: ${by}`);
+            break;
+          }
+        }
         preferredRoute.set(host, route.id);
         return { res, route: route.id };
       } catch (err) {
@@ -161,7 +190,7 @@ async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSi
       }
     }
   }
-  throw new ImportError(kind === 'page' ? 'PAGE_UNREACHABLE' : 'IMAGE_UNREACHABLE', url, errors.join(' · '));
+  throw new ImportError(kind === 'page' ? (blocked ? 'PAGE_BLOCKED' : 'PAGE_UNREACHABLE') : 'IMAGE_UNREACHABLE', url, errors.join(' · '));
 }
 
 const SKIP_URL = /(logo|icon|avatar|banner|sprite|emoji|button|thumb|badge|\.svg)(\W|$)/i;
@@ -203,15 +232,26 @@ export function extractImageUrls(html: string, pageUrl: string): string[] {
     const srcset = img.getAttribute('srcset')?.split(',').pop()?.trim().split(/\s+/)[0];
     add(lazy ?? srcset ?? img.getAttribute('src'));
   });
+  return pickChapterImages(urls);
+}
+
+/** Keeps the images of the folder holding most of them (the chapter pages), when it holds at least 3. */
+export function pickChapterImages(urls: string[]): string[] {
+  const list = [...new Set(urls)].filter((u) => /^https?:/i.test(u) && !SKIP_URL.test(u));
   const counts = new Map<string, number>();
-  for (const u of urls) counts.set(directoryOf(u), (counts.get(directoryOf(u)) ?? 0) + 1);
+  for (const u of list) counts.set(directoryOf(u), (counts.get(directoryOf(u)) ?? 0) + 1);
   const [mainDir, mainCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
-  return mainCount >= 3 ? urls.filter((u) => directoryOf(u) === mainDir) : urls;
+  return mainCount >= 3 ? list.filter((u) => directoryOf(u) === mainDir) : list;
 }
 
 /** "Series - Chapter 12 - Site name - Read online" → "Series - Chapter 12". */
 export function titleFromHtml(html: string): string {
-  const raw = new DOMParser().parseFromString(html, 'text/html').title.trim();
+  return cleanTitle(new DOMParser().parseFromString(html, 'text/html').title);
+}
+
+/** Chapter title out of a page title: the site name and "read online" go. */
+export function cleanTitle(pageTitle: string): string {
+  const raw = pageTitle.trim();
   if (!raw) return '';
   const parts = raw.split(/\s+[-|–—:]\s+/).filter(Boolean);
   const chapterIdx = parts.findIndex((p) => /(chap|ch\.|episode|ép|ep\.?\s*\d|第|화|話|回)/i.test(p));
@@ -315,15 +355,57 @@ export async function urlsToImages(
         signal: withTimeout(signal, RELAY_TIMEOUT),
       });
       if (res.ok) {
-        html = await res.text();
-        found = extractImageUrls(html, line);
-        route = 'jina';
+        const rendered = await res.text();
+        if (!blockedBy(rendered)) {
+          html = rendered;
+          found = extractImageUrls(html, line);
+          route = 'jina';
+        }
       }
     }
     title ||= titleFromHtml(html);
     nextUrl ??= findNextChapterUrl(html, line);
     found.forEach((url) => candidates.push({ url, fromPage: true, referer: line }));
   }
+  const images = await downloadImages(candidates, proxy, onProgress, signal);
+  return { images, title, nextUrl };
+}
+
+/** What the "WebTrad" bookmark sends from a chapter page open in the browser. */
+export interface PageHandoff {
+  images: string[];
+  title?: string;
+  page?: string;
+  next?: string;
+}
+
+/**
+ * Import from the image addresses of a page the reader opened in their own
+ * browser (see the bookmarklet): websites that turn away relays (Cloudflare…)
+ * still serve their images, which are downloaded as usual.
+ */
+export async function importFromHandoff(
+  handoff: PageHandoff,
+  proxy: string,
+  onProgress?: UrlImportProgress,
+  signal?: AbortSignal,
+): Promise<UrlImportResult> {
+  const urls = pickChapterImages(handoff.images);
+  const images = await downloadImages(
+    urls.map((url) => ({ url, fromPage: true, referer: handoff.page })),
+    proxy,
+    onProgress,
+    signal,
+  );
+  return { images, title: cleanTitle(handoff.title ?? ''), nextUrl: handoff.next };
+}
+
+async function downloadImages(
+  candidates: { url: string; fromPage: boolean; referer?: string }[],
+  proxy: string,
+  onProgress?: UrlImportProgress,
+  signal?: AbortSignal,
+): Promise<ImportedImage[]> {
   const out: (ImportedImage | null)[] = new Array(candidates.length).fill(null);
   let done = 0;
   let cursor = 0;
@@ -354,7 +436,7 @@ export async function urlsToImages(
   await Promise.all([worker(), worker(), worker(), worker()]);
   const images = out.filter((x): x is ImportedImage => x !== null);
   if (images.length === 0 && lastError) throw lastError;
-  return { images, title, nextUrl };
+  return images;
 }
 
 // --- chapter creation -----------------------------------------------------------
