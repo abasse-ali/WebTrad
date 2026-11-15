@@ -45,8 +45,24 @@ describe('AI vision boxes', () => {
 
 describe('listModels', () => {
   it('lists the models of the key, sorted', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'z/model' }, { id: 'a/vl-model' }] }), { status: 200 })));
-    expect(await listModels(nvidia)).toEqual(['a/vl-model', 'z/model']);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'z/model' }, { id: 'a/vl-model' }, { id: 'nvidia/nv-embedqa-e5-v5' }] }), { status: 200 })));
+    expect(await listModels(nvidia)).toEqual([
+      { id: 'a/vl-model', vision: true, free: undefined },
+      { id: 'z/model', vision: false, free: undefined },
+    ]);
+  });
+  it('uses OpenRouter’s modalities and prices', async () => {
+    const data = [
+      { id: 'google/gemma-3-27b-it:free', architecture: { input_modalities: ['text', 'image'] }, pricing: { prompt: '0', completion: '0' } },
+      { id: 'openai/gpt-5', architecture: { input_modalities: ['text', 'image'] }, pricing: { prompt: '0.00001', completion: '0.00003' } },
+      { id: 'meta-llama/llama-3.3-70b-instruct:free', architecture: { input_modalities: ['text'] }, pricing: { prompt: '0', completion: '0' } },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data }), { status: 200 })));
+    expect(await listModels({ ...nvidia, preset: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' })).toEqual([
+      { id: 'google/gemma-3-27b-it:free', vision: true, free: true },
+      { id: 'meta-llama/llama-3.3-70b-instruct:free', vision: false, free: true },
+      { id: 'openai/gpt-5', vision: true, free: false },
+    ]);
   });
   it('explains a refused call', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
@@ -80,3 +96,19 @@ describe('streamed answers', () => {
     expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)).stream).toBe(true);
   });
 });
+
+describe('checkVisionModel', () => {
+  it('says whether a model reads the test image', async () => {
+    const { checkVisionModel } = await import('../src/lib/translate/llm');
+    vi.stubGlobal('fetch', answerText('HELLO'));
+    expect(await checkVisionModel(nvidia, 'good/vl')).toMatchObject({ model: 'good/vl', ok: true });
+    vi.stubGlobal('fetch', answerText('I cannot see images'));
+    expect(await checkVisionModel(nvidia, 'blind/model')).toMatchObject({ ok: false });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    expect((await checkVisionModel(nvidia, 'gone/model')).error).toMatch(/404/);
+  });
+});
+
+function answerText(text: string) {
+  return vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: text } }] }), { status: 200 }));
+}

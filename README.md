@@ -168,7 +168,12 @@ Dans *Réglages → Moteur de traduction → IA*, choisissez un fournisseur comp
   des modèles qui lisent les images (mode OCR par IA, onomatopées comprises) ; « Lister les modèles » montre ceux de
   votre compte. Dans l’application iPhone, les appels passent par le réseau de l’iPhone ; sur le site web, NVIDIA
   peut refuser les appels venant d’un navigateur (CORS) ;
-- **Groq**, **OpenRouter** (modèles `:free`) ;
+- **OpenRouter** – clé gratuite sur [openrouter.ai](https://openrouter.ai/keys) ; « Lister les modèles » ne montre que
+  les modèles gratuits, ceux qui lisent les images servant à l’OCR par IA ;
+- **Groq** ;
+
+« Trouver les modèles qui marchent » essaie chaque modèle qui lit les images sur une petite image et les classe du
+plus rapide au plus lent ;
 - **Ollama** / **LM Studio** en local (100 % hors ligne ; lancer Ollama avec `OLLAMA_ORIGINS=*`).
 
 La clé est enregistrée uniquement dans votre navigateur et n’est envoyée qu’au fournisseur choisi.

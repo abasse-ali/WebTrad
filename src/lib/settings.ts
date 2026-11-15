@@ -59,11 +59,16 @@ export const LLM_PRESETS: LlmPreset[] = [
   },
   {
     id: 'openrouter',
-    label: 'OpenRouter (modèles « :free »)',
+    label: 'OpenRouter (modèles gratuits)',
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'meta-llama/llama-3.3-70b-instruct:free',
+    model: 'google/gemma-3-27b-it:free',
     keyUrl: 'https://openrouter.ai/keys',
+    vision: true,
     needsKey: true,
+    note: {
+      fr: 'Clé gratuite sur openrouter.ai (sans carte bancaire). « Lister les modèles » ne montre que les modèles gratuits ; ceux qui lisent les images servent à l’OCR par IA. Les modèles gratuits sont limités (environ 50 requêtes par jour sans crédit acheté).',
+      en: 'Free key on openrouter.ai (no card needed). “List models” shows the free models only; the image-reading ones serve the AI OCR mode. Free models are limited (about 50 requests a day without bought credit).',
+    },
   },
   {
     id: 'ollama',
