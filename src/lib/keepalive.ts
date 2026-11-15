@@ -51,8 +51,29 @@ function silenceElement(): HTMLAudioElement {
     silence.loop = true;
     silence.volume = 0.01;
     silence.setAttribute('playsinline', '');
+    // Paused by another app's video or music: played again while a chapter
+    // is being translated (the native side keeps the app itself alive).
+    silence.addEventListener('pause', () => {
+      if (processing && getSettings().background !== false) setTimeout(() => void silence?.play().catch(() => undefined), 1500);
+    });
   }
   return silence;
+}
+
+// What happened while the app was out of sight, for the activity log.
+let hiddenSince = 0;
+if (typeof document !== 'undefined' && isNativeApp()) {
+  document.addEventListener('visibilitychange', () => {
+    if (!processing) return;
+    if (document.hidden) {
+      hiddenSince = Date.now();
+      logInfo('app', 'Appli quittée pendant une traduction : le travail continue en arrière-plan');
+    } else if (hiddenSince) {
+      logInfo('app', `Retour dans l’appli après ${Math.round((Date.now() - hiddenSince) / 1000)} s en arrière-plan`);
+      hiddenSince = 0;
+      void silence?.play().catch(() => undefined);
+    }
+  });
 }
 
 // iOS only lets a page start a sound from a tap: the element is unlocked by

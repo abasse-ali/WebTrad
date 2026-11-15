@@ -65,15 +65,26 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         silence?.play()
         let center = NotificationCenter.default
-        // A phone call or another app taking the audio stops the loop: started again after.
-        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
-            guard let self = self, self.keepingAlive else { return }
-            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
-            if type == .ended {
-                try? AVAudioSession.sharedInstance().setActive(true)
-                self.silence?.play()
-            }
+        // Another app starting a video or music (YouTube, Netflix, Spotify…)
+        // interrupts the loop, and iOS would then suspend the app within
+        // seconds. The session mixes with others, so it can be activated
+        // again while the other app plays: it is, right away and every few
+        // seconds until the loop runs, without stopping the other app.
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.resumeSilence()
         })
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.silence = nil
+            self?.resumeSilence()
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.resumeSilence()
+        })
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            guard let self = self, self.keepingAlive, self.silence?.isPlaying != true else { return }
+            self.resumeSilence()
+        }
         // Extra time asked to iOS when the app leaves the screen, in case the audio is refused.
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self = self, self.keepingAlive, self.backgroundTask == .invalid else { return }
@@ -87,9 +98,27 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
         })
     }
 
+    /// Plays the silence again (mixed with whatever else is playing).
+    private func resumeSilence() {
+        guard keepingAlive else { return }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? session.setActive(true)
+        if silence == nil {
+            silence = try? AVAudioPlayer(data: Self.silentWav())
+            silence?.numberOfLoops = -1
+            silence?.volume = 0.01
+        }
+        if silence?.isPlaying != true { silence?.play() }
+    }
+
+    private var watchdog: Timer?
+
     private func stopKeepingAlive() {
         guard keepingAlive else { return }
         keepingAlive = false
+        watchdog?.invalidate()
+        watchdog = nil
         silence?.stop()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
