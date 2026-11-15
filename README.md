@@ -23,7 +23,7 @@ vérification à toucher.
 | Coréen, chinois, japonais, anglais → 50+ langues | **Détection automatique** de la langue d’origine (coréen, japonais vertical inclus, chinois simplifié/traditionnel, anglais, français, espagnol…) → **60+ langues** |
 | Traduction IA | Google Traduction (gratuit, sans clé), MyMemory, **traducteur intégré à Chrome/Edge** (hors ligne), ou **votre IA** (Gemini, Groq, OpenRouter en offre gratuite, Ollama / LM Studio en local) |
 | Bibliothèque sur l’appareil | Bibliothèque IndexedDB avec recherche, tri et progression de lecture, utilisable **hors ligne** (PWA installable) |
-| Lecteur | Lecture **immersive** (la barre s’efface en défilant, revient en remontant ou en touchant l’image), reprise à l’endroit exact, **chapitre suivant / précédent** en fin de chapitre |
+| Lecteur | Lecture **immersive** (la barre s’efface en défilant, revient en remontant ou en touchant l’image), reprise à l’endroit exact, **chapitre suivant / précédent** en fin de chapitre, **défilement automatique** à vitesse réglable (menu ⋯, ou touche A ; Espace met en pause, + et − changent la vitesse) |
 | Toucher une bulle pour voir l’original | Oui, plus modes **Original** et **Comparer** (côte à côte) |
 | Éditer une bulle | Éditeur complet : texte, retraduction, re-OCR, taille, couleurs, déplacer/redimensionner/ajouter/supprimer des zones |
 | — | **Téléchargement de toutes les pages** traduites ou en mode **Comparer** (original à gauche, traduction à droite), en images (vers Photos sur iPhone) ou en **.cbz** |

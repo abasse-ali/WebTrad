@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { DEFAULT_SPEED } from './autoscroll';
 import type { LlmSettings, Settings } from './types';
 
 const KEY = 'webtrad.settings.v1';
@@ -131,6 +132,7 @@ export const DEFAULT_SETTINGS: Settings = {
   exportMaxMB: 30,
   background: true,
   animated: true,
+  scrollSpeed: DEFAULT_SPEED,
 };
 
 function load(): Settings {

@@ -1706,6 +1706,54 @@ textarea {
   opacity: 0;
 }
 
+/* Automatic scrolling: its controls float above the page counter. */
+.auto-bar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(48px + env(safe-area-inset-bottom));
+  z-index: 21;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(15, 14, 20, 0.86);
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.3s ease;
+}
+/* Out of the way of the artwork while the page moves. */
+.auto-bar.playing {
+  opacity: 0.55;
+}
+.auto-bar.playing:hover,
+.auto-bar.playing:focus-within {
+  opacity: 1;
+}
+.auto-bar .icon-btn {
+  width: 38px;
+  height: 38px;
+  color: #fff;
+}
+.auto-bar .icon-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.auto-bar .icon-btn:disabled {
+  opacity: 0.35;
+}
+.auto-bar .icon-btn.main {
+  background: rgba(255, 255, 255, 0.16);
+  margin-left: 4px;
+}
+.auto-speed {
+  min-width: 1.4em;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 .page {
   position: relative;
   container-type: inline-size;

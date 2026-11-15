@@ -137,4 +137,6 @@ export interface Settings {
   background: boolean;
   /** Animated reading: bubbles appear, drawn sound effects move. */
   animated: boolean;
+  /** Automatic scrolling in the reader: speed level (1 = slowest). */
+  scrollSpeed: number;
 }
