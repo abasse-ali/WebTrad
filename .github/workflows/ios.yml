@@ -27,6 +27,14 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          WEB_BUILD: ${{ github.run_number }}
+      - name: Package the web code for updates without a computer (see src/lib/update.ts)
+        run: |
+          (cd dist && zip -qr ../web.zip .)
+          native=$(grep -oE 'NATIVE_LEVEL = [0-9]+' src/lib/update.ts | grep -oE '[0-9]+')
+          echo "{\"build\": ${{ github.run_number }}, \"native\": $native}" > web.json
+          cat web.json
       - run: npx cap sync ios
       - name: Build the app (unsigned)
         run: |
@@ -37,6 +45,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath ios/build \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build | tail -n 200
           test -d ios/build/Build/Products/Release-iphoneos/App.app
@@ -60,5 +69,9 @@ jobs:
             Application iPhone de WebTrad (non signée).
             Installation : voir « Application iPhone » dans le README.
             Lien direct, toujours la dernière version : https://github.com/${{ github.repository }}/releases/latest/download/WebTrad.ipa
-          files: WebTrad.ipa
+            L'appli installée se met aussi à jour toute seule (web.zip), sauf quand une réinstallation est nécessaire.
+          files: |
+            WebTrad.ipa
+            web.zip
+            web.json
           make_latest: true

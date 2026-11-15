@@ -7,6 +7,7 @@ import { resumeInterrupted } from './lib/pipeline';
 import { installLogging } from './lib/log';
 import { isNativeApp } from './lib/native';
 import { getSettings } from './lib/settings';
+import { startUpdates } from './lib/update';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -17,7 +18,7 @@ createRoot(document.getElementById('root')!).render(
 {
   const s = getSettings();
   installLogging({
-    version: __APP_BUILD__,
+    version: __WEB_BUILD__ ? `${__APP_BUILD__} (n°${__WEB_BUILD__})` : __APP_BUILD__,
     plateforme: isNativeApp() ? 'appli iPhone' : 'web',
     appareil: navigator.userAgent.replace(/^Mozilla\/5\.0 \(([^)]*)\).*$/, '$1').slice(0, 80),
     lecture: s.ocrEngine === 'vision' ? 'IA' : 'OCR local',
@@ -26,6 +27,8 @@ createRoot(document.getElementById('root')!).render(
   });
 }
 void resumeInterrupted();
+// Updates without a computer (iPhone app), once the app is on screen.
+setTimeout(startUpdates, 3000);
 
 // Offline support: cache the app shell and the OCR engine after first use.
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
