@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, innerBox, maskedCrop, regionFill, snapToText } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, fitShift, innerBox, maskedCrop, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -224,11 +224,35 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
   for (const [i, { top, h }] of slices.entries()) {
     const ownTop = top === 0 ? 0 : top + overlap / 2;
     const ownBottom = top + h >= H ? H : top + h - overlap / 2;
+    const toPage = (b: [number, number, number, number]): Box => {
+      const [y0, x0, y1, x1] = b;
+      return { x: (x0 / 1000) * W, y: top + (y0 / 1000) * h, w: ((x1 - x0) / 1000) * W, h: ((y1 - y0) / 1000) * h };
+    };
+    // Models often place their boxes a little off the letters, the same way
+    // for the whole image (shifted, or stretched): measured on every text
+    // of the slice and corrected for all of them, bubbles included.
+    const ys: { at: number; shift: number }[] = [];
+    const xs: { at: number; shift: number }[] = [];
+    for (const f of results[i].bubbles) {
+      const b = toPage(f.box);
+      if (b.w * scale < 6 || b.h * scale < 4) continue;
+      const snapped = snapToText(px, { x: b.x * scale, y: b.y * scale, w: b.w * scale, h: b.h * scale }, { y: 2.5, x: 0.6, minY: h * scale * 0.04 });
+      if (!snapped.found) continue;
+      ys.push({ at: b.y + b.h / 2, shift: snapped.y / scale - b.y });
+      xs.push({ at: b.x + b.w / 2, shift: snapped.x / scale - b.x });
+    }
+    const shiftY = fitShift(ys);
+    const shiftX = fitShift(xs);
+    const typical = ys.length > 0 ? Math.max(...ys.map((p) => Math.abs(shiftY(p.at))), ...xs.map((p) => Math.abs(shiftX(p.at)))) : 0;
+    if (typical > 4) logInfo('ocr', `Cadres de l’IA recalés sur le texte (jusqu’à ${Math.round(typical)} px)`, { morceau: i + 1, mesures: ys.length });
     for (const f of results[i].bubbles) {
       // Untranslatable sound effects ("HUFF" → "HUFF"): the drawn lettering stays.
       if (!f.translation.trim() || sameText(f.text, f.translation)) continue;
-      const [y0, x0, y1, x1] = f.box;
-      const box: Box = { x: (x0 / 1000) * W, y: top + (y0 / 1000) * h, w: ((x1 - x0) / 1000) * W, h: ((y1 - y0) / 1000) * h };
+      const box = toPage(f.box);
+      const dy = shiftY(box.y + box.h / 2);
+      const dx = shiftX(box.x + box.w / 2);
+      box.y = Math.min(H - box.h, Math.max(0, box.y + dy));
+      box.x = Math.min(W - box.w, Math.max(0, box.x + dx));
       const cy = box.y + box.h / 2;
       if (cy < ownTop || cy >= ownBottom) continue;
       const region = inRegion(box.x + box.w / 2, cy);
