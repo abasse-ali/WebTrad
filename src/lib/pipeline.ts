@@ -125,6 +125,15 @@ export async function translateBubbles(
 const VISION_MAX_SIDE = 1536;
 
 /**
+ * Language given to the AI: a language found automatically is not imposed
+ * (one wrong guess, "Korean" for an English scan, would bias every page):
+ * the model reads it again on each image. A language chosen by hand is.
+ */
+function aiSource(chapter: Chapter): string {
+  return chapter.autoSource ? AUTO : chapter.sourceLang;
+}
+
+/**
  * Free AI tiers time out or answer "busy" (429, 5xx) now and then: a slice
  * is tried again twice, after a pause, before the page is marked in error.
  */
@@ -194,7 +203,7 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       const slice = slices[i];
       try {
         results[i] = await withRetries(
-          () => visionTranslate(slice.image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context),
+          () => visionTranslate(slice.image, aiSource(chapter), chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context),
           signal,
         );
       } catch (err) {
@@ -209,7 +218,7 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
   await Promise.all(Array.from({ length: Math.min(VISION_PARALLEL, slices.length) }, worker));
 
   const detected = normaliseSourceCode(results.find((r) => r.sourceLanguage)?.sourceLanguage);
-  if (chapter.sourceLang === AUTO && detected) {
+  if (detected && (chapter.sourceLang === AUTO || (chapter.autoSource && detected !== chapter.sourceLang))) {
     // The model told us the language: remember it for edits and retranslations.
     chapter.sourceLang = detected;
     chapter.autoSource = true;
@@ -480,7 +489,7 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
       const image = canvas.toDataURL('image/jpeg', 0.88);
       const size = { width: canvas.width, height: canvas.height };
       canvas.width = canvas.height = 0;
-      const answer = await withRetries(() => visionTranslate(image, chapter.sourceLang, chapter.targetLang, signal, undefined, size, context), signal);
+      const answer = await withRetries(() => visionTranslate(image, aiSource(chapter), chapter.targetLang, signal, undefined, size, context), signal);
       const items = answer.bubbles.filter((f) => f.translation.trim() && !sameText(f.text, f.translation) && !isSoundEffect(f.text));
       if (items.length === 0) continue;
       const original = items.map((f) => f.text).join(' ');
