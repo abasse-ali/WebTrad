@@ -404,15 +404,20 @@ async function visionPage(
   }
   // The lettering of a bubble: the blocks of letter-sized marks found in it
   // (a big drawn sound effect overlapping the bubble is not one), else its ink.
-  const letteringIn = (r: (typeof regions)[number]): Box | null => {
+  const letteringIn = (r: (typeof regions)[number], owner?: Box, others: Box[] = []): Box | null => {
+    // Two bubbles drawn joined are one white shape holding two texts: each
+    // text takes the blocks of lettering closest to it (page pixels).
+    const dist = (b: Box, t: Box) => Math.hypot(b.x + b.w / 2 - (t.x + t.w / 2) * scale, b.y + b.h / 2 - (t.y + t.h / 2) * scale);
     const mine = blocks
       .map((b) => ({ x: b.x * scale, y: b.y * scale, w: b.w * scale, h: b.h * scale }))
       .filter((b) => {
         const cx = b.x + b.w / 2;
         const cy = b.y + b.h / 2;
         return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
-      });
-    const ink = maskedCrop(px, r).ink;
+      })
+      .filter((b) => !owner || others.every((o) => dist(b, owner) <= dist(b, o)));
+    // Shared shape: the whole ink of the shape is the other text's too.
+    const ink = owner && others.length > 0 ? null : maskedCrop(px, r).ink;
     if (mine.length === 0) return ink;
     let x0 = Math.min(...mine.map((b) => b.x));
     let y0 = Math.min(...mine.map((b) => b.y));
@@ -472,8 +477,14 @@ async function visionPage(
   for (const t of found) {
     if (t.region) {
       const prev = byRegion.get(t.region);
+      // The same text read twice (overlapping slices): the most complete one.
+      // A different text in the same white shape (two bubbles drawn joined)
+      // is kept: it was dropped and its bubble stayed untranslated.
+      const same = prev && (similarText(prev.f.text, t.f.text) || overlapShare(prev.box, t.box) > 0.5);
       if (!prev) {
         byRegion.set(t.region, t);
+        kept.push(t);
+      } else if (!same) {
         kept.push(t);
       } else if (t.f.text.length > prev.f.text.length) {
         kept[kept.indexOf(prev)] = t;
@@ -535,7 +546,8 @@ async function visionPage(
     const cy = box.y + box.h / 2;
     const lines = Math.max(1, f.text.split('\n').length);
     const vertical = box.h > box.w * 1.6;
-    const ink = region ? letteringIn(region) : null;
+    const siblings = region ? kept.filter((k) => k !== t && k.region === region && !skipped.has(k)).map((k) => k.box) : [];
+    const ink = region ? letteringIn(region, siblings.length ? box : undefined, siblings) : null;
     if (region && ink && !vertical) {
       // In a bubble: sized on the real letters, erased within the bubble's shape.
       const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };
@@ -579,6 +591,16 @@ async function visionPage(
         const x1 = Math.min(area.x + area.w, mx + roomW / 2);
         const y1 = Math.min(area.y + area.h, my + roomH / 2);
         area = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      }
+      if (area && siblings.length > 0) {
+        // Its own lobe of a joined shape: not past half way to another text.
+        const my = inkBox.y + inkBox.h / 2;
+        for (const o of siblings) {
+          const oy = o.y + o.h / 2;
+          const mid = (my + oy) / 2;
+          if (oy > my && area.y + area.h > mid) area = { ...area, h: Math.max(0, mid - area.y) };
+          if (oy < my && area.y < mid) area = { ...area, y: mid, h: Math.max(0, area.y + area.h - mid) };
+        }
       }
       if (area && area.w * area.h < inkBox.w * inkBox.h * 0.6) area = undefined;
       bubbles.push({
@@ -627,6 +649,15 @@ async function visionPage(
     });
   }
   return bubbles;
+}
+
+/** Two readings of one text: equal once letters are compared, or one contains the other. */
+function similarText(a: string, b: string): boolean {
+  const norm = (t: string) => t.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return x === y;
+  return x === y || (Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x)));
 }
 
 /** Share of the smaller box covered by the other one. */
