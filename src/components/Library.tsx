@@ -56,6 +56,7 @@ export function chapterState(
 ): { tone: string; key: MessageKey; vars: Record<string, number> } {
   const total = c.stats?.total ?? c.pageIds.length;
   const done = c.stats?.done ?? 0;
+  if (job?.running && job.queued) return { tone: 'queued', key: 'library.queued' as const, vars: {} };
   if (job?.running) return { tone: 'busy', key: 'library.processing' as const, vars: { done: job.done, total: job.total || total } };
   if (c.stats?.errors) return { tone: 'error', key: 'library.status.error' as const, vars: {} };
   if (done === total && total > 0) return pos?.finished ? { tone: 'read', key: 'library.read' as const, vars: {} } : { tone: 'ok', key: 'library.status.done' as const, vars: {} };
@@ -206,7 +207,7 @@ export function Library() {
       <ul className="shelf">
         {groups.map((g) => {
           const latest = g.items[g.items.length - 1];
-          const busy = g.items.find((c) => jobs.get(c.id)?.running);
+          const busy = g.items.find((c) => jobs.get(c.id)?.running && !jobs.get(c.id)?.queued);
           const single = g.items.length === 1;
           const state = single ? chapterState(latest, jobs.get(latest.id), positions.get(latest.id)) : null;
           const read = g.items.filter((c) => positions.get(c.id)?.finished).length;
