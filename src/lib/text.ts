@@ -418,7 +418,8 @@ const SFX_WORDS = new Set(
     'squirm writhe jiggle bounce sway flutter flap pat poke pinch stroke tickle scratch wipe yank tug pull push ' +
     'shove press grasp clap clink clang clatter rattle creak thunk bonk boing splat splosh gush spray pump ' +
     'plap pap pomp slosh suck chomp munch nom gulp glug sip slurp kiss smooch lick sniff snore yawn ' +
-    'bam pow wham kaboom boom thwip whiz zing ping ting tink chime ring vroom screech skid tremor quake'
+    'bam pow wham kaboom boom thwip whiz zing ping ting tink chime ring vroom screech skid tremor quake ' +
+    'whistle twirl swirl spin whirl twist flick fling flip wave'
   ).split(' '),
 );
 
@@ -446,6 +447,27 @@ export function isDrawnEffect(text: string): boolean {
     if (/(\p{L})\1\1/iu.test(clean) || /!\s*$/.test(text)) return true;
   }
   return false;
+}
+
+/**
+ * A line of an in-game chat or a stream overlay ("OO: hi", "0O : lol"):
+ * names hidden behind circles, drawn on a screen. Its translation laid over
+ * the tiny screen lettering only makes a mess, so it stays as drawn.
+ */
+export function isScreenChat(text: string): boolean {
+  return /^\s*[O0○●◯〇]{2,}\s*[:：]/u.test(text);
+}
+
+/**
+ * Text that is the series' own title (its logo drawn at the top of a
+ * chapter), compared letters only: "SOLO LEVELING" for "Solo Leveling".
+ */
+export function isSeriesTitle(text: string, series: string): boolean {
+  const letters = (t: string) => t.normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const a = letters(text);
+  const b = letters(series);
+  if (b.length < 5 || a.length < 5) return false;
+  return a === b || (a.includes(b) && a.length <= b.length * 1.5) || (b.includes(a) && a.length >= b.length * 0.6);
 }
 
 /** Text that is a website's watermark ("TOOMICS.com", "manhwa18.net"), never story text. */

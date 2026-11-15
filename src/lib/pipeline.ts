@@ -17,7 +17,8 @@ import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
 import { visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
-import { isDrawnEffect, isSoundEffect, isWatermark } from './text';
+import { isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
+import { seriesOf } from './series';
 import { alignToBubbles } from './align';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
 import type { Bubble, Chapter, Page } from './types';
@@ -186,6 +187,7 @@ async function visionPage(
 ): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
+  const series = seriesOf(chapter.title).name;
   // Tall slices: a webtoon page costs fewer requests (vision models read tall images well).
   const sliceH = Math.min(H, Math.round(W * 2.2));
   const overlap = sliceH < H ? Math.round(sliceH * 0.12) : 0;
@@ -364,6 +366,10 @@ async function visionPage(
       }
       // Website watermarks are not translated, even over a bubble.
       if (isWatermark(f.text)) continue;
+      // Chat lines on a drawn screen stay as drawn: too small to letter over.
+      if (isScreenChat(f.text)) continue;
+      // The series' logo, drawn on the artwork, keeps its title.
+      if (!region && isSeriesTitle(f.text, series)) continue;
       found.push({ f, box, region });
     }
   }
