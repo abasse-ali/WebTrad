@@ -23,7 +23,7 @@ export function parseRoute(hash: string): Route {
       return {
         name: 'new',
         key: query,
-        handoff: { images, title: params.get('title') ?? undefined, page: web(params.get('page')), next: web(params.get('next')) },
+        handoff: { images, title: params.get('title') ?? undefined, page: web(params.get('page')), next: web(params.get('next')), cover: web(params.get('cover')) },
       };
     }
     // "#/new?url=…" opens the import screen on a chapter link.

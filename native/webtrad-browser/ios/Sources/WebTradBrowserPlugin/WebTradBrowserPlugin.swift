@@ -389,7 +389,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     for (const u of images) { const f = u.slice(0, u.lastIndexOf('/') + 1); folders[f] = (folders[f] || 0) + 1; }
     const ready = Object.values(folders).some((n) => n >= 3);
     const blocked = /^(just a moment|attention required|access denied|checking your browser|ddos-guard)/i.test(document.title.trim());
-    return JSON.stringify({ images, title: document.title, page: location.href, next, ready, blocked });
+    const cv = document.querySelector('meta[property="og:image"],meta[name="twitter:image"]');
+    let cover = '';
+    try { cover = cv && cv.content ? new URL(cv.content, location.href).href : ''; } catch (e) {}
+    return JSON.stringify({ images, title: document.title, page: location.href, next, ready, blocked, cover });
     """
 
     /// Runs the collector in the page and returns what it found.

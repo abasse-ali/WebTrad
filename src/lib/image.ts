@@ -115,6 +115,21 @@ export async function makeThumbnail(blob: Blob, width = 240): Promise<string> {
   return canvas.toDataURL('image/jpeg', 0.75);
 }
 
+/** Library artwork: the image cropped to a 3:4 card, centred, from the top. */
+export async function makeCover(blob: Blob, width = 300): Promise<string> {
+  const bitmap = await decodeImage(blob);
+  const height = Math.round(width * (4 / 3));
+  const scale = Math.max(width / bitmap.width, height / bitmap.height);
+  const sw = width / scale;
+  const sh = height / scale;
+  const canvas = createCanvas(width, height);
+  const ctx = context2d(canvas);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap.source, (bitmap.width - sw) / 2, 0, sw, sh, 0, 0, width, height);
+  bitmap.close();
+  return canvas.toDataURL('image/jpeg', 0.82);
+}
+
 export async function imageSize(blob: Blob): Promise<{ width: number; height: number }> {
   const bitmap = await decodeImage(blob);
   const size = { width: bitmap.width, height: bitmap.height };

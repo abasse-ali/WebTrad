@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { saveChapter, savePages, uid } from './db';
-import { imageSize, makeThumbnail } from './image';
+import { seriesCoverOf, shareSeriesCover } from './cover';
+import { imageSize, makeCover, makeThumbnail } from './image';
 import { logInfo, logWarn, since } from './log';
 import type { Chapter, Page } from './types';
 
@@ -150,7 +151,7 @@ const RELAY_TIMEOUT = 60_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSignal, referer?: string): Promise<{ res: Response; route: string }> {
+export async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSignal, referer?: string): Promise<{ res: Response; route: string }> {
   const host = `${kind}:${new URL(url).host}`;
   const routes = routesFor(url, kind, proxy, referer);
   const preferred = preferredRoute.get(host);
@@ -247,6 +248,25 @@ export function pickChapterImages(urls: string[]): string[] {
   return mainCount >= 3 ? list.filter((u) => directoryOf(u) === mainDir) : list;
 }
 
+/**
+ * Address of the series artwork announced by the page (the image shared on
+ * social networks, or the cover of the series header on manga sites).
+ */
+export function coverFromHtml(html: string, pageUrl: string): string | undefined {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const raw =
+    doc.querySelector('meta[property="og:image"], meta[property="og:image:url"], meta[name="og:image"]')?.getAttribute('content') ??
+    doc.querySelector('meta[name="twitter:image"], meta[property="twitter:image"]')?.getAttribute('content') ??
+    doc.querySelector('.summary_image img, .thumb img, .manga-cover img, .series-cover img')?.getAttribute('src');
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw.trim(), pageUrl).href;
+    return /^https?:/.test(url) && !SKIP_URL.test(url) ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** "Series - Chapter 12 - Site name - Read online" → "Series - Chapter 12". */
 export function titleFromHtml(html: string): string {
   return cleanTitle(new DOMParser().parseFromString(html, 'text/html').title);
@@ -319,6 +339,8 @@ export interface UrlImportProgress {
 export interface UrlImportResult {
   images: ImportedImage[];
   title: string;
+  /** Artwork of the series (cover), when the page names one and it could be downloaded. */
+  coverBlob?: Blob;
   /** Link to the following chapter found in the page, if any. */
   nextUrl?: string;
 }
@@ -339,6 +361,7 @@ export async function urlsToImages(
   const candidates: { url: string; fromPage: boolean; referer?: string }[] = [];
   let title = '';
   let nextUrl: string | undefined;
+  let cover: { url: string; referer: string } | undefined;
   for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
     if (isImageUrl(line)) {
       candidates.push({ url: line, fromPage: false });
@@ -369,16 +392,28 @@ export async function urlsToImages(
     }
     title ||= titleFromHtml(html);
     nextUrl ??= findNextChapterUrl(html, line);
+    if (!cover) {
+      const url = coverFromHtml(html, line);
+      if (url && !found.includes(url)) cover = { url, referer: line };
+    }
     found.forEach((url) => candidates.push({ url, fromPage: true, referer: line }));
   }
   const images = await downloadImages(candidates, proxy, onProgress, signal);
-  logInfo('import', `Import par lien : ${images.length} image(s) sur ${candidates.length} trouvée(s)`, { titre: title, suivant: nextUrl, ms: since(start) });
-  return { images, title, nextUrl };
+  const coverBlob = cover ? await downloadCover(cover.url, proxy, cover.referer, signal) : undefined;
+  logInfo('import', `Import par lien : ${images.length} image(s) sur ${candidates.length} trouvée(s)`, {
+    titre: title,
+    suivant: nextUrl,
+    couverture: coverBlob ? cover?.url : undefined,
+    ms: since(start),
+  });
+  return { images, title, nextUrl, coverBlob };
 }
 
 /** What the "WebTrad" bookmark sends from a chapter page open in the browser. */
 export interface PageHandoff {
   images: string[];
+  /** Series artwork named by the page (og:image). */
+  cover?: string;
   title?: string;
   page?: string;
   next?: string;
@@ -402,7 +437,32 @@ export async function importFromHandoff(
     onProgress,
     signal,
   );
-  return { images, title: cleanTitle(handoff.title ?? ''), nextUrl: handoff.next };
+  const coverBlob = handoff.cover ? await downloadCover(handoff.cover, proxy, handoff.page, signal) : undefined;
+  return { images, title: cleanTitle(handoff.title ?? ''), nextUrl: handoff.next, coverBlob };
+}
+
+/**
+ * The series artwork, when it looks like one: portrait or square and big
+ * enough (sites often announce their logo or a wide banner instead).
+ */
+export async function usableCover(blob: Blob): Promise<boolean> {
+  try {
+    const { width, height } = await imageSize(blob);
+    return width >= 120 && height >= 120 && height >= width * 0.8;
+  } catch {
+    return false;
+  }
+}
+
+export async function downloadCover(url: string, proxy: string, referer?: string, signal?: AbortSignal): Promise<Blob | undefined> {
+  try {
+    const { res } = await fetchAny(url, 'image', proxy, signal, referer);
+    const blob = await res.blob();
+    return (await usableCover(blob)) ? blob : undefined;
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') throw err;
+    return undefined;
+  }
 }
 
 async function downloadImages(
@@ -453,6 +513,7 @@ export async function createChapter(input: {
   targetLang: string;
   origin?: string;
   nextUrl?: string;
+  coverBlob?: Blob;
 }): Promise<Chapter> {
   const chapterId = uid();
   const pages: Page[] = [];
@@ -487,9 +548,17 @@ export async function createChapter(input: {
     targetLang: input.targetLang,
     pageIds: pages.map((p) => p.id),
     cover: await makeThumbnail(pages[0].blob).catch(() => undefined),
+    // The series artwork: from the site, else the one already chosen for its other chapters.
+    seriesCover: input.coverBlob ? await makeCover(input.coverBlob).catch(() => undefined) : undefined,
     origin: input.origin,
     nextUrl: input.nextUrl,
   };
+  const known = await seriesCoverOf(chapter.title).catch(() => undefined);
+  if (known?.chosen || (known && !chapter.seriesCover)) {
+    // The reader's choice wins over what the site announces.
+    chapter.seriesCover = known.cover;
+    chapter.coverChosen = known.chosen || undefined;
+  } else if (chapter.seriesCover) await shareSeriesCover(chapter.title, chapter.seriesCover).catch(() => undefined);
   await savePages(pages);
   await saveChapter(chapter);
   // Ask the browser not to evict the library when the device runs low on

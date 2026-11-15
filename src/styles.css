@@ -648,6 +648,10 @@ textarea {
   margin: 0;
   padding-right: 26px;
 }
+/* Room for the image and delete buttons of a lone chapter. */
+.card:has(.card-cover) .card-body p {
+  padding-right: 62px;
+}
 /* A manga with several chapters: one card, stacked look, opens its chapters. */
 button.card-link {
   width: 100%;
@@ -688,11 +692,12 @@ button.card-link {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 .series-head h3 {
-  margin: 0;
+  margin: 0 auto 0 0;
   font-size: 1rem;
   min-width: 0;
   overflow: hidden;
@@ -702,6 +707,49 @@ button.card-link {
 .series-open .grid {
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   gap: 12px;
+}
+.card-cover {
+  position: absolute;
+  right: 36px;
+  bottom: 8px;
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+}
+.cover-dialog {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.cover-preview {
+  width: 84px;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  object-position: top;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  flex: none;
+}
+.cover-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.cover-actions .btn {
+  justify-content: flex-start;
+  white-space: normal;
+  text-align: left;
+  min-width: 0;
+}
+.modal {
+  min-width: 0;
+  max-width: 100%;
+}
+.btn.disabled {
+  opacity: 0.6;
+  pointer-events: none;
 }
 .card-delete {
   position: absolute;

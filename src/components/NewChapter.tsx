@@ -48,6 +48,7 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
   const [source, setSource] = useState(settings.sourceLang);
   const [target, setTarget] = useState(settings.targetLang);
   // Images sent by the bookmark stay listed: on an iPhone they can be copied into the home-screen app.
+  const [coverBlob, setCoverBlob] = useState<Blob | undefined>();
   const [urls, setUrls] = useState(initialUrl ?? handoff?.images.join('\n') ?? '');
   /** The website turns away automatic readers: show the bookmark that works around it. */
   const [blockedUrl, setBlockedUrl] = useState<string | null>(null);
@@ -115,6 +116,7 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
       const page = found.page ?? pageUrl;
       if (found.images.length === 0) setError(t('new.noImages'));
       setImages((prev) => [...prev, ...found.images]);
+      if (found.coverBlob) setCoverBlob((prev) => prev ?? found.coverBlob);
       setTitle((prev) => prev || found.title || fallbackTitle);
       if (found.images.length > 0 && page) setLink((prev) => ({ origin: prev.origin ?? page, next: found.nextUrl ?? prev.next }));
       // Opened on a link: everything is ready, show the button that starts the translation.
@@ -201,6 +203,7 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
         targetLang: target,
         origin: link.origin,
         nextUrl: link.next,
+        coverBlob,
       });
       void startChapter(chapter.id);
       navigate(`/read/${encodeURIComponent(chapter.id)}`);
