@@ -1,3 +1,4 @@
+import { countRequest } from '../usage';
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { englishName } from '../languages';
 import { logError, logInfo, logWarn, since } from '../log';
@@ -120,6 +121,7 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     throw new TranslateError(`AI endpoint unreachable (${(err as Error).message}). ${hint}`, 'llm');
   }
   const meta = { fournisseur: host, modèle: model, statut: res.status, ms: since(start), images: images || undefined, octets: res.text.length };
+  if (path === '/chat/completions') countRequest(host, res.status === 429 ? 'limited' : res.status >= 200 && res.status < 300 ? 'ok' : 'failed');
   if (res.status === 429) {
     const waitMs = rateLimitWait(res.text);
     cooldowns.set(host, Math.max(cooldowns.get(host) ?? 0, Date.now() + waitMs));
@@ -320,7 +322,7 @@ export function salvageItems(body: string): unknown[] {
 
 const SYSTEM_TRANSLATE = `You are an expert translator of manga, manhwa, manhua, webtoons and comics.
 You receive the text of the speech bubbles of one page, in reading order. The text comes from OCR and may contain recognition errors: infer the intended words.
-Translate every bubble naturally, the way a professional scanlation team would: short, spoken, faithful to tone and character voice. Keep names consistent, adapt onomatopoeia and interjections, do not add notes or explanations.
+Translate every bubble naturally, the way a professional scanlation team would: short, spoken, faithful to tone and character voice. A sentence often runs over several bubbles: read them together so the translation flows in order. Translate the meaning, not word for word; rude stays rude, polite stays polite; keep the same form of address between the same characters. Keep names consistent, adapt interjections, do not add notes or explanations.
 Answer with JSON only: {"translations":[{"id":<id>,"text":"<translation>"}]} with exactly one entry per input id.`;
 
 export function llmEngine(llm: LlmSettings = getSettings().llm): TranslationEngine {
@@ -369,7 +371,15 @@ function visionPrompt(order: 'yxyx' | 'xyxy'): string {
   return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
 Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers, credits, the series logo or title artwork, and "to be continued" banners.
 Do NOT include sound effects or onomatopoeia: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
-For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a natural translation in the requested language.
+For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a translation in the requested language.
+How to translate, like a professional scanlation team:
+- Read the whole image first: a sentence often runs over several bubbles; translate each bubble so that, read in order, they form natural sentences.
+- Translate the meaning, not word for word. Use the words a native speaker would really say in that situation, short enough to fit the bubble.
+- Keep each character's voice and register: rude stays rude (swear words stay swear words), polite stays polite, childish stays childish. Keep the same form of address (tu/vous, tutoiement…) between the same characters.
+- Keep names, nicknames and usernames as they are; keep the gaming, internet and fandom words that readers of the target language use as they are (teamfight, carry, rank names…), translate the others.
+- Interjections in bubbles (Ugh, Huh?, Haha, Hmm, Tch) become their usual equivalents in the target language; stuttering (I-I…) and trailing dots (…) are kept.
+- Use the typography of the target language (French: « » for quotes, a space before ? ! : ;).
+- Only text in the target language: no notes, no romanisation, no alternatives.
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
 Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|narration|sign","text":"...","translation":"..."}]} in reading order. List each piece of text once: never split one bubble into several items. Return {"bubbles":[]} if there is no text.`;
 }
@@ -387,6 +397,8 @@ export async function visionTranslate(
   llm: LlmSettings = getSettings().llm,
   /** Size of the image sent: models that answer in pixels are brought back to 0-1000. */
   size?: { width: number; height: number },
+  /** Lines translated just before (previous pages), for names, tone and the story so far. */
+  context?: string,
 ): Promise<{ bubbles: VisionBubble[]; sourceLanguage?: string }> {
   const order = boxOrderOf(llm);
   const answer = await chat(
@@ -399,9 +411,12 @@ export async function visionTranslate(
           {
             type: 'text',
             text:
-              source === 'auto'
+              (source === 'auto'
                 ? `Detect the source language. Translate into ${englishName(target)}.`
-                : `Source language: ${englishName(source)}. Translate into ${englishName(target)}.`,
+                : `Source language: ${englishName(source)}. Translate into ${englishName(target)}.`) +
+              (context
+                ? `\nStory so far (the last bubbles before this image, original → translation). Use it for the context, names, form of address and tone; do not include these lines in your answer:\n${context}`
+                : ''),
           },
           { type: 'image_url', image_url: { url: imageDataUrl } },
         ],
@@ -449,4 +464,43 @@ export async function testLlm(llm: LlmSettings): Promise<string> {
   const engine = llmEngine(llm);
   const [out] = await engine.translate({ texts: ['안녕하세요! 만나서 반가워요.'], source: 'ko', target: getSettings().targetLang });
   return out;
+}
+
+export interface ProviderLimits {
+  /** Requests a day on free models (OpenRouter: 50, or 1000 once 10 credits were bought). */
+  daily: number;
+  /** Requests a minute on free models. */
+  perMinute: number;
+  /** The account never bought credits. */
+  freeTier: boolean;
+}
+
+const LIMITS_KEY = 'webtrad.limits.v1';
+
+/**
+ * OpenRouter's limits for this key (GET /key), kept an hour. Undefined for
+ * other providers, or when the key cannot be checked.
+ */
+export async function providerLimits(llm: LlmSettings = getSettings().llm, fresh = false): Promise<ProviderLimits | undefined> {
+  if (!/openrouter\.ai/i.test(baseOf(llm)) || !llm.apiKey.trim()) return undefined;
+  const id = `${baseOf(llm)}|${llm.apiKey.slice(-6)}`;
+  try {
+    const cached = JSON.parse(localStorage.getItem(LIMITS_KEY) ?? 'null') as { id: string; at: number; limits: ProviderLimits } | null;
+    if (!fresh && cached?.id === id && Date.now() - cached.at < 3_600_000) return cached.limits;
+  } catch {
+    /* asked again */
+  }
+  try {
+    const data = (await request(llm, 'GET', '/key')) as { data?: { is_free_tier?: boolean } };
+    const freeTier = data.data?.is_free_tier !== false;
+    const limits = { daily: freeTier ? 50 : 1000, perMinute: 20, freeTier };
+    try {
+      localStorage.setItem(LIMITS_KEY, JSON.stringify({ id, at: Date.now(), limits }));
+    } catch {
+      /* asked again next time */
+    }
+    return limits;
+  } catch {
+    return undefined;
+  }
 }

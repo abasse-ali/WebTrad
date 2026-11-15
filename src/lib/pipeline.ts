@@ -162,7 +162,7 @@ function sameText(a: string, b: string): boolean {
 const VISION_PARALLEL = 3;
 
 /** AI vision mode: the page is cut in slices, each read and translated by one request. */
-async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal): Promise<Bubble[]> {
+async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal, context?: string): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
   // Tall slices: a webtoon page costs fewer requests (vision models read tall images well).
@@ -194,7 +194,7 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       const slice = slices[i];
       try {
         results[i] = await withRetries(
-          () => visionTranslate(slice.image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }),
+          () => visionTranslate(slice.image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context),
           signal,
         );
       } catch (err) {
@@ -407,7 +407,7 @@ function coversCentre(zone: Box, b: Box): boolean {
  * translated as one bubble, and the translation is lettered across the
  * break: the same text block is placed on both pages, each showing its part.
  */
-async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal, bubbles: Bubble[]): Promise<Bubble[]> {
+async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal, bubbles: Bubble[], context?: string): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
   const stripH = Math.min(H, Math.round(W * 1.2));
@@ -448,7 +448,7 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
       const image = canvas.toDataURL('image/jpeg', 0.88);
       const size = { width: canvas.width, height: canvas.height };
       canvas.width = canvas.height = 0;
-      const answer = await withRetries(() => visionTranslate(image, chapter.sourceLang, chapter.targetLang, signal, undefined, size), signal);
+      const answer = await withRetries(() => visionTranslate(image, chapter.sourceLang, chapter.targetLang, signal, undefined, size, context), signal);
       const items = answer.bubbles.filter((f) => f.translation.trim() && !sameText(f.text, f.translation) && !isSoundEffect(f.text));
       if (items.length === 0) continue;
       const original = items.map((f) => f.text).join(' ');
@@ -502,6 +502,28 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
     return result;
   } finally {
     nextBitmap.close();
+  }
+}
+
+/** Lines kept as context for the AI: enough for names and tone, short enough to stay cheap. */
+const CONTEXT_LINES = 14;
+
+/**
+ * The last bubbles translated before this page ("original → translation"),
+ * so that each page is translated knowing the story so far: same names,
+ * same form of address, same tone from one page to the next.
+ */
+export async function storySoFar(chapter: Chapter, pageIndex: number): Promise<string | undefined> {
+  try {
+    const before = (await getPages(chapter.id)).filter((p) => p.index < pageIndex && p.index >= pageIndex - 3 && p.status === 'done');
+    const lines = before
+      .sort((a, b) => a.index - b.index)
+      .flatMap((p) => p.bubbles.filter((b) => b.seam !== 'prev' && !b.hidden && b.translation.trim()).sort((a, b) => a.y - b.y))
+      .map((b) => `${b.original.replace(/\s+/g, ' ').trim()} → ${b.translation.replace(/\s+/g, ' ').trim()}`)
+      .slice(-CONTEXT_LINES);
+    return lines.length > 0 ? lines.join('\n') : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -561,9 +583,10 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   const where = { page: page.index + 1, taille: `${bitmap.width}×${bitmap.height}` };
   try {
     if (useVision) {
-      let bubbles = await visionPage(bitmap, chapter, signal);
+      const context = await storySoFar(chapter, page.index);
+      let bubbles = await visionPage(bitmap, chapter, signal, context);
       try {
-        bubbles = await stitchSeam(page, bitmap, chapter, signal, bubbles);
+        bubbles = await stitchSeam(page, bitmap, chapter, signal, bubbles, context);
       } catch (err) {
         if ((err as Error).name === 'AbortError') throw err;
         logWarn('ocr', `Bulle à cheval sur la page ${page.index + 2} non recollée : ${(err as Error).message.slice(0, 120)}`);

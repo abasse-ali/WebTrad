@@ -1,3 +1,4 @@
+import { UsageMeter } from './UsageMeter';
 import { useEffect, useState } from 'react';
 import { formatBytes, useT, type MessageKey } from '../i18n';
 import { useStorageEstimate } from '../hooks';
@@ -223,6 +224,9 @@ export function SettingsPage() {
       {(s.provider === 'llm' || s.ocrEngine === 'vision') && (
         <section className="panel">
           <h2>{t('settings.llm')}</h2>
+          <p className="small">
+            <UsageMeter detailed />
+          </p>
           <label className="field">
             <span>{t('settings.llm.preset')}</span>
             <select

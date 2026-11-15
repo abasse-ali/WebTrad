@@ -18,6 +18,7 @@ import type { Bubble, Chapter, Page, ReaderMode } from '../lib/types';
 import { displayName } from '../lib/languages';
 import { navigate } from '../router';
 import { BubbleSheet } from './BubbleSheet';
+import { UsageMeter } from './UsageMeter';
 import { Icon } from './Icon';
 import { LangSelect } from './LangSelect';
 import { PageView } from './PageView';
@@ -29,6 +30,8 @@ const BAR_TRAVEL = 24;
 export function Reader({ id }: { id: string }) {
   const t = useT();
   const settings = useSettings();
+  // The AI reads (or translates) the pages: its request count is shown while it works.
+  const usesAi = settings.ocrEngine === 'vision' || settings.provider === 'llm';
   const { chapter, pages } = useChapter(id);
   const job = useJob(id);
   const [mode, setModeState] = useState<ReaderMode>('translated');
@@ -578,6 +581,7 @@ export function Reader({ id }: { id: string }) {
                         })}
               </span>
             )}
+            {running && job?.phase !== 'download' && usesAi && <UsageMeter />}
             {running && (
               <button className="btn small ghost" onClick={() => cancelChapter(id)}>
                 <Icon name="stop" size={14} /> {t('reader.cancel')}
