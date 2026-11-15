@@ -5,7 +5,7 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { imageSize } from './image';
 import { logInfo } from './log';
-import { cleanTitle, pickChapterImages, type ImportedImage, type UrlImportResult } from './importers';
+import { cleanTitle, pickChapterImages, usableCover, type ImportedImage, type UrlImportResult } from './importers';
 
 interface BrowserPage {
   cancelled?: boolean;
@@ -13,6 +13,8 @@ interface BrowserPage {
   title?: string;
   page?: string;
   next?: string;
+  /** Series artwork named by the page (og:image). */
+  cover?: string;
 }
 
 interface WebTradBrowserPlugin {
@@ -49,17 +51,25 @@ export async function importFromBrowser(
   }
   logInfo('import', `Navigateur intégré : ${found.images.length} image(s) sur la page`, { page: found.page, auto });
   const urls = pickChapterImages(found.images);
+  // The series artwork comes with the pages, with the same session (Cloudflare…).
+  const cover = found.cover && !urls.includes(found.cover) ? found.cover : undefined;
   onProgress?.(0, urls.length);
   const listener = await WebTradBrowser.addListener('progress', (e) => onProgress?.(e.done, e.total));
   let files: { url: string; path: string }[];
   try {
-    ({ files } = await WebTradBrowser.download({ urls, referer: found.page }));
+    ({ files } = await WebTradBrowser.download({ urls: cover ? [...urls, cover] : urls, referer: found.page }));
   } finally {
     await listener.remove();
   }
   const images: ImportedImage[] = [];
+  let coverBlob: Blob | undefined;
   for (const [i, file] of files.entries()) {
     try {
+      if (cover && file.url === cover) {
+        const blob = await (await fetch(Capacitor.convertFileSrc(file.path))).blob();
+        if (await usableCover(blob)) coverBlob = blob;
+        continue;
+      }
       const blob = await (await fetch(Capacitor.convertFileSrc(file.path))).blob();
       const { width, height } = await imageSize(blob);
       if (width < 300 || height < 300) continue; // icons, ads, avatars
@@ -69,7 +79,7 @@ export async function importFromBrowser(
       /* unreadable image: skipped */
     }
   }
-  return { images, title: cleanTitle(found.title ?? ''), nextUrl: found.next || undefined, page: found.page };
+  return { images, title: cleanTitle(found.title ?? ''), nextUrl: found.next || undefined, page: found.page, coverBlob };
 }
 
 /** iPhone app: files are handed to the share sheet (save to Files, send…). */
@@ -100,4 +110,17 @@ export async function shareFiles(files: { blob: Blob; name: string }[]): Promise
     uris.push(uri);
   }
   await Share.share({ files: uris });
+}
+
+/**
+ * iPhone app: opens a chapter page in the in-app browser (behind its
+ * progress card) only to get the series artwork it names.
+ */
+export async function coverWithBrowser(url: string, labels: Record<string, string>): Promise<Blob | undefined> {
+  const found = await WebTradBrowser.open({ url, labels, auto: true });
+  if (found.cancelled || !found.cover) return undefined;
+  const { files } = await WebTradBrowser.download({ urls: [found.cover], referer: found.page });
+  if (files.length === 0) return undefined;
+  const blob = await (await fetch(Capacitor.convertFileSrc(files[0].path))).blob();
+  return (await usableCover(blob)) ? blob : undefined;
 }

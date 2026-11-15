@@ -8,6 +8,7 @@ import { clearPosition, getLastRead, loadPosition } from '../lib/progress';
 import { groupBySeries, seriesOf } from '../lib/series';
 import { useSettings } from '../lib/settings';
 import type { Chapter } from '../lib/types';
+import { CoverDialog } from './CoverDialog';
 import { Icon } from './Icon';
 import { QuickLink } from './QuickImport';
 
@@ -33,6 +34,7 @@ export function Library({ onNew }: { onNew: () => void }) {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<Sort>(storedSort);
   const [openSeries, setOpenSeries] = useState<string | null>(null);
+  const [coverFor, setCoverFor] = useState<{ chapters: Chapter[]; name: string } | null>(null);
   const hasChapters = (chapters?.length ?? 0) > 0;
   const showTools = (chapters?.length ?? 0) >= TOOLS_FROM;
 
@@ -98,11 +100,13 @@ export function Library({ onNew }: { onNew: () => void }) {
     else if (done > 0) status = t('library.status.partial', { done, total });
     else status = t('library.status.new');
     const number = inSeries ? seriesOf(c.title).number : null;
+    // Alone, a chapter shows the manga's artwork; in its series, its own first page.
+    const cover = inSeries ? c.cover : (c.seriesCover ?? c.cover);
     return (
       <li key={c.id} className="card">
         <a href={`#/read/${encodeURIComponent(c.id)}`} className="card-link">
           <div className="cover">
-            {c.cover ? <img src={c.cover} alt="" loading="lazy" /> : <Icon name="image" size={40} />}
+            {cover ? <img src={cover} alt="" loading="lazy" /> : <Icon name="image" size={40} />}
             <span className={`badge ${tone}`}>{status}</span>
             {pos && !pos.finished && pos.ratio > 0.01 && (
               <span className="read-bar" aria-hidden="true">
@@ -118,6 +122,16 @@ export function Library({ onNew }: { onNew: () => void }) {
             </p>
           </div>
         </a>
+        {!inSeries && (
+          <button
+            className="icon-btn card-cover"
+            title={t('library.changeCover')}
+            aria-label={`${t('library.changeCover')} – ${c.title}`}
+            onClick={() => setCoverFor({ chapters: [c], name: seriesOf(c.title).name })}
+          >
+            <Icon name="image" size={16} />
+          </button>
+        )}
         <button
           className="icon-btn card-delete"
           title={t('common.delete')}
@@ -196,7 +210,10 @@ export function Library({ onNew }: { onNew: () => void }) {
               const busy = g.items.some((c) => jobs.get(c.id)?.running);
               const first = seriesOf(g.items[0].title).number;
               const last = seriesOf(g.items[g.items.length - 1].title).number;
-              const cover = current.cover ?? g.items.find((c) => c.cover)?.cover;
+              const cover =
+                (g.items.find((c) => c.coverChosen) ?? g.items.find((c) => c.seriesCover))?.seriesCover ??
+                current.cover ??
+                g.items.find((c) => c.cover)?.cover;
               return [
                 <li key={g.key} className={`card series-card ${open ? 'open' : ''}`}>
                   <button
@@ -222,6 +239,9 @@ export function Library({ onNew }: { onNew: () => void }) {
                   <li key={`${g.key}:open`} className="series-open">
                     <div className="series-head">
                       <h3>{g.name}</h3>
+                      <button className="btn small ghost" onClick={() => setCoverFor({ chapters: g.items, name: g.name })}>
+                        <Icon name="image" size={16} /> {t('library.changeCover')}
+                      </button>
                       <a className="btn small" href={`#/read/${encodeURIComponent(current.id)}`}>
                         <Icon name="play" size={16} /> {t('library.series.continue', { number: seriesOf(current.title).number ?? '' })}
                       </a>
@@ -258,6 +278,7 @@ export function Library({ onNew }: { onNew: () => void }) {
           </li>
         </ul>
       </section>
+      {coverFor && <CoverDialog chapters={coverFor.chapters} name={coverFor.name} onClose={() => setCoverFor(null)} />}
       {chapters === undefined && <p className="muted center">{t('common.loading')}</p>}
       {chapters?.length === 0 && <p className="muted center small">{t('library.empty')}</p>}
     </div>

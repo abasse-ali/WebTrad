@@ -17,7 +17,8 @@ if(!imgs.length){alert('WebTrad : aucune image trouvée sur cette page.');return
 const nx=document.querySelector('link[rel~=next][href],a[rel~=next][href]')||[...document.querySelectorAll('a[href]')].find(a=>/(^|[\\s_-])next/i.test(a.className+' '+a.id)||/^\\s*(next|suivant|chapitre suivant|next chapter|다음|次|下一)/i.test(a.textContent||''));
 const next=nx&&/^https?:/.test(nx.href)?nx.href:'';
 try{await Promise.race([navigator.clipboard.writeText(imgs.join('\\n')),new Promise(r=>setTimeout(r,800))])}catch(e){}
-location.href=A+'#/new?'+new URLSearchParams({images:imgs.join('\\n'),title:document.title,page:location.href,next:next});
+const cv=document.querySelector('meta[property="og:image"],meta[name="twitter:image"]');
+location.href=A+'#/new?'+new URLSearchParams({images:imgs.join('\\n'),title:document.title,page:location.href,next:next,cover:cv&&cv.content||''});
 })();`;
 
 /** `javascript:` address of the bookmark for the WebTrad installed at `appUrl`. */

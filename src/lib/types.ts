@@ -14,6 +14,10 @@ export interface Chapter {
   pageIds: string[];
   /** Small JPEG data URL used by the library grid. */
   cover?: string;
+  /** Artwork of the manga (from the site, or chosen by the reader), shown instead of `cover`. */
+  seriesCover?: string;
+  /** `seriesCover` was chosen by the reader: never replaced automatically. */
+  coverChosen?: boolean;
   /** Address the chapter was imported from, when it came from a link. */
   origin?: string;
   /** Address of the following chapter, when the source page links to it. */

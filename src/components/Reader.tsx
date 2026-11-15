@@ -712,7 +712,7 @@ function shortUrl(url: string): string {
   }
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useDismiss<HTMLDivElement>(true, onClose);
   return (
     <div className="modal-backdrop">

@@ -133,6 +133,7 @@ export async function quickImport(url: string): Promise<void> {
       targetLang: settings.targetLang,
       origin: found.page ?? (isImageUrl(url) ? undefined : url),
       nextUrl: found.nextUrl,
+      coverBlob: found.coverBlob,
     });
     void startChapter(chapter.id);
     set(null);
