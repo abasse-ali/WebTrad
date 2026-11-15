@@ -596,24 +596,38 @@ export function regionFill(px: Pixels, region: BubbleRegion): string {
  * to where the most letter edges are; it stays put when nothing clearly
  * better is found. `box` is in the pixels of `px`.
  */
-export function snapToText(px: Pixels, box: Box): Box {
+export function snapToText(
+  px: Pixels,
+  box: Box,
+  /** How far to look: in box heights vertically, in box widths sideways. */
+  reach: { y?: number; x?: number; minY?: number } = {},
+): Box & { found: boolean } {
   const { data, width: W, height: H } = px;
   const bw = Math.max(2, Math.round(box.w));
   const bh = Math.max(2, Math.round(box.h));
-  if (bw >= W || bh >= H) return box;
-  const reachY = Math.round(Math.max(4, box.h * 1.2));
-  const reachX = Math.round(box.w * 0.3);
+  if (bw >= W || bh >= H) return { ...box, found: false };
+  const reachY = Math.round(Math.max(4, reach.minY ?? 0, box.h * (reach.y ?? 1.2)));
+  const reachX = Math.round(box.w * (reach.x ?? 0.3));
   // Strong horizontal steps of brightness: the strokes of letters.
   const edge = (x: number, y: number) => {
     const i = (y * W + x) * 4;
     return Math.abs(luminance(data, i) - luminance(data, i + 4)) > 48 ? 1 : 0;
   };
-  /** Best start of a window of `len` along one axis (`limit` long, `cross` wide). */
-  const slide = (from: number, to: number, len: number, start: number, limit: number, cross: number, count: (pos: number) => number): number => {
+  /** Best start of a window of `len` along one axis (`limit` long, `cross` wide), and its share of letter edges. */
+  const slide = (
+    from: number,
+    to: number,
+    len: number,
+    start: number,
+    limit: number,
+    cross: number,
+    count: (pos: number) => number,
+    gain: number,
+  ): { pos: number; density: number } => {
     const lo = Math.max(0, from);
     const hi = Math.min(to, limit - 1);
     const n = hi - lo + 1;
-    if (n <= len) return start;
+    if (n <= len) return { pos: start, density: 0 };
     const sums = new Float64Array(n + 1);
     for (let i = 0; i < n; i++) sums[i + 1] = sums[i] + count(lo + i);
     const at = (pos: number) => sums[Math.min(n, pos - lo + len)] - sums[Math.max(0, pos - lo)];
@@ -622,7 +636,7 @@ export function snapToText(px: Pixels, box: Box): Box {
     let bestScore = here;
     for (let pos = lo; pos + len - 1 <= hi; pos++) {
       // A small preference for staying close: two lines of a chat keep their own box.
-      const score = at(pos) * (1 - (0.12 * Math.abs(pos - start)) / len);
+      const score = at(pos) * (1 - (0.12 * Math.abs(pos - start)) / Math.max(len, reachY / 2));
       if (score > bestScore) {
         bestScore = score;
         best = pos;
@@ -630,22 +644,64 @@ export function snapToText(px: Pixels, box: Box): Box {
     }
     // Only a clearly better place, with real lettering in it.
     const density = at(best) / (len * cross);
-    return bestScore > here * 1.3 && density > 0.03 ? best : start;
+    if (bestScore > here * gain && density > 0.03) return { pos: best, density };
+    return { pos: start, density: here / (len * cross) };
   };
   const x0 = Math.max(0, Math.round(box.x));
   const x1 = Math.min(W - 2, Math.round(box.x + box.w));
-  const top = slide(Math.round(box.y) - reachY, Math.round(box.y + box.h) + reachY, bh, Math.round(box.y), H, bw, (y) => {
+  const v = slide(Math.round(box.y) - reachY, Math.round(box.y + box.h) + reachY, bh, Math.round(box.y), H, bw, (y) => {
     let c = 0;
     for (let x = x0; x <= x1; x++) c += edge(x, y);
     return c;
-  });
-  const y0 = Math.max(0, top);
-  const y1 = Math.min(H - 1, top + bh - 1);
-  const left = slide(Math.round(box.x) - reachX, Math.round(box.x + box.w) + reachX, bw, Math.round(box.x), W, bh, (x) => {
+  }, 1.3);
+  const y0 = Math.max(0, v.pos);
+  const y1 = Math.min(H - 1, v.pos + bh - 1);
+  const h = slide(Math.round(box.x) - reachX, Math.round(box.x + box.w) + reachX, bw, Math.round(box.x), W, bh, (x) => {
     if (x >= W - 1) return 0;
     let c = 0;
     for (let y = y0; y <= y1; y++) c += edge(x, y);
     return c;
-  });
-  return { x: left, y: top, w: box.w, h: box.h };
+  }, 1.08);
+  return { x: h.pos, y: v.pos, w: box.w, h: box.h, found: Math.max(v.density, h.density) > 0.03 };
+}
+
+/**
+ * The shift that brings a model's boxes onto the letters, as a function of
+ * the position: `measured` pairs (where the box was, how far the letters
+ * really are). A straight line is fitted so that both a constant offset and
+ * a scale error (boxes drifting more and more down the image) are fixed;
+ * readings that disagree with the others are left out.
+ */
+export function fitShift(measured: { at: number; shift: number }[]): (at: number) => number {
+  if (measured.length === 0) return () => 0;
+  const median = (v: number[]) => {
+    const s = v.slice().sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+  if (measured.length < 3) {
+    const m = median(measured.map((p) => p.shift));
+    return () => m;
+  }
+  const line = (pts: typeof measured) => {
+    const n = pts.length;
+    const mx = pts.reduce((a, p) => a + p.at, 0) / n;
+    const my = pts.reduce((a, p) => a + p.shift, 0) / n;
+    let num = 0;
+    let den = 0;
+    for (const p of pts) {
+      num += (p.at - mx) * (p.shift - my);
+      den += (p.at - mx) ** 2;
+    }
+    // A scale error of more than 30 % is not a model's habit: keep the offset only.
+    const slope = den > 0 && Math.abs(num / den) < 0.3 ? num / den : 0;
+    return { slope, base: my - slope * mx };
+  };
+  // Readings far from the others (a box snapped onto the wrong text) are dropped first.
+  const mid = median(measured.map((p) => p.shift));
+  const spread = median(measured.map((p) => Math.abs(p.shift - mid)));
+  const kept = measured.filter((p) => Math.abs(p.shift - mid) <= Math.max(6, spread * 3));
+  // Too few agreeing readings: the median offset is safer than a line.
+  if (kept.length < 3) return () => mid;
+  const fit = line(kept);
+  return (at) => fit.base + fit.slope * at;
 }
