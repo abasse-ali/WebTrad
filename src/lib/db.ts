@@ -25,8 +25,27 @@ function db(): Promise<IDBPDatabase<WebTradDB>> {
       const pages = database.createObjectStore('pages', { keyPath: 'id' });
       pages.createIndex('chapterId', 'chapterId');
     },
+    // iOS closes the database of a suspended app: opened again on next use.
+    terminated() {
+      dbPromise = null;
+    },
   });
   return dbPromise;
+}
+
+/**
+ * Runs a database operation, once more on a fresh connection if iOS closed
+ * the old one while the app was in the background ("Attempt to get records
+ * from database without an in-progress transaction").
+ */
+async function again<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (!/transaction|closing|closed|InvalidStateError|connection/i.test(`${(err as Error).name} ${(err as Error).message}`)) throw err;
+    dbPromise = null;
+    return run();
+  }
 }
 
 // --- change notifications so every view stays in sync -------------------
@@ -45,21 +64,37 @@ function emit(chapterId: string | null): void {
 
 // --- chapters -------------------------------------------------------------
 
-export async function listChapters(): Promise<Chapter[]> {
+export function listChapters(): Promise<Chapter[]> {
+  return again(() => listChaptersOnce());
+}
+
+async function listChaptersOnce(): Promise<Chapter[]> {
   const all = await (await db()).getAll('chapters');
   return all.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-export async function getChapter(id: string): Promise<Chapter | undefined> {
+export function getChapter(id: string): Promise<Chapter | undefined> {
+  return again(() => getChapterOnce(id));
+}
+
+async function getChapterOnce(id: string): Promise<Chapter | undefined> {
   return (await db()).get('chapters', id);
 }
 
-export async function saveChapter(chapter: Chapter): Promise<void> {
+export function saveChapter(chapter: Chapter): Promise<void> {
+  return again(() => saveChapterOnce(chapter));
+}
+
+async function saveChapterOnce(chapter: Chapter): Promise<void> {
   await (await db()).put('chapters', chapter);
   emit(chapter.id);
 }
 
-export async function patchChapter(id: string, patch: Partial<Chapter>, touch = true): Promise<void> {
+export function patchChapter(id: string, patch: Partial<Chapter>, touch = true): Promise<void> {
+  return again(() => patchChapterOnce(id, patch, touch));
+}
+
+async function patchChapterOnce(id: string, patch: Partial<Chapter>, touch = true): Promise<void> {
   const database = await db();
   const tx = database.transaction('chapters', 'readwrite');
   const chapter = await tx.store.get(id);
@@ -112,18 +147,30 @@ async function fromStored(record: StoredPage): Promise<Page> {
   }
 }
 
-export async function getPages(chapterId: string): Promise<Page[]> {
+export function getPages(chapterId: string): Promise<Page[]> {
+  return again(() => getPagesOnce(chapterId));
+}
+
+async function getPagesOnce(chapterId: string): Promise<Page[]> {
   const records = await (await db()).getAllFromIndex('pages', 'chapterId', chapterId);
   const pages = await Promise.all(records.map(fromStored));
   return pages.sort((a, b) => a.index - b.index);
 }
 
-export async function getPage(id: string): Promise<Page | undefined> {
+export function getPage(id: string): Promise<Page | undefined> {
+  return again(() => getPageOnce(id));
+}
+
+async function getPageOnce(id: string): Promise<Page | undefined> {
   const record = await (await db()).get('pages', id);
   return record ? fromStored(record) : undefined;
 }
 
-export async function savePages(pages: Page[]): Promise<void> {
+export function savePages(pages: Page[]): Promise<void> {
+  return again(() => savePagesOnce(pages));
+}
+
+async function savePagesOnce(pages: Page[]): Promise<void> {
   const records = await Promise.all(pages.map(toStored));
   const database = await db();
   const tx = database.transaction('pages', 'readwrite');
@@ -133,7 +180,11 @@ export async function savePages(pages: Page[]): Promise<void> {
   chapterIds.forEach((id) => emit(id));
 }
 
-export async function patchPage(id: string, patch: Partial<Page>): Promise<Page | undefined> {
+export function patchPage(id: string, patch: Partial<Page>): Promise<Page | undefined> {
+  return again(() => patchPageOnce(id, patch));
+}
+
+async function patchPageOnce(id: string, patch: Partial<Page>): Promise<Page | undefined> {
   const { blob: newBlob, ...rest } = patch;
   const image = newBlob ? { blob: undefined, bytes: await newBlob.arrayBuffer(), type: newBlob.type || 'image/jpeg' } : {};
   const database = await db();

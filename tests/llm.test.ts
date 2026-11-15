@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fatalReason, listModels, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
+import { fatalReason, learnLimit, listModels, paceRequest, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
 
 const nvidia = { preset: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', apiKey: 'nvapi-test', model: 'qwen/qwen3.5-397b-a17b' };
 const gemini = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: 'k', model: 'gemini-flash-latest' };
@@ -154,5 +154,23 @@ describe('fatalReason', () => {
     expect(fatalReason(404, '{"error":{"message":"This model is unavailable for free."}}')).toMatch(/modèle/);
     expect(fatalReason(403, '{"error":{"message":"This model is not available in your region."}}')).toMatch(/région/);
     expect(fatalReason(502, 'Bad Gateway')).toBeUndefined();
+  });
+});
+
+describe('paceRequest', () => {
+  it('spaces requests under a limit learnt from a refusal', async () => {
+    vi.useFakeTimers();
+    const host = 'pace.test';
+    for (let i = 0; i < 10; i++) await paceRequest(host);
+    learnLimit(host);
+    // 10 requests in the minute: limited to 8 from now on, so the next waits.
+    let started = false;
+    const next = paceRequest(host).then(() => (started = true));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(started).toBe(false);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await next;
+    expect(started).toBe(true);
+    vi.useRealTimers();
   });
 });

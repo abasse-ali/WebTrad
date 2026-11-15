@@ -96,6 +96,44 @@ function limitOf(body: string): string | undefined {
   return body.match(/"X-RateLimit-Limit"\s*:\s*"?(\d+)/i)?.[1];
 }
 
+/**
+ * Requests per minute a provider accepts, learnt from its first refusal
+ * (NVIDIA says nothing of its limit): the next requests are spaced to stay
+ * under it, instead of being refused and paused 20 s again and again.
+ */
+const learntLimit = new Map<string, number>();
+const recentStarts = new Map<string, number[]>();
+
+function startsInLastMinute(host: string, now = Date.now()): number[] {
+  const list = (recentStarts.get(host) ?? []).filter((t) => now - t < 60_000);
+  recentStarts.set(host, list);
+  return list;
+}
+
+/** Waits for a free slot under the learnt per-minute limit, then books it. */
+export async function paceRequest(host: string, signal?: AbortSignal): Promise<void> {
+  for (;;) {
+    const list = startsInLastMinute(host);
+    const limit = learntLimit.get(host);
+    if (!limit || list.length < limit) {
+      list.push(Date.now());
+      return;
+    }
+    const wait = list[0] + 60_000 - Date.now() + 200;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, wait);
+      signal?.addEventListener('abort', () => (clearTimeout(timer), reject(new DOMException('Aborted', 'AbortError'))), { once: true });
+    });
+  }
+}
+
+/** Remembers the rate a provider refused at (a little under it, never below 4 per minute). */
+export function learnLimit(host: string, said?: number): void {
+  const seen = startsInLastMinute(host).length;
+  const limit = said && said < 1000 ? said : Math.max(4, seen - 2);
+  learntLimit.set(host, Math.min(learntLimit.get(host) ?? Infinity, limit));
+}
+
 /** Milliseconds left before requests to any provider may go again. */
 export function cooldownLeft(): number {
   return Math.max(0, ...[...cooldowns.values()].map((t) => t - Date.now()));
@@ -125,6 +163,7 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   const model = (body as { model?: string } | undefined)?.model;
   // A rate limit was hit: every request waits for the provider's window to reset.
   await waitForCooldown(host, signal);
+  if (path === '/chat/completions') await paceRequest(host, signal);
   // Timed after the pause: the log shows how long the provider took.
   const start = performance.now();
   const images = JSON.stringify((body as { messages?: unknown } | undefined)?.messages ?? '').split('"type":"image_url"').length - 1;
@@ -161,15 +200,21 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   if (res.status === 429) {
     const waitMs = rateLimitWait(res.text);
     cooldowns.set(host, Math.max(cooldowns.get(host) ?? 0, Date.now() + waitMs));
-    logWarn('ia', `Limite de requêtes atteinte (${limitOf(res.text) ?? '?'} par minute) : pause de ${Math.round(waitMs / 1000)} s`, meta);
+    learnLimit(host, Number(limitOf(res.text)) || undefined);
+    logWarn('ia', `Limite de requêtes atteinte : pause de ${Math.round(waitMs / 1000)} s, puis ${learntLimit.get(host)} requêtes par minute au plus`, meta);
     throw new TranslateError(`AI endpoint HTTP 429 (rate limit) ${res.text.slice(0, 200)}`, 'llm', true);
   }
   if (res.status < 200 || res.status >= 300) {
     logError('ia', `${method} ${path} → HTTP ${res.status} : ${res.text.slice(0, 160)}`, meta);
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
+  if (/^\s*(data:|event:|:)/.test(res.text)) {
+    const parsed = parseStream(res.text);
+    // Thinking models write their reasoning first: long, slow, and unused.
+    logInfo('ia', `${method} ${path} OK`, { ...meta, réflexion: parsed.reasoning || undefined });
+    return parsed;
+  }
   logInfo('ia', `${method} ${path} OK`, meta);
-  if (/^\s*(data:|event:|:)/.test(res.text)) return parseStream(res.text);
   try {
     return JSON.parse(res.text);
   } catch {
@@ -181,12 +226,16 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
  * Rebuilds a chat answer from a streamed one (server-sent events): the
  * pieces of `choices[0].delta.content` put back together.
  */
-export function parseStream(text: string): { choices: { message: { content: string } }[] } {
+export function parseStream(text: string): { choices: { message: { content: string } }[]; reasoning: number } {
   let content = '';
+  let reasoning = 0;
   for (const line of text.split(/\r?\n/)) {
     const m = line.match(/^data:\s*(.*)$/);
     if (!m || m[1] === '[DONE]' || !m[1].trim()) continue;
-    let event: { error?: { message?: string } | string; choices?: { delta?: { content?: unknown }; message?: { content?: unknown } }[] };
+    let event: {
+      error?: { message?: string } | string;
+      choices?: { delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; message?: { content?: unknown } }[];
+    };
     try {
       event = JSON.parse(m[1]);
     } catch {
@@ -199,8 +248,10 @@ export function parseStream(text: string): { choices: { message: { content: stri
     const choice = event.choices?.[0];
     const piece = choice?.delta?.content ?? choice?.message?.content;
     if (typeof piece === 'string') content += piece;
+    const thought = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
+    if (typeof thought === 'string') reasoning += thought.length;
   }
-  return { choices: [{ message: { content } }] };
+  return { choices: [{ message: { content } }], reasoning };
 }
 
 export interface ModelInfo {
@@ -283,6 +334,21 @@ export async function checkVisionModel(llm: LlmSettings, model: string, timeoutM
   }
 }
 
+const thinkingOptionRefused = new Set<string>();
+
+/**
+ * Turns off the "thinking" of reasoning models (NVIDIA's Nemotron and
+ * others): they wrote pages of reasoning before every answer, which made a
+ * page take a minute instead of a few seconds, for no better reading.
+ */
+export function noThinking(llm: LlmSettings): Record<string, unknown> {
+  const base = baseOf(llm);
+  if (thinkingOptionRefused.has(base)) return {};
+  if (/nvidia\.com/i.test(base)) return { chat_template_kwargs: { enable_thinking: false, thinking: false } };
+  if (/openrouter\.ai/i.test(base)) return { reasoning: { enabled: false } };
+  return {};
+}
+
 export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
   if (!baseOf(llm) || !llm.model.trim()) throw new TranslateError('AI engine not configured', 'llm', false);
   const data = (await request(
@@ -291,9 +357,14 @@ export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: A
     '/chat/completions',
     // Streamed: data keeps flowing while a big model writes a long answer,
     // instead of one silent wait that ends in a timeout.
-    { model: llm.model.trim(), temperature: 0.2, messages, stream: true },
+    { model: llm.model.trim(), temperature: 0.2, messages, stream: true, ...noThinking(llm) },
     signal,
-  )) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
+  ).catch((err: Error) => {
+    // A provider that refuses the option: asked again without it, and never again.
+    if (!/HTTP 4(00|22)/.test(err.message) || !Object.keys(noThinking(llm)).length) throw err;
+    thinkingOptionRefused.add(baseOf(llm));
+    return request(llm, 'POST', '/chat/completions', { model: llm.model.trim(), temperature: 0.2, messages, stream: true }, signal);
+  })) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
   const content = data.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((p) => p.text ?? '').join('');
