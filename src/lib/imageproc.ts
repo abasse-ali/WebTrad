@@ -1134,6 +1134,39 @@ export function findTextBlocks(px: Pixels): Box[] {
   return blocks.filter((b) => b.count >= 3).map(({ x, y, w, h }) => ({ x, y, w, h }));
 }
 
+/**
+ * Height of the letters of the lines of text inside `box`, in pixels of
+ * `px`: the rows that hold ink are grouped into lines and a low quartile of
+ * their heights is taken (two lines that touch count as one tall line).
+ * 0 when no line is found. `tinted`: coloured lettering instead of dark.
+ */
+export function letterHeight(px: Pixels, box: Box, tinted = false): number {
+  const { data, width: W, height: H } = px;
+  const x0 = Math.max(0, Math.round(box.x));
+  const x1 = Math.min(W, Math.round(box.x + box.w));
+  const y0 = Math.max(0, Math.round(box.y));
+  const y1 = Math.min(H, Math.round(box.y + box.h));
+  const runs: number[] = [];
+  let start = -1;
+  for (let y = y0; y <= y1; y++) {
+    let ink = false;
+    if (y < y1) {
+      for (let x = x0; x < x1 && !ink; x++) {
+        const i = (y * W + x) * 4;
+        ink = tinted ? isTint(data, i) : luminance(data, i) < 128;
+      }
+    }
+    if (ink && start < 0) start = y;
+    if (!ink && start >= 0) {
+      if (y - start >= 4) runs.push(y - start);
+      start = -1;
+    }
+  }
+  if (runs.length === 0) return 0;
+  runs.sort((a, b) => a - b);
+  return runs[Math.floor((runs.length - 1) * 0.25)];
+}
+
 /** Average brightness of a box of `px` (0 dark – 255 white). */
 export function meanLuminance(px: Pixels, box: Box): number {
   const x0 = Math.max(0, Math.round(box.x));

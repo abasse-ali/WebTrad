@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, findTextBlocks, fitShift, innerBox, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, findTextBlocks, fitShift, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -169,6 +169,9 @@ function sameText(a: string, b: string): boolean {
   return norm(a) !== '' && norm(a) === norm(b);
 }
 
+/** Height of the original letters → font size given to the layout (see `visionPage`). */
+const LETTERS_TO_FONT = 0.8;
+
 /** Slices of the page read by the AI at the same time (free tiers allow ~40 requests a minute). */
 const VISION_PARALLEL = 3;
 
@@ -242,6 +245,33 @@ async function visionPage(
     if (!inkOf.has(r)) inkOf.set(r, maskedCrop(px, r).ink !== null);
     return inkOf.get(r)!;
   };
+  // Bubbles the detection leaves out for their shape (spiky shouts, torn
+  // rims, bubbles as wide as the page) are found from their lettering: the
+  // plain paper around it, up to its outline. Such a text is then erased
+  // and lettered like any bubble, instead of being repaired as artwork,
+  // which took the outline of the bubble away with the letters.
+  const shaped: (typeof regions)[number][] = [];
+  const shapedBubble = (box: Box, block?: Box): (typeof regions)[number] | undefined => {
+    const on = block ?? { x: box.x + box.w * 0.25, y: box.y + box.h * 0.25, w: box.w * 0.5, h: box.h * 0.5 };
+    const seed = { x: on.x * scale, y: on.y * scale, w: on.w * scale, h: on.h * scale };
+    const cx = seed.x + seed.w / 2;
+    const cy = seed.y + seed.h / 2;
+    const known = shaped.find((e) => {
+      const row = Math.round(cy) - e.y;
+      return row >= 0 && row < e.h && e.spans[row * 2] >= 0 && cx >= e.spans[row * 2] && cx <= e.spans[row * 2 + 1];
+    });
+    if (known) return known;
+    const e = enclosingBubble(px, seed);
+    if (!e) return undefined;
+    if (!block) {
+      // No lettering was found there: only a bubble whose ink is about the size of the text read.
+      const ink = maskedCrop(px, e).ink;
+      const ratio = ink ? ink.w / Math.max(1, box.w * scale) : 0;
+      if (ratio < 0.4 || ratio > 2.5) return undefined;
+    }
+    shaped.push(e);
+    return e;
+  };
   for (const [i, { top, h }] of slices.entries()) {
     const ownTop = top === 0 ? 0 : top + overlap / 2;
     const ownBottom = top + h >= H ? H : top + h - overlap / 2;
@@ -306,9 +336,15 @@ async function visionPage(
       box.x = Math.min(W - box.w, Math.max(0, box.x + dx));
       const cy = box.y + box.h / 2;
       if (cy < ownTop || cy >= ownBottom) continue;
-      const region = inRegion(box.x + box.w / 2, cy);
-      // Sound effects drawn on the artwork are not translated, even when the model sends them.
-      if (!region && isDrawnEffect(f.text)) continue;
+      let region = inRegion(box.x + box.w / 2, cy);
+      // Sound effects drawn on the artwork are not translated, even when the
+      // model sends them. A cry typed small ("UGH!") in a bubble of an odd
+      // shape is dialogue: its bubble is looked for before it is left out.
+      if (!region && isDrawnEffect(f.text)) {
+        if (box.h > W * 0.06) continue;
+        region = shapedBubble(box);
+        if (!region) continue;
+      }
       // Website watermarks are not translated, even over a bubble.
       if (isWatermark(f.text)) continue;
       found.push({ f, box, region });
@@ -363,35 +399,8 @@ async function visionPage(
     t.region = inRegion(b.x + b.w / 2, b.y + b.h / 2);
     logInfo('ocr', `Texte replacé sur le lettrage de la page (${Math.round(bestD)} px)`, { texte: t.f.text.slice(0, 40) });
   }
-  // Bubbles the detection leaves out for their shape (spiky shouts, torn
-  // rims, bubbles as wide as the page) are found from their lettering: the
-  // plain paper around it, up to its outline. Such a text is then erased
-  // and lettered like any bubble, instead of being repaired as artwork,
-  // which took the outline of the bubble away with the letters.
-  const shaped: (typeof regions)[number][] = [];
   for (const t of found) {
-    if (t.region) continue;
-    const on = t.block ?? { x: t.box.x + t.box.w * 0.25, y: t.box.y + t.box.h * 0.25, w: t.box.w * 0.5, h: t.box.h * 0.5 };
-    const seed = { x: on.x * scale, y: on.y * scale, w: on.w * scale, h: on.h * scale };
-    const cx = seed.x + seed.w / 2;
-    const cy = seed.y + seed.h / 2;
-    let r = shaped.find((e) => {
-      const row = Math.round(cy) - e.y;
-      return row >= 0 && row < e.h && e.spans[row * 2] >= 0 && cx >= e.spans[row * 2] && cx <= e.spans[row * 2 + 1];
-    });
-    if (!r) {
-      const e = enclosingBubble(px, seed);
-      if (!e) continue;
-      if (!t.block) {
-        // No lettering was found there: only a bubble whose ink is about the size of the text read.
-        const ink = maskedCrop(px, e).ink;
-        const ratio = ink ? ink.w / Math.max(1, t.box.w * scale) : 0;
-        if (ratio < 0.4 || ratio > 2.5) continue;
-      }
-      shaped.push(e);
-      r = e;
-    }
-    t.region = r;
+    if (!t.region) t.region = shapedBubble(t.box, t.block);
   }
   // The lettering of a bubble: the blocks of letter-sized marks found in it
   // (a big drawn sound effect overlapping the bubble is not one), else its ink.
@@ -484,8 +493,6 @@ async function visionPage(
   const cased = kept.filter((t) => /\p{Lu}|\p{Ll}/u.test(t.f.text));
   const capitals = cased.filter((t) => t.f.text === t.f.text.toLocaleUpperCase()).length;
   const pageInCaps = cased.length >= 3 && capitals / cased.length >= 0.6;
-  // Bubble lettering is never smaller than this, so short lines stay readable.
-  const minBubbleFont = W * 0.032;
 
   // Texts outside bubbles (signs, screens, chats) are put back on their
   // letters, so the repaired background covers the original instead of
@@ -532,9 +539,20 @@ async function visionPage(
     if (region && ink && !vertical) {
       // In a bubble: sized on the real letters, erased within the bubble's shape.
       const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };
-      const fontSize = Math.max(8, Math.min(60, inkBox.h / (lines * 1.2)));
+      // The size of the original letters, measured on the page: the model
+      // rarely says how many lines a bubble has, and a size guessed from
+      // the height of the whole block lettered some bubbles twice too big.
+      // Capitals are about 0.7 of the font size and the layout may go up
+      // to 1.2 times this size: the translation ends up as big as the original.
+      const letters = letterHeight(px, ink, region.tinted) / scale;
+      const fontSize = Math.max(8, Math.min(60, letters > 0 ? letters / LETTERS_TO_FONT : Math.min(inkBox.h / (lines * 1.2), W * 0.03)));
       const fill = regionFill(px, region);
       const look = lookOfText(px, inkBox, scale, fontSize, true);
+      // Dark lettering is black: a watermark crossing it tinted the sample.
+      if (!region.tinted && look.color) {
+        const [r, g, b] = [1, 3, 5].map((k) => parseInt(look.color!.slice(k, k + 2), 16));
+        if ((r * 299 + g * 587 + b * 114) / 1000 < 128) look.color = '#111111';
+      }
       const pad = Math.max(2, fontSize * 0.5) * scale;
       let patch: string | undefined;
       let patchBox: Box | undefined;
@@ -548,6 +566,20 @@ async function visionPage(
       let area: Box | undefined;
       const inner = innerBox(region, (inkBox.x + inkBox.w / 2) * scale, (inkBox.y + inkBox.h / 2) * scale, inkBox.h * scale);
       if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
+      if (area) {
+        // The translation stays around the place of the original lettering,
+        // with room to grow: the widest area found in the bubble reached
+        // past a grainy rim, and the text ran out of the bubble.
+        const roomW = inkBox.w * 1.5 + fontSize * 2;
+        const roomH = inkBox.h * 1.8 + fontSize * 1.6;
+        const mx = inkBox.x + inkBox.w / 2;
+        const my = inkBox.y + inkBox.h / 2;
+        const x0 = Math.max(area.x, mx - roomW / 2);
+        const y0 = Math.max(area.y, my - roomH / 2);
+        const x1 = Math.min(area.x + area.w, mx + roomW / 2);
+        const y1 = Math.min(area.y + area.h, my + roomH / 2);
+        area = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      }
       if (area && area.w * area.h < inkBox.w * inkBox.h * 0.6) area = undefined;
       bubbles.push({
         id: uid(),
@@ -556,8 +588,7 @@ async function visionPage(
         original,
         translation: f.translation,
         vertical,
-        // Tiny lettering in a roomy bubble grows to fill it (the layout still fits it).
-        fontSize: area ? Math.max(fontSize, minBubbleFont) : fontSize,
+        fontSize,
         fill,
         color: look.color,
         patch,
@@ -572,8 +603,7 @@ async function visionPage(
       if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
     }
     // AI boxes include the line spacing: lines are ~1.2× the letters.
-    let fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
-    if (area) fontSize = Math.max(fontSize, minBubbleFont);
+    const fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
     const look = lookOfText(px, box, scale, fontSize, Boolean(area));
     // No lettering could be taken off the artwork there: the model placed
     // its box where there is no text. Nothing is lettered over the drawing.
@@ -686,13 +716,16 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
       const padY = (bottom - top) * 0.1;
       const area: Box = { x: left + padX, y: top + padY, w: right - left - padX * 2, h: bottom - top - padY * 2 };
       const fill = regionFill(bottomPx, a);
-      const fontSize = W * 0.032;
+      const upperInk = maskedCrop(bottomPx, a).ink;
+      const letters = upperInk ? letterHeight(bottomPx, upperInk, a.tinted) : 0;
+      const fontSize = letters > 0 ? Math.max(8, Math.min(60, letters / LETTERS_TO_FONT)) : W * 0.026;
       const half = (px: typeof bottomPx, r: typeof a, dy: number): Pick<Bubble, 'x' | 'y' | 'w' | 'h' | 'patch' | 'patchBox'> => {
         const ink = maskedCrop(px, r).ink;
         if (!ink) return { x: r.x + r.w / 2, y: dy + r.y + r.h / 2, w: 1, h: 1 };
-        const pad = Math.max(2, fontSize * 0.5);
         try {
-          const cleaned = cleanBubble(px, r, { x: ink.x - pad, y: ink.y - pad, w: ink.w + pad * 2, h: ink.h + pad * 2 }, fill);
+          // The whole half is cleaned: a line set apart from the others
+          // (the last line of the bubble) stayed under the translation.
+          const cleaned = cleanBubble(px, r, { x: r.x, y: r.y, w: r.w, h: r.h }, fill);
           return {
             x: ink.x,
             y: dy + ink.y,
