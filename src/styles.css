@@ -651,6 +651,17 @@ textarea {
 .quick-field .btn.small {
   min-height: 32px;
 }
+/* Clears the link: a small grey round cross, like iOS search fields. */
+.quick-field .icon-btn.clear {
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+}
+.quick-field .icon-btn.clear svg {
+  padding: 3px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted) 25%, transparent);
+}
 
 .quick-status {
   position: fixed;

@@ -44,10 +44,22 @@ export function QuickLink() {
           spellCheck={false}
           onChange={(e) => setValue(e.target.value)}
         />
-        {!value && (isNativeApp() || ('clipboard' in navigator && 'readText' in navigator.clipboard)) && (
-          <button type="button" className="btn small ghost" onClick={() => void paste()}>
-            {t('quick.paste')}
+        {value ? (
+          <button
+            type="button"
+            className="icon-btn clear"
+            onClick={() => setValue('')}
+            aria-label={t('quick.clear')}
+            title={t('quick.clear')}
+          >
+            <Icon name="close" size={16} />
           </button>
+        ) : (
+          (isNativeApp() || ('clipboard' in navigator && 'readText' in navigator.clipboard)) && (
+            <button type="button" className="btn small ghost" onClick={() => void paste()}>
+              {t('quick.paste')}
+            </button>
+          )
         )}
       </div>
       <button type="submit" className="btn primary" disabled={!url || busy}>
