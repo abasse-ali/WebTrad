@@ -129,6 +129,7 @@ export const DEFAULT_SETTINGS: Settings = {
   letterCase: 'original',
   corsProxy: '',
   exportMaxMB: 30,
+  background: true,
 };
 
 function load(): Settings {

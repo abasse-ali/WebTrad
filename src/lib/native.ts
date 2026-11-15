@@ -21,6 +21,7 @@ interface WebTradBrowserPlugin {
   open(options: { url?: string; labels: Record<string, string>; auto?: boolean }): Promise<BrowserPage>;
   download(options: { urls: string[]; referer?: string }): Promise<{ files: { url: string; path: string }[]; failed: number }>;
   readClipboard(): Promise<{ text: string }>;
+  keepAlive(options: { on: boolean }): Promise<void>;
   addListener(event: 'progress', listener: (e: { done: number; total: number }) => void): Promise<PluginListenerHandle>;
 }
 
@@ -139,4 +140,14 @@ export async function readClipboard(): Promise<string> {
     }
   }
   return navigator.clipboard.readText();
+}
+
+/** iPhone app: keeps the app running in the background while `on` (silent audio, see the plugin). */
+export async function nativeKeepAlive(on: boolean): Promise<void> {
+  if (!isNativeApp()) return;
+  try {
+    await WebTradBrowser.keepAlive({ on });
+  } catch {
+    /* older app build */
+  }
 }

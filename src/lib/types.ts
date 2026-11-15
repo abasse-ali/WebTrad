@@ -120,4 +120,6 @@ export interface Settings {
   corsProxy: string;
   /** Maximum size of an exported .cbz in megabytes (0 = no limit). */
   exportMaxMB: number;
+  /** iPhone app: keep translating when the app leaves the screen or the phone is locked. */
+  background: boolean;
 }

@@ -2,6 +2,7 @@ import Foundation
 import Capacitor
 import UIKit
 import WebKit
+import AVFoundation
 
 /**
  * In-app browser of the WebTrad iPhone app.
@@ -19,6 +20,8 @@ import WebKit
  *     appears when the website asks for a check the reader has to tap.
  *   download({ urls, referer }) -> { files: [{ url, path }], failed }
  *   event "progress" { done, total } while downloading
+ *   keepAlive({ on }) -> {}: while a chapter is being translated, the app
+ *     keeps running when the reader leaves it or locks the phone (see below).
  */
 @objc(WebTradBrowserPlugin)
 public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -27,8 +30,95 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "download", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "readClipboard", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "readClipboard", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "keepAlive", returnType: CAPPluginReturnPromise)
     ]
+
+    // MARK: - Working in the background
+
+    /// Silence played in a loop: iOS lets an app that plays audio run while
+    /// it is in the background (Info.plist: UIBackgroundModes = audio). Mixed
+    /// with other sounds, so the reader's music is not interrupted.
+    private var silence: AVAudioPlayer?
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var keepingAlive = false
+    private var observers: [NSObjectProtocol] = []
+
+    @objc func keepAlive(_ call: CAPPluginCall) {
+        let on = call.getBool("on") ?? false
+        DispatchQueue.main.async {
+            if on { self.startKeepingAlive() } else { self.stopKeepingAlive() }
+            call.resolve()
+        }
+    }
+
+    private func startKeepingAlive() {
+        guard !keepingAlive else { return }
+        keepingAlive = true
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? session.setActive(true)
+        if silence == nil {
+            silence = try? AVAudioPlayer(data: Self.silentWav())
+            silence?.numberOfLoops = -1
+            silence?.volume = 0.01
+        }
+        silence?.play()
+        let center = NotificationCenter.default
+        // A phone call or another app taking the audio stops the loop: started again after.
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self = self, self.keepingAlive else { return }
+            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
+            if type == .ended {
+                try? AVAudioSession.sharedInstance().setActive(true)
+                self.silence?.play()
+            }
+        })
+        // Extra time asked to iOS when the app leaves the screen, in case the audio is refused.
+        observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, self.keepingAlive, self.backgroundTask == .invalid else { return }
+            self.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "WebTrad translation") { [weak self] in
+                self?.endBackgroundTask()
+            }
+            self.silence?.play()
+        })
+        observers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.endBackgroundTask()
+        })
+    }
+
+    private func stopKeepingAlive() {
+        guard keepingAlive else { return }
+        keepingAlive = false
+        silence?.stop()
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        endBackgroundTask()
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
+    private func endBackgroundTask() {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+    }
+
+    /// One second of silence, as a WAV file (8 kHz, 8-bit mono).
+    private static func silentWav() -> Data {
+        let rate: UInt32 = 8000
+        let samples = Int(rate)
+        var data = Data()
+        func add<T>(_ value: T) { withUnsafeBytes(of: value) { data.append(contentsOf: $0) } }
+        data.append(contentsOf: Array("RIFF".utf8)); add(UInt32(36 + samples).littleEndian)
+        data.append(contentsOf: Array("WAVE".utf8)); data.append(contentsOf: Array("fmt ".utf8))
+        add(UInt32(16).littleEndian); add(UInt16(1).littleEndian); add(UInt16(1).littleEndian)
+        add(rate.littleEndian); add(rate.littleEndian); add(UInt16(1).littleEndian); add(UInt16(8).littleEndian)
+        data.append(contentsOf: Array("data".utf8)); add(UInt32(samples).littleEndian)
+        // 8-bit PCM: 128 is the zero level.
+        data.append(contentsOf: [UInt8](repeating: 128, count: samples))
+        return data
+    }
 
     /// User agent of the in-app browser, sent with the image downloads.
     private var userAgent: String?

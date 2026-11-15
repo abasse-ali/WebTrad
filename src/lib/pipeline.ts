@@ -238,11 +238,19 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       if (b.w * scale < 6 || b.h * scale < 4) continue;
       const snapped = snapToText(px, { x: b.x * scale, y: b.y * scale, w: b.w * scale, h: b.h * scale }, { y: 2.5, x: 0.6, minY: h * scale * 0.04 });
       if (!snapped.found) continue;
-      ys.push({ at: b.y + b.h / 2, shift: snapped.y / scale - b.y });
-      xs.push({ at: b.x + b.w / 2, shift: snapped.x / scale - b.x });
+      const dy = snapped.y / scale - b.y;
+      const dx = snapped.x / scale - b.x;
+      // A model's habit is a small offset: a box "found" far away has
+      // landed on other lettering (another bubble, the artwork) and is no measure.
+      if (Math.abs(dy) > Math.min(Math.max(30, b.h), h * 0.05) || Math.abs(dx) > Math.max(20, b.w * 0.3)) continue;
+      ys.push({ at: b.y + b.h / 2, shift: dy });
+      xs.push({ at: b.x + b.w / 2, shift: dx });
     }
-    const shiftY = fitShift(ys);
-    const shiftX = fitShift(xs);
+    // One reading alone is trusted only for a few pixels.
+    const limit = ys.length >= 2 ? Infinity : 24;
+    const clampShift = (f: (at: number) => number) => (at: number) => Math.max(-limit, Math.min(limit, f(at)));
+    const shiftY = clampShift(fitShift(ys));
+    const shiftX = clampShift(fitShift(xs));
     const typical = ys.length > 0 ? Math.max(...ys.map((p) => Math.abs(shiftY(p.at))), ...xs.map((p) => Math.abs(shiftX(p.at)))) : 0;
     if (typical > 4) logInfo('ocr', `Cadres de l’IA recalés sur le texte (jusqu’à ${Math.round(typical)} px)`, { morceau: i + 1, mesures: ys.length });
     for (const f of results[i].bubbles) {
