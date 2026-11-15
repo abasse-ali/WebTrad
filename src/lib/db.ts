@@ -93,14 +93,25 @@ export async function savePages(pages: Page[]): Promise<void> {
 
 export async function patchPage(id: string, patch: Partial<Page>): Promise<Page | undefined> {
   const database = await db();
-  const tx = database.transaction('pages', 'readwrite');
-  const page = await tx.store.get(id);
   let next: Page | undefined;
-  if (page) {
-    next = { ...page, ...patch, rev: (page.rev ?? 0) + 1 };
-    await tx.store.put(next);
+  try {
+    const tx = database.transaction('pages', 'readwrite');
+    const page = await tx.store.get(id);
+    if (page) {
+      next = { ...page, ...patch, rev: (page.rev ?? 0) + 1 };
+      await tx.store.put(next);
+    }
+    await tx.done;
+  } catch (err) {
+    // WebKit (iPhone) cannot always store again a blob it read from the
+    // database ("Error preparing Blob/File data to be stored in object
+    // store"): the page is written again with a fresh copy of its image.
+    const page = await database.get('pages', id);
+    if (!page) throw err;
+    const blob = new Blob([await page.blob.arrayBuffer()], { type: page.blob.type || 'image/jpeg' });
+    next = { ...page, ...patch, blob: patch.blob ?? blob, rev: (page.rev ?? 0) + 1 };
+    await database.put('pages', next);
   }
-  await tx.done;
   if (next) emit(next.chapterId);
   return next;
 }

@@ -93,7 +93,6 @@ async function waitForCooldown(host: string, signal?: AbortSignal): Promise<void
 
 async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
   let res: RawResponse;
-  const start = performance.now();
   const host = (() => {
     try {
       return new URL(baseOf(llm)).host;
@@ -104,6 +103,8 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   const model = (body as { model?: string } | undefined)?.model;
   // A rate limit was hit: every request waits for the provider's window to reset.
   await waitForCooldown(host, signal);
+  // Timed after the pause: the log shows how long the provider took.
+  const start = performance.now();
   const images = JSON.stringify((body as { messages?: unknown } | undefined)?.messages ?? '').split('"type":"image_url"').length - 1;
   try {
     res = await call(method, `${baseOf(llm)}${path}`, authHeaders(llm), body, signal);
@@ -272,10 +273,49 @@ export function parseJsonAnswer<T>(answer: string): T {
       const open = body[start];
       const close = open === '{' ? '}' : ']';
       const end = body.lastIndexOf(close);
-      if (end > start) return JSON.parse(body.slice(start, end + 1)) as T;
+      if (end > start) {
+        try {
+          return JSON.parse(body.slice(start, end + 1)) as T;
+        } catch {
+          /* salvaged below */
+        }
+      }
     }
+    // Cut or damaged answers (free models stop mid-way): keep the complete items.
+    const items = salvageItems(body);
+    if (items.length > 0) return { bubbles: items } as T;
     throw new TranslateError('AI answer is not valid JSON', 'llm');
   }
+}
+
+/** The well-formed objects that carry a "translation" in a damaged JSON answer. */
+export function salvageItems(body: string): unknown[] {
+  const out: unknown[] = [];
+  const stack: number[] = [];
+  let inString = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') stack.push(i);
+    else if (ch === '}' && stack.length > 0) {
+      const from = stack.pop()!;
+      const chunk = body.slice(from, i + 1);
+      if (!/"translation"\s*:/.test(chunk)) continue;
+      try {
+        const item = JSON.parse(chunk) as { bubbles?: unknown };
+        // An item, not the whole answer (which would have been parsed already).
+        if (item && typeof item === 'object' && !('bubbles' in item)) out.push(item);
+      } catch {
+        /* skipped */
+      }
+    }
+  }
+  return out;
 }
 
 const SYSTEM_TRANSLATE = `You are an expert translator of manga, manhwa, manhua, webtoons and comics.
@@ -327,11 +367,11 @@ function visionPrompt(order: 'yxyx' | 'xyxy'): string {
   const box = order === 'xyxy' ? '[xmin, ymin, xmax, ymax]' : '[ymin, xmin, ymax, xmax]';
   const key = order === 'xyxy' ? 'bbox_2d' : 'box_2d';
   return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
-Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers and credits.
+Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers, credits, the series logo or title artwork, and "to be continued" banners.
 Do NOT include sound effects or onomatopoeia: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
 For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a natural translation in the requested language.
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
-Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|narration|sign","text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;
+Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|narration|sign","text":"...","translation":"..."}]} in reading order. List each piece of text once: never split one bubble into several items. Return {"bubbles":[]} if there is no text.`;
 }
 
 /** Box order the configured provider is best at. */

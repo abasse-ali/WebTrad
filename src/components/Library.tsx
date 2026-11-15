@@ -5,6 +5,7 @@ import { deleteChapter } from '../lib/db';
 import { displayName } from '../lib/languages';
 import { cancelChapter, useJobs } from '../lib/pipeline';
 import { clearPosition, getLastRead, loadPosition } from '../lib/progress';
+import { groupBySeries, seriesOf } from '../lib/series';
 import { useSettings } from '../lib/settings';
 import type { Chapter } from '../lib/types';
 import { Icon } from './Icon';
@@ -31,6 +32,7 @@ export function Library({ onNew }: { onNew: () => void }) {
   const storage = useStorageEstimate([chapters?.length]);
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<Sort>(storedSort);
+  const [openSeries, setOpenSeries] = useState<string | null>(null);
   const hasChapters = (chapters?.length ?? 0) > 0;
   const showTools = (chapters?.length ?? 0) >= TOOLS_FROM;
 
@@ -47,6 +49,9 @@ export function Library({ onNew }: { onNew: () => void }) {
     }
     return list;
   }, [chapters, query, sort, uiLang]);
+
+  // Chapters of the same manga share one card, opened to list them.
+  const groups = useMemo(() => groupBySeries(shown), [shown]);
 
   // The chapter being read, unless it was finished.
   const resume = useMemo(() => {
@@ -70,6 +75,59 @@ export function Library({ onNew }: { onNew: () => void }) {
     cancelChapter(c.id);
     await deleteChapter(c.id);
     clearPosition(c.id);
+  };
+
+  const chapterCard = (c: Chapter, inSeries: boolean) => {
+    const job = jobs.get(c.id);
+    const total = c.stats?.total ?? c.pageIds.length;
+    const done = c.stats?.done ?? 0;
+    const pos = positions.get(c.id);
+    const translated = done === total && total > 0;
+    let status: string;
+    let tone = '';
+    if (job?.running) {
+      status = t('library.processing', { done: job.done, total: job.total || total });
+      tone = 'busy';
+    } else if (translated && pos?.finished) {
+      status = t('library.read');
+      tone = 'read';
+    } else if (translated) {
+      status = t('library.status.done');
+      tone = 'ok';
+    } else if (c.stats?.errors) status = t('library.status.error');
+    else if (done > 0) status = t('library.status.partial', { done, total });
+    else status = t('library.status.new');
+    const number = inSeries ? seriesOf(c.title).number : null;
+    return (
+      <li key={c.id} className="card">
+        <a href={`#/read/${encodeURIComponent(c.id)}`} className="card-link">
+          <div className="cover">
+            {c.cover ? <img src={c.cover} alt="" loading="lazy" /> : <Icon name="image" size={40} />}
+            <span className={`badge ${tone}`}>{status}</span>
+            {pos && !pos.finished && pos.ratio > 0.01 && (
+              <span className="read-bar" aria-hidden="true">
+                <span style={{ transform: `scaleX(${pos.ratio})` }} />
+              </span>
+            )}
+          </div>
+          <div className="card-body">
+            <h3 title={c.title}>{number !== null ? t('library.series.chapter', { number }) : c.title}</h3>
+            <p className="muted small">
+              {c.sourceLang === 'auto' ? t('lang.detecting') : displayName(c.sourceLang, uiLang)}
+              {c.autoSource ? ` (${t('lang.autoShort')})` : ''} → {displayName(c.targetLang, uiLang)} · {pageCount(t, total)}
+            </p>
+          </div>
+        </a>
+        <button
+          className="icon-btn card-delete"
+          title={t('common.delete')}
+          aria-label={`${t('common.delete')} – ${c.title}`}
+          onClick={() => remove(c)}
+        >
+          <Icon name="trash" size={16} />
+        </button>
+      </li>
+    );
   };
 
   return (
@@ -126,56 +184,52 @@ export function Library({ onNew }: { onNew: () => void }) {
           )}
           {shown.length === 0 && <p className="muted center">{t('library.noMatch', { query: query.trim() })}</p>}
           <ul className="grid">
-            {shown.map((c) => {
-              const job = jobs.get(c.id);
-              const total = c.stats?.total ?? c.pageIds.length;
-              const done = c.stats?.done ?? 0;
-              const pos = positions.get(c.id);
-              const translated = done === total && total > 0;
-              let status: string;
-              let tone = '';
-              if (job?.running) {
-                status = t('library.processing', { done: job.done, total: job.total || total });
-                tone = 'busy';
-              } else if (translated && pos?.finished) {
-                status = t('library.read');
-                tone = 'read';
-              } else if (translated) {
-                status = t('library.status.done');
-                tone = 'ok';
-              } else if (c.stats?.errors) status = t('library.status.error');
-              else if (done > 0) status = t('library.status.partial', { done, total });
-              else status = t('library.status.new');
-              return (
-                <li key={c.id} className="card">
-                  <a href={`#/read/${encodeURIComponent(c.id)}`} className="card-link">
+            {groups.map((g) => {
+              if (g.items.length === 1) return chapterCard(g.items[0], false);
+              const open = openSeries === g.key || query.trim() !== '';
+              // The chapter to go on with: the one being read, else the first not finished.
+              const current =
+                g.items.find((c) => c.id === resume?.id) ??
+                g.items.find((c) => !positions.get(c.id)?.finished) ??
+                g.items[g.items.length - 1];
+              const read = g.items.filter((c) => positions.get(c.id)?.finished).length;
+              const busy = g.items.some((c) => jobs.get(c.id)?.running);
+              const first = seriesOf(g.items[0].title).number;
+              const last = seriesOf(g.items[g.items.length - 1].title).number;
+              const cover = current.cover ?? g.items.find((c) => c.cover)?.cover;
+              return [
+                <li key={g.key} className={`card series-card ${open ? 'open' : ''}`}>
+                  <button
+                    type="button"
+                    className="card-link"
+                    aria-expanded={open}
+                    onClick={() => setOpenSeries(open ? null : g.key)}
+                  >
                     <div className="cover">
-                      {c.cover ? <img src={c.cover} alt="" loading="lazy" /> : <Icon name="image" size={40} />}
-                      <span className={`badge ${tone}`}>{status}</span>
-                      {pos && !pos.finished && pos.ratio > 0.01 && (
-                        <span className="read-bar" aria-hidden="true">
-                          <span style={{ transform: `scaleX(${pos.ratio})` }} />
-                        </span>
-                      )}
+                      {cover ? <img src={cover} alt="" loading="lazy" /> : <Icon name="image" size={40} />}
+                      <span className={`badge ${busy ? 'busy' : ''}`}>{t('library.series.count', { count: g.items.length })}</span>
                     </div>
                     <div className="card-body">
-                      <h3 title={c.title}>{c.title}</h3>
+                      <h3 title={g.name}>{g.name}</h3>
                       <p className="muted small">
-                        {c.sourceLang === 'auto' ? t('lang.detecting') : displayName(c.sourceLang, uiLang)}
-                        {c.autoSource ? ` (${t('lang.autoShort')})` : ''} → {displayName(c.targetLang, uiLang)} · {pageCount(t, total)}
+                        {first !== null && last !== null ? t('library.series.range', { first, last }) : ''}
+                        {read > 0 ? ` · ${t('library.series.read', { read })}` : ''}
                       </p>
                     </div>
-                  </a>
-                  <button
-                    className="icon-btn card-delete"
-                    title={t('common.delete')}
-                    aria-label={`${t('common.delete')} – ${c.title}`}
-                    onClick={() => remove(c)}
-                  >
-                    <Icon name="trash" size={16} />
                   </button>
-                </li>
-              );
+                </li>,
+                open && (
+                  <li key={`${g.key}:open`} className="series-open">
+                    <div className="series-head">
+                      <h3>{g.name}</h3>
+                      <a className="btn small" href={`#/read/${encodeURIComponent(current.id)}`}>
+                        <Icon name="play" size={16} /> {t('library.series.continue', { number: seriesOf(current.title).number ?? '' })}
+                      </a>
+                    </div>
+                    <ul className="grid">{g.items.map((c) => chapterCard(c, true))}</ul>
+                  </li>
+                ),
+              ];
             })}
           </ul>
         </section>

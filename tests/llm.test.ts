@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listModels, visionTranslate } from '../src/lib/translate/llm';
+import { listModels, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
 
 const nvidia = { preset: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', apiKey: 'nvapi-test', model: 'qwen/qwen3.5-397b-a17b' };
 const gemini = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: 'k', model: 'gemini-flash-latest' };
@@ -136,5 +136,12 @@ describe('rate limits and sound effects', () => {
     const { isSoundEffect } = await import('../src/lib/text');
     for (const t of ['HUFF', 'HUFF HUFF', 'TWITCH!', 'SPUUURT', 'slap slap', 'SWOOSH', 'GRIP']) expect(isSoundEffect(t)).toBe(true);
     for (const t of ['HI!', 'WEAPON SHOP', 'I WAS LOOKING FOR YOU.', 'FUCK...', 'HNGH!', 'WANTED']) expect(isSoundEffect(t)).toBe(false);
+  });
+});
+
+describe('parseJsonAnswer on a cut answer', () => {
+  it('keeps the complete items', () => {
+    const cut = '{"source_language":"en","bubbles":[{"box_2d":[1,2,3,4],"text":"Hi","translation":"Salut"},{"box_2d":[5,6,7,8],"text":"Bye","transl';
+    expect(parseJsonAnswer<{ bubbles: unknown[] }>(cut).bubbles).toEqual([{ box_2d: [1, 2, 3, 4], text: 'Hi', translation: 'Salut' }]);
   });
 });
