@@ -37,7 +37,8 @@ async function call(method: 'GET' | 'POST', url: string, headers: Record<string,
       headers,
       data: body,
       responseType: 'text',
-      connectTimeout: 20_000,
+      // Free tiers queue a request for a while before they start to answer.
+      connectTimeout: 60_000,
       // Reset by every chunk received: with a streamed answer a slow model never times out while it writes.
       readTimeout: 300_000,
     });
@@ -92,6 +93,9 @@ async function waitForCooldown(host: string, signal?: AbortSignal): Promise<void
   });
 }
 
+/** Longest wait for one complete answer of the provider. */
+const REQUEST_DEADLINE_MS = 180_000;
+
 async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
   let res: RawResponse;
   const host = (() => {
@@ -108,7 +112,17 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   const start = performance.now();
   const images = JSON.stringify((body as { messages?: unknown } | undefined)?.messages ?? '').split('"type":"image_url"').length - 1;
   try {
-    res = await call(method, `${baseOf(llm)}${path}`, authHeaders(llm), body, signal);
+    // A stream that trickles for a quarter of an hour blocks the whole page:
+    // past the deadline the request is given up and tried again.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no complete answer after ${REQUEST_DEADLINE_MS / 1000} s`)), REQUEST_DEADLINE_MS);
+    });
+    try {
+      res = await Promise.race([call(method, `${baseOf(llm)}${path}`, authHeaders(llm), body, signal), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
       logInfo('ia', `${method} ${path} annulé`, { fournisseur: host, modèle: model, ms: since(start) });
@@ -365,17 +379,12 @@ export interface VisionBubble {
   translation: string;
 }
 
-function visionPrompt(order: 'yxyx' | 'xyxy', locateEffects = false): string {
+function visionPrompt(order: 'yxyx' | 'xyxy'): string {
   const box = order === 'xyxy' ? '[xmin, ymin, xmax, ymax]' : '[ymin, xmin, ymax, xmax]';
   const key = order === 'xyxy' ? 'bbox_2d' : 'box_2d';
   return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
 Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers, credits, the series logo or title artwork, and "to be continued" banners.
-Do NOT include sound effects, onomatopoeia or cries drawn as artwork outside the speech bubbles (stylised, coloured or outlined letters on the drawing: HUFF, HAAA, HNNG, UGH, SHLICK…). Do NOT include website watermarks (TOOMICS.com…), even when they lie on a bubble. Sound effects: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.${
-    locateEffects
-      ? `
-Exception, for animation only: also list each drawn sound effect as an item with "kind":"sfx", its box, its text and an EMPTY translation (""). Never translate them.`
-      : ''
-  }
+Do NOT include sound effects, onomatopoeia or cries drawn as artwork outside the speech bubbles (stylised, coloured or outlined letters on the drawing: HUFF, HAAA, HNNG, UGH, SHLICK…). Do NOT include website watermarks (TOOMICS.com…), even when they lie on a bubble. Sound effects: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
 For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a translation in the requested language.
 How to translate, like a professional scanlation team:
 - Read the whole image first: a sentence often runs over several bubbles; translate each bubble so that, read in order, they form natural sentences.
@@ -404,12 +413,12 @@ export async function visionTranslate(
   size?: { width: number; height: number },
   /** Lines translated just before (previous pages), for names, tone and the story so far. */
   context?: string,
-): Promise<{ bubbles: VisionBubble[]; effects: VisionBubble[]; sourceLanguage?: string }> {
+): Promise<{ bubbles: VisionBubble[]; sourceLanguage?: string }> {
   const order = boxOrderOf(llm);
   const answer = await chat(
     llm,
     [
-      { role: 'system', content: visionPrompt(order, getSettings().animated !== false) },
+      { role: 'system', content: visionPrompt(order) },
       {
         role: 'user',
         content: [
@@ -433,22 +442,20 @@ export async function visionTranslate(
   const list = Array.isArray(parsed) ? parsed : (parsed.bubbles ?? []);
   const sourceLanguage = Array.isArray(parsed) ? undefined : parsed.source_language;
   const out: VisionBubble[] = [];
-  const effects: VisionBubble[] = [];
-  const boxes: { box: number[]; xyxy: boolean; effect: boolean; item: { text?: unknown; translation?: unknown } }[] = [];
+  const boxes: { box: number[]; xyxy: boolean; item: { text?: unknown; translation?: unknown } }[] = [];
   for (const raw of list) {
     const item = raw as { box_2d?: unknown; bbox_2d?: unknown; bbox?: unknown; box?: unknown; text?: unknown; translation?: unknown; kind?: unknown; type?: unknown };
-    // Sound effects are left drawn as they are, whatever the model sent
-    // (their place is kept for the animated reading).
-    const effect = /^(sfx|sound|onomatop)/i.test(String(item.kind ?? item.type ?? ''));
+    // Sound effects are left drawn as they are, whatever the model sent.
+    if (/^(sfx|sound|onomatop)/i.test(String(item.kind ?? item.type ?? ''))) continue;
     // The key tells the order when the model picked its own habit.
     const xyxy = item.bbox_2d !== undefined || item.bbox !== undefined ? true : item.box_2d !== undefined ? false : order === 'xyxy';
     const box = (item.box_2d ?? item.bbox_2d ?? item.bbox ?? item.box) as unknown;
     if (!Array.isArray(box) || box.length !== 4 || !box.every((v) => typeof v === 'number')) continue;
-    boxes.push({ box: box as number[], xyxy, effect, item });
+    boxes.push({ box: box as number[], xyxy, item });
   }
   // Coordinates above 1000 are pixels of the image sent.
   const inPixels = size !== undefined && boxes.some((b) => b.box.some((v) => v > 1000));
-  for (const { box, xyxy, effect, item } of boxes) {
+  for (const { box, xyxy, item } of boxes) {
     let [y0, x0, y1, x1] = xyxy ? [box[1], box[0], box[3], box[2]] : box;
     if (inPixels && size) {
       y0 = (y0 / size.height) * 1000;
@@ -457,13 +464,13 @@ export async function visionTranslate(
       x1 = (x1 / size.width) * 1000;
     }
     if (y1 <= y0 || x1 <= x0) continue;
-    (effect ? effects : out).push({
+    out.push({
       box: [y0, x0, y1, x1],
       text: typeof item.text === 'string' ? item.text : '',
       translation: typeof item.translation === 'string' ? item.translation : '',
     });
   }
-  return { bubbles: out, effects, sourceLanguage };
+  return { bubbles: out, sourceLanguage };
 }
 
 /** Quick round trip used by the "Test" button in the settings. */

@@ -1,8 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import type { Pixels } from './imageproc';
-import { cleanBubble, contrastColor, detectAllBubbles, findTextBlocks, fitShift, innerBox, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, findTextBlocks, fitShift, innerBox, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -21,7 +20,7 @@ import { TranslateError } from './translate/types';
 import { isDrawnEffect, isSoundEffect, isWatermark } from './text';
 import { alignToBubbles } from './align';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
-import type { Bubble, Chapter, Page, SoundEffect } from './types';
+import type { Bubble, Chapter, Page } from './types';
 
 // --- job state store ----------------------------------------------------------
 
@@ -165,7 +164,8 @@ async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits 
 /** AI vision mode: one request per slice of the page reads and translates. */
 /** Text that says the same once letters, case and punctuation are compared ("HUFF" → "HUFF!"). */
 function sameText(a: string, b: string): boolean {
-  const norm = (t: string) => t.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  // Accents apart: "PC Cafe" → "PC Café" is the same sign, left as drawn.
+  const norm = (t: string) => t.normalize('NFD').replace(/\p{M}+/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
   return norm(a) !== '' && norm(a) === norm(b);
 }
 
@@ -178,7 +178,7 @@ async function visionPage(
   chapter: Chapter,
   signal: AbortSignal,
   context?: string,
-): Promise<{ bubbles: Bubble[]; effects: SoundEffect[] }> {
+): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
   // Tall slices: a webtoon page costs fewer requests (vision models read tall images well).
@@ -218,7 +218,7 @@ async function visionPage(
         // the page is still lettered instead of the whole page failing.
         if (!/not valid JSON|Empty AI response/.test((err as Error).message)) throw err;
         logWarn('ia', `Morceau ${i + 1}/${slices.length} de la page ignoré : réponse illisible de l’IA`);
-        results[i] = { bubbles: [], effects: [] };
+        results[i] = { bubbles: [] };
       }
     }
   };
@@ -233,9 +233,8 @@ async function visionPage(
   }
 
   // Every text the model found, in page coordinates, matched to its bubble.
-  type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number] };
+  type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number]; block?: Box };
   const found: Found[] = [];
-  const effects: SoundEffect[] = [];
   const inRegion = (x: number, y: number) =>
     regions.find((r) => x * scale >= r.x && x * scale <= r.x + r.w && y * scale >= r.y && y * scale <= r.y + r.h);
   const inkOf = new Map<(typeof regions)[number], boolean>();
@@ -295,14 +294,11 @@ async function visionPage(
     const shiftX = clampShift(fitShift(xs));
     const typical = ys.length > 0 ? Math.max(...ys.map((p) => Math.abs(shiftY(p.at))), ...xs.map((p) => Math.abs(shiftX(p.at)))) : 0;
     if (typical > 4) logInfo('ocr', `Cadres de l’IA recalés sur le texte (jusqu’à ${Math.round(typical)} px)`, { morceau: i + 1, mesures: ys.length });
-    for (const f of results[i].effects) {
-      const box = toPage(f.box);
-      const cy = box.y + box.h / 2;
-      if (cy >= ownTop && cy < ownBottom) effects.push({ ...box, text: f.text });
-    }
     for (const f of results[i].bubbles) {
       // Untranslatable sound effects ("HUFF" → "HUFF"): the drawn lettering stays.
       if (!f.translation.trim() || sameText(f.text, f.translation)) continue;
+      // Nothing to translate in "…?" or "!!": the drawn marks stay as they are.
+      if (!/[\p{L}\p{N}]/u.test(f.text)) continue;
       const box = toPage(f.box);
       const dy = shiftY(box.y + box.h / 2);
       const dx = shiftX(box.x + box.w / 2);
@@ -312,10 +308,7 @@ async function visionPage(
       if (cy < ownTop || cy >= ownBottom) continue;
       const region = inRegion(box.x + box.w / 2, cy);
       // Sound effects drawn on the artwork are not translated, even when the model sends them.
-      if (!region && isDrawnEffect(f.text)) {
-        effects.push({ ...box, text: f.text });
-        continue;
-      }
+      if (!region && isDrawnEffect(f.text)) continue;
       // Website watermarks are not translated, even over a bubble.
       if (isWatermark(f.text)) continue;
       found.push({ f, box, region });
@@ -333,7 +326,10 @@ async function visionPage(
     const cx = t.box.x + t.box.w / 2;
     const cy = t.box.y + t.box.h / 2;
     const hit = blocks.findIndex((b, j) => !taken.has(j) && inside(grow(b, 0.4), cx, cy));
-    if (hit >= 0) taken.add(hit);
+    if (hit >= 0) {
+      taken.add(hit);
+      t.block = blocks[hit];
+    }
     // In a bubble that holds lettering: in place, even if its letters are too small to be found as a block.
     else if (!t.region) {
       // Light text on a dark screen or panel (a game chat) is not found as
@@ -363,8 +359,39 @@ async function visionPage(
     const b = blocks[best];
     lastY = b.y + b.h / 2;
     t.box = { ...b };
+    t.block = b;
     t.region = inRegion(b.x + b.w / 2, b.y + b.h / 2);
     logInfo('ocr', `Texte replacé sur le lettrage de la page (${Math.round(bestD)} px)`, { texte: t.f.text.slice(0, 40) });
+  }
+  // Bubbles the detection leaves out for their shape (spiky shouts, torn
+  // rims, bubbles as wide as the page) are found from their lettering: the
+  // plain paper around it, up to its outline. Such a text is then erased
+  // and lettered like any bubble, instead of being repaired as artwork,
+  // which took the outline of the bubble away with the letters.
+  const shaped: (typeof regions)[number][] = [];
+  for (const t of found) {
+    if (t.region) continue;
+    const on = t.block ?? { x: t.box.x + t.box.w * 0.25, y: t.box.y + t.box.h * 0.25, w: t.box.w * 0.5, h: t.box.h * 0.5 };
+    const seed = { x: on.x * scale, y: on.y * scale, w: on.w * scale, h: on.h * scale };
+    const cx = seed.x + seed.w / 2;
+    const cy = seed.y + seed.h / 2;
+    let r = shaped.find((e) => {
+      const row = Math.round(cy) - e.y;
+      return row >= 0 && row < e.h && e.spans[row * 2] >= 0 && cx >= e.spans[row * 2] && cx <= e.spans[row * 2 + 1];
+    });
+    if (!r) {
+      const e = enclosingBubble(px, seed);
+      if (!e) continue;
+      if (!t.block) {
+        // No lettering was found there: only a bubble whose ink is about the size of the text read.
+        const ink = maskedCrop(px, e).ink;
+        const ratio = ink ? ink.w / Math.max(1, t.box.w * scale) : 0;
+        if (ratio < 0.4 || ratio > 2.5) continue;
+      }
+      shaped.push(e);
+      r = e;
+    }
+    t.region = r;
   }
   // The lettering of a bubble: the blocks of letter-sized marks found in it
   // (a big drawn sound effect overlapping the bubble is not one), else its ink.
@@ -376,11 +403,21 @@ async function visionPage(
         const cy = b.y + b.h / 2;
         return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
       });
-    if (mine.length === 0) return maskedCrop(px, r).ink;
-    const x0 = Math.min(...mine.map((b) => b.x));
-    const y0 = Math.min(...mine.map((b) => b.y));
-    const x1 = Math.max(...mine.map((b) => b.x + b.w));
-    const y1 = Math.max(...mine.map((b) => b.y + b.h));
+    const ink = maskedCrop(px, r).ink;
+    if (mine.length === 0) return ink;
+    let x0 = Math.min(...mine.map((b) => b.x));
+    let y0 = Math.min(...mine.map((b) => b.y));
+    let x1 = Math.max(...mine.map((b) => b.x + b.w));
+    let y1 = Math.max(...mine.map((b) => b.y + b.h));
+    // Marks the blocks left out ("I…" at the start of a line, a lone "?")
+    // stayed visible beside the translation: the ink of the bubble completes
+    // the box, unless it is far bigger (a drawn effect crossing the bubble).
+    if (ink && ink.w * ink.h <= (x1 - x0) * (y1 - y0) * 2.5 && ink.x < x1 && ink.x + ink.w > x0 && ink.y < y1 && ink.y + ink.h > y0) {
+      x0 = Math.min(x0, ink.x);
+      y0 = Math.min(y0, ink.y);
+      x1 = Math.max(x1, ink.x + ink.w);
+      y1 = Math.max(y1, ink.y + ink.h);
+    }
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   };
   // A box a little off its bubble (the model misplaced it): moved into the
@@ -450,8 +487,42 @@ async function visionPage(
   // Bubble lettering is never smaller than this, so short lines stay readable.
   const minBubbleFont = W * 0.032;
 
+  // Texts outside bubbles (signs, screens, chats) are put back on their
+  // letters, so the repaired background covers the original instead of
+  // sitting beside it.
+  const outside = kept.filter((t) => !t.region);
+  for (const t of outside) {
+    const s = snapToText(px, { x: t.box.x * scale, y: t.box.y * scale, w: t.box.w * scale, h: t.box.h * scale });
+    t.box.x = s.x / scale;
+    t.box.y = s.y / scale;
+  }
+  // A translation over the wrong place is worse than none: the original
+  // stays as drawn when the text landed on a bubble that has its own text,
+  // or when several of them cover each other (the slanted, tightly packed
+  // lines of a game chat or of a phone screen).
+  const skipped = new Set<Found>();
+  for (const t of outside) {
+    const onBubble = kept.some((k) => {
+      if (!k.region) return false;
+      const r = k.region;
+      return overlapShare(t.box, { x: r.x / scale, y: r.y / scale, w: r.w / scale, h: r.h / scale }) > 0.3;
+    });
+    if (onBubble) skipped.add(t);
+  }
+  for (const [i, a] of outside.entries()) {
+    for (const b of outside.slice(i + 1)) {
+      if (overlapShare(a.box, b.box) > 0.25) {
+        skipped.add(a);
+        skipped.add(b);
+      }
+    }
+  }
+  if (skipped.size > 0) logInfo('ocr', `Texte(s) hors bulle laissé(s) tel(s) quel(s) : placement incertain`, { textes: skipped.size });
+
   const bubbles: Bubble[] = [];
-  for (const { f, box, region } of kept) {
+  for (const t of kept) {
+    if (skipped.has(t)) continue;
+    const { f, box, region } = t;
     const original = pageInCaps && region ? f.text.toLocaleUpperCase() : f.text;
     const cx = box.x + box.w / 2;
     const cy = box.y + box.h / 2;
@@ -495,13 +566,6 @@ async function visionPage(
       continue;
     }
     let area: Box | undefined;
-    if (!region) {
-      // Signs, screens, chats: the box is put back on the letters, so the
-      // repaired background covers the original instead of sitting beside it.
-      const s = snapToText(px, { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale });
-      box.x = s.x / scale;
-      box.y = s.y / scale;
-    }
     if (region) {
       const inner = innerBox(region, cx * scale, cy * scale, box.h * scale);
       if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
@@ -511,6 +575,12 @@ async function visionPage(
     let fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
     if (area) fontSize = Math.max(fontSize, minBubbleFont);
     const look = lookOfText(px, box, scale, fontSize, Boolean(area));
+    // No lettering could be taken off the artwork there: the model placed
+    // its box where there is no text. Nothing is lettered over the drawing.
+    if (!region && !look.patch) {
+      logInfo('ocr', 'Texte hors bulle ignoré : aucun lettrage à cet endroit', { texte: f.text.slice(0, 40) });
+      continue;
+    }
     bubbles.push({
       id: uid(),
       ...box,
@@ -526,25 +596,7 @@ async function visionPage(
       patchBox: look.patchBox,
     });
   }
-  return { bubbles, effects: placeEffects(px, scale, effects, bubbles) };
-}
-
-/**
- * Sound effects kept for the animated reading: only where drawn lettering
- * really is (a box the model misplaced would make a piece of artwork move),
- * moved onto it, never over a translated text, each once.
- */
-function placeEffects(px: Pixels, scale: number, effects: SoundEffect[], bubbles: Bubble[]): SoundEffect[] {
-  const out: SoundEffect[] = [];
-  for (const e of effects) {
-    if (e.w < 8 || e.h < 8) continue;
-    const s = snapToText(px, { x: e.x * scale, y: e.y * scale, w: e.w * scale, h: e.h * scale }, { y: 0.8, x: 0.4 });
-    if (!s.found) continue;
-    const box = { x: s.x / scale, y: s.y / scale, w: e.w, h: e.h };
-    if (bubbles.some((b) => overlapShare(b, box) > 0.2) || out.some((o) => overlapShare(o, box) > 0.5)) continue;
-    out.push({ ...box, text: e.text });
-  }
-  return out;
+  return bubbles;
 }
 
 /** Share of the smaller box covered by the other one. */
@@ -755,9 +807,7 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   try {
     if (useVision) {
       const context = await storySoFar(chapter, page.index);
-      const read = await visionPage(bitmap, chapter, signal, context);
-      let bubbles = read.bubbles;
-      const effects = read.effects;
+      let bubbles = await visionPage(bitmap, chapter, signal, context);
       try {
         bubbles = await stitchSeam(page, bitmap, chapter, signal, bubbles, context);
       } catch (err) {
@@ -769,11 +819,10 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
       if (own.length > 0) bubbles = [...bubbles.filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmap.height), b))), ...own];
       logInfo('ocr', `Page ${page.index + 1} lue par l’IA : ${bubbles.length} texte(s)`, {
         ...where,
-        effets: effects.length || undefined,
         modèle: settings.llm.model,
         ms: since(start),
       });
-      await patchPage(page.id, { bubbles, effects, status: 'done', stalled: 0 });
+      await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
       return 'llm';
     }
     const detected = await ocrPage(bitmap, chapter.sourceLang, { minConfidence: settings.minConfidence, signal });

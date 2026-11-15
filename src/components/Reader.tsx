@@ -510,7 +510,6 @@ export function Reader({ id }: { id: string }) {
         onCreate={onCreate}
         onRetry={onRetry}
         onTap={onTap}
-        animated={settings.animated}
       />
     ));
 
@@ -573,9 +572,6 @@ export function Reader({ id }: { id: string }) {
                 </button>
                 <button role="menuitem" onClick={() => (setMenuOpen(false), setAuto(auto === 'off' ? 'play' : 'off'))} disabled={!pages?.length}>
                   <Icon name="scroll" size={16} /> {auto === 'off' ? t('reader.auto.on') : t('reader.auto.off')}
-                </button>
-                <button role="menuitem" onClick={() => (setMenuOpen(false), updateSettings({ animated: !settings.animated }))}>
-                  <Icon name="sparkles" size={16} /> {settings.animated ? t('reader.animated.off') : t('reader.animated.on')}
                 </button>
                 <button role="menuitem" onClick={() => (setMenuOpen(false), setLangOpen(true))}>
                   <Icon name="globe" size={16} /> {t('reader.languages')}

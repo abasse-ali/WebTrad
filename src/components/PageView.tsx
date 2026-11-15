@@ -1,10 +1,10 @@
-import { memo, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import type { MessageKey, Translate } from '../i18n';
 import { useNearViewport } from '../hooks';
 import { INTERRUPTED } from '../lib/db';
 import { LINE_HEIGHT, layoutBubble, outlineColor, type BubbleLayout, type LayoutOptions } from '../lib/layout';
 import type { Box } from '../lib/text';
-import type { Bubble, Page, SoundEffect } from '../lib/types';
+import type { Bubble, Page } from '../lib/types';
 import { Icon } from './Icon';
 
 const pct = (v: number, total: number) => `${(v / total) * 100}%`;
@@ -23,39 +23,19 @@ function TranslatedLayer({
   bubbles,
   opts,
   selectedId,
-  animated,
   onSelect,
 }: {
   page: Page;
   bubbles: Bubble[];
   opts: LayoutOptions;
   selectedId?: string;
-  animated?: boolean;
   onSelect?: (bubbleId: string) => void;
 }) {
   const W = page.width;
   const H = page.height;
   const cq = (v: number) => `${(v / W) * 100}cqw`;
-  const layer = useRef<HTMLDivElement>(null);
-  // Animated reading: each translated bubble pops in when it comes into view.
-  useEffect(() => {
-    const root = layer.current;
-    if (!animated || !root || typeof IntersectionObserver === 'undefined') return;
-    const seen = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (!e.isIntersecting) continue;
-          e.target.classList.add('in');
-          seen.unobserve(e.target);
-        }
-      },
-      { rootMargin: '0px 0px -12% 0px' },
-    );
-    root.querySelectorAll('.tb:not(.in)').forEach((el) => seen.observe(el));
-    return () => seen.disconnect();
-  }, [animated, bubbles]);
   return (
-    <div className={`tb-layer ${animated ? 'animated' : ''}`} ref={layer}>
+    <div className="tb-layer">
       {bubbles.map((b) => {
         const l = layoutBubble(b, page, opts);
         if (!l) return null;
@@ -240,53 +220,6 @@ function EditLayer({
   );
 }
 
-/** How a drawn sound effect moves, from what it says. */
-export function effectMotion(text: string): 'shake' | 'hit' | 'breathe' | 'pulse' {
-  const t = text.toLowerCase();
-  if (/(trembl|twitch|shiver|shak|quiver|wriggl|squirm|jiggl|rumbl|swish|swoosh|whoosh|tzz|buzz|clench|grip|rub)/.test(t)) return 'shake';
-  if (/(slap|smack|thrust|spurt|bang|boom|pow|wham|crash|bam|squeez|squelch|shlick|spank|pound|thud|thump|snap|pop|splash)/.test(t)) return 'hit';
-  if (/(huff|haa|hah|pant|gasp|sigh|puff|ugh|hnn|hng|ahh|mm)/.test(t)) return 'breathe';
-  return 'pulse';
-}
-
-/**
- * Animated reading: the drawn sound effects of the page come to life. Each
- * is a window on the page image, over the lettering, that trembles, hits
- * or breathes according to the word.
- */
-function EffectsLayer({ page, url, effects }: { page: Page; url: string; effects: SoundEffect[] }) {
-  const W = page.width;
-  const H = page.height;
-  return (
-    <div className="fx-layer" aria-hidden="true">
-      {effects.map((e, i) => {
-        // A margin around the letters: their outline moves with them.
-        const pad = Math.min(e.w, e.h) * 0.15;
-        const x = Math.max(0, e.x - pad);
-        const y = Math.max(0, e.y - pad);
-        const w = Math.min(W - x, e.w + pad * 2);
-        const h = Math.min(H - y, e.h + pad * 2);
-        return (
-          <div
-            key={i}
-            className={`fx fx-${effectMotion(e.text)}`}
-            style={{
-              left: pct(x, W),
-              top: pct(y, H),
-              width: pct(w, W),
-              height: pct(h, H),
-              // Effects of one page do not move in step.
-              animationDelay: `${((i * 0.37) % 1.2).toFixed(2)}s`,
-            }}
-          >
-            <img src={url} alt="" draggable={false} style={{ width: `${(W / w) * 100}%`, left: `${(-x / w) * 100}%`, top: `${(-y / h) * 100}%` }} />
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export interface PageViewProps {
   page: Page;
   url: string;
@@ -306,8 +239,6 @@ export interface PageViewProps {
   onRetry: (pageId: string) => void;
   /** Tap on the page itself, outside any bubble. */
   onTap?: () => void;
-  /** Animated reading (bubbles pop in, sound effects move). */
-  animated?: boolean;
 }
 
 const STATUS_KEY: Record<string, MessageKey> = {
@@ -335,14 +266,12 @@ function PageViewImpl(props: PageViewProps) {
       {near && (
         <>
           <img src={url} alt="" width={page.width} height={page.height} decoding="async" draggable={false} />
-          {props.animated && !editing && page.effects && page.effects.length > 0 && <EffectsLayer page={page} url={url} effects={page.effects} />}
           {showTranslation && fontsOk && (
             <TranslatedLayer
               page={page}
               bubbles={bubbles}
               opts={opts}
               selectedId={selectedId}
-              animated={props.animated && !editing}
               onSelect={interactive && !editing ? (id) => props.onSelect(page.id, id) : undefined}
             />
           )}
@@ -398,7 +327,6 @@ export const PageView = memo(PageViewImpl, (a, b) => {
     a.editing === b.editing &&
     a.drawing === b.drawing &&
     a.fontsOk === b.fontsOk &&
-    a.animated === b.animated &&
     a.draft === b.draft &&
     a.selectedId === b.selectedId &&
     a.busyIds.join() === b.busyIds.join() &&

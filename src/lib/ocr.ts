@@ -361,7 +361,7 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     within = (px0, py0) => Math.abs(-(px0 - cx) * sinT + (py0 - cy) * cos) <= halfH;
   }
   try {
-    const repaired = inpaintText(px, area, ink.tones, Math.max(1.5, fontSize * scale * 0.08), within);
+    const repaired = inpaintText(px, area, ink.tones, Math.max(1.5, fontSize * scale * 0.08), within, Math.max(12, fontSize * scale * 1.8));
     if (repaired) {
       look.patch = pixelsToCanvas(repaired).toDataURL('image/jpeg', 0.92);
       look.patchBox = { x: area.x / scale, y: area.y / scale, w: area.w / scale, h: area.h / scale };
