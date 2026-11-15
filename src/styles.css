@@ -961,6 +961,8 @@ textarea {
 
 .reader-bar {
   position: relative;
+  /* Above the status line, so the ⋯ menu is not covered by it. */
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1029,6 +1031,8 @@ textarea {
   position: relative;
 }
 .menu {
+  max-height: calc(100dvh - 90px);
+  overflow-y: auto;
   position: absolute;
   right: 0;
   top: calc(100% + 6px);

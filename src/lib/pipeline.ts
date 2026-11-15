@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
-import { bitmapPixels, context2d, createCanvas, decodeImage, type DecodedImage } from './image';
-import { detectAllBubbles, innerBox } from './imageproc';
+import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
+import { cleanBubble, detectAllBubbles, innerBox, maskedCrop, regionFill } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -142,6 +142,16 @@ async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits 
 }
 
 /** AI vision mode: one request per slice of the page reads and translates. */
+/** Text that says the same once letters, case and punctuation are compared ("HUFF" → "HUFF!"). */
+function sameText(a: string, b: string): boolean {
+  const norm = (t: string) => t.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  return norm(a) !== '' && norm(a) === norm(b);
+}
+
+/** Slices of the page read by the AI at the same time (free tiers allow ~40 requests a minute). */
+const VISION_PARALLEL = 3;
+
+/** AI vision mode: the page is cut in slices, each read and translated by one request. */
 async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
@@ -151,7 +161,8 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
   const scale = Math.min(1, Math.sqrt(12_000_000 / (W * H)));
   const px = bitmapPixels(bitmap, scale);
   const regions = detectAllBubbles(px);
-  const bubbles: Bubble[] = [];
+
+  const slices: { top: number; h: number; image: string; width: number; height: number }[] = [];
   for (let top = 0; top < H; top += sliceH - overlap) {
     const h = Math.min(sliceH, H - top);
     const k = Math.min(1, VISION_MAX_SIDE / Math.max(W, h));
@@ -159,39 +170,93 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
     const c = context2d(canvas);
     c.imageSmoothingQuality = 'high';
     c.drawImage(bitmap.source, 0, top, W, h, 0, 0, canvas.width, canvas.height);
-    const image = canvas.toDataURL('image/jpeg', 0.88);
-    const result = await withRetries(
-      () => visionTranslate(image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: canvas.width, height: canvas.height }),
-      signal,
-    );
-    const found = result.bubbles;
-    const detected = normaliseSourceCode(result.sourceLanguage);
-    if (chapter.sourceLang === AUTO && detected) {
-      // The model told us the language: remember it for edits and retranslations.
-      chapter.sourceLang = detected;
-      chapter.autoSource = true;
-      await patchChapter(chapter.id, { sourceLang: detected, autoSource: true });
+    slices.push({ top, h, image: canvas.toDataURL('image/jpeg', 0.88), width: canvas.width, height: canvas.height });
+    canvas.width = canvas.height = 0;
+    if (top + h >= H) break;
+  }
+
+  // A few slices at once: the page takes about as long as its slowest slice.
+  const results: Awaited<ReturnType<typeof visionTranslate>>[] = new Array(slices.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < slices.length) {
+      const i = next++;
+      const slice = slices[i];
+      results[i] = await withRetries(
+        () => visionTranslate(slice.image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }),
+        signal,
+      );
     }
+  };
+  await Promise.all(Array.from({ length: Math.min(VISION_PARALLEL, slices.length) }, worker));
+
+  const detected = normaliseSourceCode(results.find((r) => r.sourceLanguage)?.sourceLanguage);
+  if (chapter.sourceLang === AUTO && detected) {
+    // The model told us the language: remember it for edits and retranslations.
+    chapter.sourceLang = detected;
+    chapter.autoSource = true;
+    await patchChapter(chapter.id, { sourceLang: detected, autoSource: true });
+  }
+
+  const bubbles: Bubble[] = [];
+  for (const [i, { top, h }] of slices.entries()) {
     const ownTop = top === 0 ? 0 : top + overlap / 2;
     const ownBottom = top + h >= H ? H : top + h - overlap / 2;
-    for (const f of found) {
+    for (const f of results[i].bubbles) {
+      // Untranslatable sound effects ("HUFF" → "HUFF"): the drawn lettering stays.
+      if (!f.translation.trim() || sameText(f.text, f.translation)) continue;
       const [y0, x0, y1, x1] = f.box;
       const box: Box = { x: (x0 / 1000) * W, y: top + (y0 / 1000) * h, w: ((x1 - x0) / 1000) * W, h: ((y1 - y0) / 1000) * h };
       const cy = box.y + box.h / 2;
       if (cy < ownTop || cy >= ownBottom) continue;
       const cx = box.x + box.w / 2;
-      const region = regions.find(
-        (r) => cx * scale >= r.x && cx * scale <= r.x + r.w && cy * scale >= r.y && cy * scale <= r.y + r.h,
-      );
+      const region = regions.find((r) => cx * scale >= r.x && cx * scale <= r.x + r.w && cy * scale >= r.y && cy * scale <= r.y + r.h);
+      const lines = Math.max(1, f.text.split('\n').length);
+      const vertical = box.h > box.w * 1.6;
+      const ink = region ? maskedCrop(px, region).ink : null;
+      if (region && ink && !vertical) {
+        // In a bubble: sized on the real letters, erased within the bubble's shape.
+        const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };
+        const fontSize = Math.max(8, Math.min(60, inkBox.h / (lines * 1.2)));
+        const fill = regionFill(px, region);
+        const look = lookOfText(px, inkBox, scale, fontSize, true);
+        const pad = Math.max(2, fontSize * 0.5) * scale;
+        let patch: string | undefined;
+        let patchBox: Box | undefined;
+        try {
+          const cleaned = cleanBubble(px, region, { x: ink.x - pad, y: ink.y - pad, w: ink.w + pad * 2, h: ink.h + pad * 2 }, fill);
+          patch = pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92);
+          patchBox = { x: cleaned.x / scale, y: cleaned.y / scale, w: cleaned.pixels.width / scale, h: cleaned.pixels.height / scale };
+        } catch {
+          /* flat fill instead */
+        }
+        let area: Box | undefined;
+        const inner = innerBox(region, (inkBox.x + inkBox.w / 2) * scale, (inkBox.y + inkBox.h / 2) * scale, inkBox.h * scale);
+        if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
+        if (area && area.w * area.h < inkBox.w * inkBox.h * 0.6) area = undefined;
+        bubbles.push({
+          id: uid(),
+          ...inkBox,
+          area,
+          original: f.text,
+          translation: f.translation,
+          vertical,
+          fontSize,
+          fill,
+          color: look.color,
+          patch,
+          patchBox,
+        });
+        continue;
+      }
       let area: Box | undefined;
       if (region) {
         const inner = innerBox(region, cx * scale, cy * scale, box.h * scale);
         if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
         if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
       }
-      const vertical = box.h > box.w * 1.6;
-      const lines = Math.max(1, f.text.split('\n').length);
-      const fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / lines));
+      // AI boxes include the line spacing: lines are ~1.2× the letters.
+      const fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
       const look = lookOfText(px, box, scale, fontSize, Boolean(area));
       bubbles.push({
         id: uid(),
@@ -208,7 +273,6 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
         patchBox: look.patchBox,
       });
     }
-    if (top + h >= H) break;
   }
   return bubbles;
 }
