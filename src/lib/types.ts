@@ -86,6 +86,19 @@ export interface Page {
   /** Incremented on every change (cheap equality check for the UI). */
   rev?: number;
   bubbles: Bubble[];
+  /**
+   * Drawn sound effects (never translated), kept to bring them to life in
+   * the animated reading: where they are and what they say.
+   */
+  effects?: SoundEffect[];
+}
+
+export interface SoundEffect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
 }
 
 export type ProviderId = 'auto' | 'chrome' | 'google' | 'mymemory' | 'llm';
@@ -122,4 +135,6 @@ export interface Settings {
   exportMaxMB: number;
   /** iPhone app: keep translating when the app leaves the screen or the phone is locked. */
   background: boolean;
+  /** Animated reading: bubbles appear, drawn sound effects move. */
+  animated: boolean;
 }

@@ -365,12 +365,17 @@ export interface VisionBubble {
   translation: string;
 }
 
-function visionPrompt(order: 'yxyx' | 'xyxy'): string {
+function visionPrompt(order: 'yxyx' | 'xyxy', locateEffects = false): string {
   const box = order === 'xyxy' ? '[xmin, ymin, xmax, ymax]' : '[ymin, xmin, ymax, xmax]';
   const key = order === 'xyxy' ? 'bbox_2d' : 'box_2d';
   return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
 Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers, credits, the series logo or title artwork, and "to be continued" banners.
-Do NOT include sound effects, onomatopoeia or cries drawn as artwork outside the speech bubbles (stylised, coloured or outlined letters on the drawing: HUFF, HAAA, HNNG, UGH, SHLICK…). Do NOT include website watermarks (TOOMICS.com…), even when they lie on a bubble. Sound effects: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
+Do NOT include sound effects, onomatopoeia or cries drawn as artwork outside the speech bubbles (stylised, coloured or outlined letters on the drawing: HUFF, HAAA, HNNG, UGH, SHLICK…). Do NOT include website watermarks (TOOMICS.com…), even when they lie on a bubble. Sound effects: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.${
+    locateEffects
+      ? `
+Exception, for animation only: also list each drawn sound effect as an item with "kind":"sfx", its box, its text and an EMPTY translation (""). Never translate them.`
+      : ''
+  }
 For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a translation in the requested language.
 How to translate, like a professional scanlation team:
 - Read the whole image first: a sentence often runs over several bubbles; translate each bubble so that, read in order, they form natural sentences.
@@ -399,12 +404,12 @@ export async function visionTranslate(
   size?: { width: number; height: number },
   /** Lines translated just before (previous pages), for names, tone and the story so far. */
   context?: string,
-): Promise<{ bubbles: VisionBubble[]; sourceLanguage?: string }> {
+): Promise<{ bubbles: VisionBubble[]; effects: VisionBubble[]; sourceLanguage?: string }> {
   const order = boxOrderOf(llm);
   const answer = await chat(
     llm,
     [
-      { role: 'system', content: visionPrompt(order) },
+      { role: 'system', content: visionPrompt(order, getSettings().animated !== false) },
       {
         role: 'user',
         content: [
@@ -428,20 +433,22 @@ export async function visionTranslate(
   const list = Array.isArray(parsed) ? parsed : (parsed.bubbles ?? []);
   const sourceLanguage = Array.isArray(parsed) ? undefined : parsed.source_language;
   const out: VisionBubble[] = [];
-  const boxes: { box: number[]; xyxy: boolean; item: { text?: unknown; translation?: unknown } }[] = [];
+  const effects: VisionBubble[] = [];
+  const boxes: { box: number[]; xyxy: boolean; effect: boolean; item: { text?: unknown; translation?: unknown } }[] = [];
   for (const raw of list) {
     const item = raw as { box_2d?: unknown; bbox_2d?: unknown; bbox?: unknown; box?: unknown; text?: unknown; translation?: unknown; kind?: unknown; type?: unknown };
-    // Sound effects are left drawn as they are, whatever the model sent.
-    if (/^(sfx|sound|onomatop)/i.test(String(item.kind ?? item.type ?? ''))) continue;
+    // Sound effects are left drawn as they are, whatever the model sent
+    // (their place is kept for the animated reading).
+    const effect = /^(sfx|sound|onomatop)/i.test(String(item.kind ?? item.type ?? ''));
     // The key tells the order when the model picked its own habit.
     const xyxy = item.bbox_2d !== undefined || item.bbox !== undefined ? true : item.box_2d !== undefined ? false : order === 'xyxy';
     const box = (item.box_2d ?? item.bbox_2d ?? item.bbox ?? item.box) as unknown;
     if (!Array.isArray(box) || box.length !== 4 || !box.every((v) => typeof v === 'number')) continue;
-    boxes.push({ box: box as number[], xyxy, item });
+    boxes.push({ box: box as number[], xyxy, effect, item });
   }
   // Coordinates above 1000 are pixels of the image sent.
   const inPixels = size !== undefined && boxes.some((b) => b.box.some((v) => v > 1000));
-  for (const { box, xyxy, item } of boxes) {
+  for (const { box, xyxy, effect, item } of boxes) {
     let [y0, x0, y1, x1] = xyxy ? [box[1], box[0], box[3], box[2]] : box;
     if (inPixels && size) {
       y0 = (y0 / size.height) * 1000;
@@ -450,13 +457,13 @@ export async function visionTranslate(
       x1 = (x1 / size.width) * 1000;
     }
     if (y1 <= y0 || x1 <= x0) continue;
-    out.push({
+    (effect ? effects : out).push({
       box: [y0, x0, y1, x1],
       text: typeof item.text === 'string' ? item.text : '',
       translation: typeof item.translation === 'string' ? item.translation : '',
     });
   }
-  return { bubbles: out, sourceLanguage };
+  return { bubbles: out, effects, sourceLanguage };
 }
 
 /** Quick round trip used by the "Test" button in the settings. */
