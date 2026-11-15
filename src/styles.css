@@ -1700,3 +1700,16 @@ button.card-link {
   margin: 0;
   color: var(--text);
 }
+
+/* Requests sent to the AI provider. */
+.usage {
+  font-variant-numeric: tabular-nums;
+}
+.usage .warn,
+.usage.warn {
+  color: var(--danger, #e5484d);
+}
+.block {
+  display: block;
+  margin-top: 4px;
+}
