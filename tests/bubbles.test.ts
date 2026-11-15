@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanBubble, detectAllBubbles, enclosingBubble, inpaintText, maskedCrop, regionFill, type Pixels } from '../src/lib/imageproc';
+import { cleanBubble, detectAllBubbles, enclosingBubble, inpaintText, letterHeight, maskedCrop, regionFill, type Pixels } from '../src/lib/imageproc';
 
 type Rgb = [number, number, number];
 
@@ -110,5 +110,20 @@ describe('inpaintText with a letter size', () => {
   it('erases everything of the ink colour when no size is given', () => {
     const out = inpaintText(sign, { x: 0, y: 0, w: 120, h: 60 }, [BLACK], 1)!;
     expect(colourAt(out, 60, 7)[0]).toBeGreaterThan(90);
+  });
+});
+
+describe('letterHeight', () => {
+  it('measures the letters, however many lines the block has', () => {
+    // Three lines of 12 px letters, 8 px apart.
+    const block = image(120, 80, (x, y) => (letters(x, y, 10, 10, 96, 12) || letters(x, y, 10, 30, 96, 12) || letters(x, y, 26, 50, 64, 12) ? BLACK : WHITE));
+    expect(letterHeight(block, { x: 0, y: 0, w: 120, h: 80 })).toBe(12);
+    expect(letterHeight(block, { x: 0, y: 6, w: 120, h: 20 })).toBe(12);
+  });
+
+  it('reads coloured lettering when asked to', () => {
+    const pink = image(120, 40, (x, y) => (letters(x, y, 10, 12, 96, 14) ? PINK : WHITE));
+    expect(letterHeight(pink, { x: 0, y: 0, w: 120, h: 40 })).toBe(0);
+    expect(letterHeight(pink, { x: 0, y: 0, w: 120, h: 40 }, true)).toBe(14);
   });
 });
