@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useT } from '../i18n';
 import { dismissQuickImport, quickImport, useQuickImport } from '../lib/quick';
+import { isNativeApp, readClipboard } from '../lib/native';
 import { navigate } from '../router';
 import { Icon } from './Icon';
 
@@ -18,7 +19,7 @@ export function QuickLink() {
 
   const paste = async () => {
     try {
-      const text = await navigator.clipboard.readText();
+      const text = await readClipboard();
       const found = text.match(/https?:\/\/\S+/i)?.[0];
       if (found) {
         setValue(found);
@@ -43,7 +44,7 @@ export function QuickLink() {
           spellCheck={false}
           onChange={(e) => setValue(e.target.value)}
         />
-        {!value && 'clipboard' in navigator && 'readText' in navigator.clipboard && (
+        {!value && (isNativeApp() || ('clipboard' in navigator && 'readText' in navigator.clipboard)) && (
           <button type="button" className="btn small ghost" onClick={() => void paste()}>
             {t('quick.paste')}
           </button>

@@ -26,7 +26,8 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "WebTradBrowser"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "download", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "download", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "readClipboard", returnType: CAPPluginReturnPromise)
     ]
 
     /// User agent of the in-app browser, sent with the image downloads.
@@ -55,6 +56,15 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
             let navigation = UINavigationController(rootViewController: browser)
             navigation.modalPresentationStyle = .fullScreen
             presenter.present(navigation, animated: true)
+        }
+    }
+
+    /// Text of the clipboard, read natively: iOS then asks once ("Allow Paste")
+    /// and the reader can allow it for good in Settings › WebTrad, instead of
+    /// the web view's "Paste" bubble at every tap.
+    @objc func readClipboard(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            call.resolve(["text": UIPasteboard.general.string ?? ""])
         }
     }
 
