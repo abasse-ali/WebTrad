@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, detectAllBubbles, innerBox, maskedCrop, regionFill } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, innerBox, maskedCrop, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -342,6 +342,13 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       continue;
     }
     let area: Box | undefined;
+    if (!region) {
+      // Signs, screens, chats: the box is put back on the letters, so the
+      // repaired background covers the original instead of sitting beside it.
+      const s = snapToText(px, { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale });
+      box.x = s.x / scale;
+      box.y = s.y / scale;
+    }
     if (region) {
       const inner = innerBox(region, cx * scale, cy * scale, box.h * scale);
       if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
@@ -375,6 +382,127 @@ function overlapShare(a: Box, b: Box): number {
   const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
   if (w <= 0 || h <= 0) return 0;
   return (w * h) / Math.max(1, Math.min(a.w * a.h, b.w * b.h));
+}
+
+/** Part of a bubble's area that lies on its page. */
+function visiblePart(b: Bubble, pageHeight: number): Box {
+  const a = b.area ?? b;
+  const y0 = Math.max(0, a.y);
+  const y1 = Math.min(pageHeight, a.y + a.h);
+  // A little wider: the original letters sit around the lettering area.
+  const padX = a.w * 0.15;
+  return { x: a.x - padX, y: y0 - 4, w: a.w + padX * 2, h: Math.max(0, y1 - y0) + 8 };
+}
+
+function coversCentre(zone: Box, b: Box): boolean {
+  const cx = b.x + b.w / 2;
+  const cy = b.y + b.h / 2;
+  return cx >= zone.x && cx <= zone.x + zone.w && cy >= zone.y && cy <= zone.y + zone.h;
+}
+
+/**
+ * A speech bubble cut by the page break (top half at the bottom of this
+ * page, the rest at the top of the next one) was read as two pieces and
+ * only one got translated. Both halves are put back together, read and
+ * translated as one bubble, and the translation is lettered across the
+ * break: the same text block is placed on both pages, each showing its part.
+ */
+async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal, bubbles: Bubble[]): Promise<Bubble[]> {
+  const W = bitmap.width;
+  const H = bitmap.height;
+  const stripH = Math.min(H, Math.round(W * 1.2));
+  const stripTop = H - stripH;
+  const bottomPx = bitmapPixels(bitmap, 1, { x: 0, y: stripTop, w: W, h: stripH });
+  const cut = detectAllBubbles(bottomPx).filter((r) => r.y + r.h >= stripH - 2 && r.h < stripH * 0.95);
+  if (cut.length === 0) return bubbles;
+
+  const next = (await getPages(chapter.id)).find((p) => p.index === page.index + 1);
+  if (!next) return bubbles;
+  const nextBitmap = await decodeImage(next.blob);
+  try {
+    // The next page drawn at this page's width (chapters sometimes mix sizes).
+    const k = W / nextBitmap.width;
+    if (Math.abs(k - 1) > 0.02) return bubbles;
+    const nextStripH = Math.min(nextBitmap.height, Math.round(nextBitmap.width * 1.2));
+    const topPx = bitmapPixels(nextBitmap, 1, { x: 0, y: 0, w: nextBitmap.width, h: nextStripH });
+    const starts = detectAllBubbles(topPx).filter((r) => r.y <= 1 && r.h < nextStripH * 0.95);
+    let result = bubbles;
+    const continued: Bubble[] = [];
+    for (const a of cut) {
+      // Same bubble: its two halves line up across the break.
+      const b = starts.find((r) => {
+        const overlap = Math.min(a.x + a.w, r.x + r.w) - Math.max(a.x, r.x);
+        return overlap > Math.min(a.w, r.w) * 0.6;
+      });
+      if (!b) continue;
+      const margin = 12;
+      const fromY = Math.max(0, a.y - margin);
+      const partA = stripH - fromY;
+      const partB = Math.min(nextStripH, b.y + b.h + margin);
+      const k2 = Math.min(1, VISION_MAX_SIDE / Math.max(W, partA + partB));
+      const canvas = createCanvas(W * k2, (partA + partB) * k2);
+      const c = context2d(canvas);
+      c.imageSmoothingQuality = 'high';
+      c.drawImage(bitmap.source, 0, stripTop + fromY, W, partA, 0, 0, canvas.width, partA * k2);
+      c.drawImage(nextBitmap.source, 0, 0, nextBitmap.width, partB, 0, partA * k2, canvas.width, partB * k2);
+      const image = canvas.toDataURL('image/jpeg', 0.88);
+      const size = { width: canvas.width, height: canvas.height };
+      canvas.width = canvas.height = 0;
+      const answer = await withRetries(() => visionTranslate(image, chapter.sourceLang, chapter.targetLang, signal, undefined, size), signal);
+      const items = answer.bubbles.filter((f) => f.translation.trim() && !sameText(f.text, f.translation) && !isSoundEffect(f.text));
+      if (items.length === 0) continue;
+      const original = items.map((f) => f.text).join(' ');
+      const translation = items.map((f) => f.translation).join(' ');
+
+      // The whole bubble in this page's pixels: from its top here to its end on the next page.
+      const top = stripTop + a.y;
+      const bottom = H + b.y + b.h;
+      const left = Math.max(a.x, b.x);
+      const right = Math.min(a.x + a.w, b.x + b.w);
+      const padX = (right - left) * 0.12;
+      const padY = (bottom - top) * 0.1;
+      const area: Box = { x: left + padX, y: top + padY, w: right - left - padX * 2, h: bottom - top - padY * 2 };
+      const fill = regionFill(bottomPx, a);
+      const fontSize = W * 0.032;
+      const half = (px: typeof bottomPx, r: typeof a, dy: number): Pick<Bubble, 'x' | 'y' | 'w' | 'h' | 'patch' | 'patchBox'> => {
+        const ink = maskedCrop(px, r).ink;
+        if (!ink) return { x: r.x + r.w / 2, y: dy + r.y + r.h / 2, w: 1, h: 1 };
+        const pad = Math.max(2, fontSize * 0.5);
+        try {
+          const cleaned = cleanBubble(px, r, { x: ink.x - pad, y: ink.y - pad, w: ink.w + pad * 2, h: ink.h + pad * 2 }, fill);
+          return {
+            x: ink.x,
+            y: dy + ink.y,
+            w: ink.w,
+            h: ink.h,
+            patch: pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92),
+            patchBox: { x: cleaned.x, y: dy + cleaned.y, w: cleaned.pixels.width, h: cleaned.pixels.height },
+          };
+        } catch {
+          return { x: ink.x, y: dy + ink.y, w: ink.w, h: ink.h };
+        }
+      };
+      const shared = { original, translation, fontSize, fill, color: contrastColor(fill) };
+      const upper: Bubble = { id: uid(), ...half(bottomPx, a, stripTop), ...shared, area, seam: 'next' };
+      const lower: Bubble = { id: uid(), ...half(topPx, b, 0), ...shared, area: { ...area, y: area.y - H }, seam: 'prev' };
+      // What the page read on its own of this bubble is replaced.
+      const zoneA = { x: a.x, y: stripTop + a.y, w: a.w, h: a.h };
+      result = [...result.filter((x) => !coversCentre(zoneA, x)), upper];
+      continued.push(lower);
+      logInfo('ocr', `Bulle coupée entre les pages ${page.index + 1} et ${page.index + 2} recollée et traduite`, { page: page.index + 1 });
+    }
+    if (continued.length > 0) {
+      const fresh = await getPage(next.id);
+      if (fresh) {
+        const zones = continued.map((l) => visiblePart(l, nextBitmap.height));
+        const kept = fresh.bubbles.filter((x) => x.seam !== 'prev' && !zones.some((z) => coversCentre(z, x)));
+        await patchPage(next.id, { bubbles: [...kept, ...continued] });
+      }
+    }
+    return result;
+  } finally {
+    nextBitmap.close();
+  }
 }
 
 function visionEnabled(): boolean {
@@ -433,7 +561,16 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   const where = { page: page.index + 1, taille: `${bitmap.width}×${bitmap.height}` };
   try {
     if (useVision) {
-      const bubbles = await visionPage(bitmap, chapter, signal);
+      let bubbles = await visionPage(bitmap, chapter, signal);
+      try {
+        bubbles = await stitchSeam(page, bitmap, chapter, signal, bubbles);
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
+        logWarn('ocr', `Bulle à cheval sur la page ${page.index + 2} non recollée : ${(err as Error).message.slice(0, 120)}`);
+      }
+      // The end of a bubble begun on the previous page is already lettered.
+      const own = (await getPage(page.id))?.bubbles.filter((b) => b.seam === 'prev') ?? [];
+      if (own.length > 0) bubbles = [...bubbles.filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmap.height), b))), ...own];
       logInfo('ocr', `Page ${page.index + 1} lue par l’IA : ${bubbles.length} texte(s)`, { ...where, modèle: settings.llm.model, ms: since(start) });
       await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
       return 'llm';
