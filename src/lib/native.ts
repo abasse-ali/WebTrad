@@ -22,6 +22,7 @@ interface WebTradBrowserPlugin {
   download(options: { urls: string[]; referer?: string }): Promise<{ files: { url: string; path: string }[]; failed: number }>;
   readClipboard(): Promise<{ text: string }>;
   keepAlive(options: { on: boolean }): Promise<void>;
+  otherAudio(): Promise<{ playing: boolean }>;
   addListener(event: 'progress', listener: (e: { done: number; total: number }) => void): Promise<PluginListenerHandle>;
 }
 
@@ -149,5 +150,16 @@ export async function nativeKeepAlive(on: boolean): Promise<void> {
     await WebTradBrowser.keepAlive({ on });
   } catch {
     /* older app build */
+  }
+}
+
+/** iPhone app: is another app (a video in Safari, YouTube, music) playing sound right now? */
+export async function otherAudioPlaying(): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  try {
+    return (await WebTradBrowser.otherAudio()).playing;
+  } catch {
+    /* older app build: assume nothing plays */
+    return false;
   }
 }
