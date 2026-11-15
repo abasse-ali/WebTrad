@@ -22,3 +22,14 @@ describe('alignToBubbles', () => {
     expect(alignToBubbles([box(500, 300, 100, 20)], bubbles)).toMatchObject({ a: 1, b: 0 });
   });
 });
+
+describe('splitAtSentence', () => {
+  it('cuts at the sentence end closest to the share', async () => {
+    const { splitAtSentence } = await import('../src/lib/pipeline');
+    expect(splitAtSentence("YOONDA N'ARRÊTAIT PAS DE TE LOUER... JE NE M'ATTENDAIS PAS À ÇA.", 0.55)).toEqual([
+      "YOONDA N'ARRÊTAIT PAS DE TE LOUER...",
+      "JE NE M'ATTENDAIS PAS À ÇA.",
+    ]);
+    expect(splitAtSentence('UNE SEULE PHRASE SANS FIN', 0.5)).toBeNull();
+  });
+});
