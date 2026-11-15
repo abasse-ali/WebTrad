@@ -17,7 +17,7 @@ import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
 import { visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
-import { isSoundEffect } from './text';
+import { isDrawnEffect, isSoundEffect, isWatermark } from './text';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
 import type { Bubble, Chapter, Page } from './types';
 
@@ -274,7 +274,9 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       if (cy < ownTop || cy >= ownBottom) continue;
       const region = inRegion(box.x + box.w / 2, cy);
       // Sound effects drawn on the artwork are not translated, even when the model sends them.
-      if (!region && isSoundEffect(f.text)) continue;
+      if (!region && isDrawnEffect(f.text)) continue;
+      // Website watermarks are not translated, even over a bubble.
+      if (isWatermark(f.text)) continue;
       found.push({ f, box, region });
     }
   }
@@ -490,7 +492,7 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
       const size = { width: canvas.width, height: canvas.height };
       canvas.width = canvas.height = 0;
       const answer = await withRetries(() => visionTranslate(image, aiSource(chapter), chapter.targetLang, signal, undefined, size, context), signal);
-      const items = answer.bubbles.filter((f) => f.translation.trim() && !sameText(f.text, f.translation) && !isSoundEffect(f.text));
+      const items = answer.bubbles.filter((f) => f.translation.trim() && !sameText(f.text, f.translation) && !isSoundEffect(f.text) && !isWatermark(f.text));
       if (items.length === 0) continue;
       const original = items.map((f) => f.text).join(' ');
       const translation = items.map((f) => f.translation).join(' ');

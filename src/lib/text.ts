@@ -413,9 +413,49 @@ const SFX_WORDS = new Set(
     'swoosh whoosh swish swing woosh fwoosh whip zip zoom dash rush spurt squirt splash splurt drip drop plop ' +
     'pop snap crack click clack tap tick tock ring ding beep buzz whirr rustle shuffle step stomp thwack whack ' +
     'smash crunch rip tear swell throb pulse thump-thump ba-dump badump kiss chu smooch muah slide flop toss ' +
-    'turn stare glare blush flush shudder sniff sniffle sob hic cough ahem rumble growl roar hiss sizzle'
+    'turn stare glare blush flush shudder sniff sniffle sob hic cough ahem rumble growl roar hiss sizzle ' +
+    'shlick schlick clench rub glance peek pout wink blink nod poof puff tzzt tzt zap zzz shake shiver ' +
+    'squirm writhe jiggle bounce sway flutter flap pat poke pinch stroke tickle scratch wipe yank tug pull push ' +
+    'shove press grasp clap clink clang clatter rattle creak thunk bonk boing splat splosh gush spray pump ' +
+    'plap pap pomp slosh suck chomp munch nom gulp glug sip slurp kiss smooch lick sniff snore yawn ' +
+    'bam pow wham kaboom boom thwip whiz zing ping ting tink chime ring vroom screech skid tremor quake'
   ).split(' '),
 );
+
+/** Cries and breaths: dialogue inside a bubble, drawn sound effects outside one. */
+const CRY_WORDS = new Set(
+  ('ha haa hah hahn haan ah ahh ahn aah ugh ugh hng hnn hnng nng ngh nngh mm mmm hmm oh ooh uh uhh huh ung eek ' +
+    'kya kyaa ow ouch hyaa hyuu heh hehe kuh guh gah ack urk erk ngg fuu phew whew pant heave hic').split(' '),
+);
+
+/**
+ * Lettering drawn outside the bubbles that is a sound effect, not a sign:
+ * a known effect or cry ("HUFF", "HAAA!", "HNNG"), or one shouted word
+ * with stretched letters or an exclamation ("SHLIIICK!").
+ */
+export function isDrawnEffect(text: string): boolean {
+  if (isSoundEffect(text)) return true;
+  const clean = text.replace(/[!?.…~♥♡*\-]+/g, ' ').trim();
+  const words = clean.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 3) return false;
+  const squeeze = (w: string) => w.replace(/(.)\1+/g, '$1');
+  const cries = new Set([...CRY_WORDS].map(squeeze));
+  if (words.every((w) => /^\p{L}+$/u.test(w) && (CRY_WORDS.has(w) || cries.has(squeeze(w))))) return true;
+  // One word in capitals, letters stretched (three alike) or shouted.
+  if (words.length === 1 && clean === clean.toLocaleUpperCase() && /^\p{L}{2,12}$/u.test(clean)) {
+    if (/(\p{L})\1\1/iu.test(clean) || /!\s*$/.test(text)) return true;
+  }
+  return false;
+}
+
+/** Text that is a website's watermark ("TOOMICS.com", "manhwa18.net"), never story text. */
+export function isWatermark(text: string): boolean {
+  const t = text.trim();
+  return (
+    /\b[\p{L}\d-]{2,}\s?\.\s?(com|net|org|io|co|me|to|xyz|club|site|info|fun|cc|tv|gg)\b/iu.test(t) ||
+    /\b(toomics|toongod|webtoons?|manhwa\s?\d*|scan(s|lation)?|mangadex|lezhin|tappytoon)\b/i.test(t) && t.split(/\s+/).length <= 3
+  );
+}
 
 /**
  * Text that is only a drawn sound effect ("HUFF", "SLAP SLAP", "TWITCH!",

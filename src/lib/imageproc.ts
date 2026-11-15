@@ -194,6 +194,10 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
   let ix0 = Infinity, iy0 = Infinity, ix1 = -1, iy1 = -1;
   const inkX: number[] = [];
   const inkY: number[] = [];
+  // Ink without colour: the lettering. A watermark crossing the bubble
+  // ("TOOMICS.com" in red) is left out when most of the ink is plain.
+  const plainX: number[] = [];
+  const plainY: number[] = [];
   const top = new Int32Array(region.w).fill(-1);
   const bottom = new Int32Array(region.w).fill(-1);
   for (let r = 0; r < region.h; r++) {
@@ -224,6 +228,12 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
         if (y > iy1) iy1 = y;
         inkX.push(x);
         inkY.push(y);
+        const i = (y * px.width + x) * 4;
+        const d = px.data;
+        if (Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2]) < 70) {
+          plainX.push(x);
+          plainY.push(y);
+        }
       }
       const si = (y * px.width + x) * 4;
       const di = ((y - y0) * w + (x - x0)) * 4;
@@ -232,7 +242,8 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
       out[di + 2] = px.data[si + 2];
     }
   }
-  const ink = ix1 >= 0 ? (lettering(inkX, inkY, region) ?? { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 }) : null;
+  const usePlain = plainX.length >= inkX.length * 0.3;
+  const ink = ix1 >= 0 ? (lettering(usePlain ? plainX : inkX, usePlain ? plainY : inkY, region) ?? { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 }) : null;
   return { pixels: { data: out, width: w, height: h }, x: x0, y: y0, ink };
 }
 
