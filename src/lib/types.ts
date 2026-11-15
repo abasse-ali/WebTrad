@@ -101,6 +101,12 @@ export interface LlmSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /**
+   * What was set for each provider (key, model, address), remembered when
+   * switching to another one: going back to NVIDIA or OpenRouter restores
+   * its own key instead of asking for it again. Kept on the device only.
+   */
+  saved?: Record<string, { apiKey: string; model: string; baseUrl: string }>;
 }
 
 export interface Settings {

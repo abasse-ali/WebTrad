@@ -243,8 +243,21 @@ export function SettingsPage() {
               value={preset.id}
               onChange={(e) => {
                 const p = LLM_PRESETS.find((x) => x.id === e.target.value)!;
+                // The current provider's key and model are kept for later;
+                // the chosen one gets back its own (or its defaults).
+                const saved = {
+                  ...(s.llm.saved ?? {}),
+                  [s.llm.preset]: { apiKey: s.llm.apiKey, model: s.llm.model, baseUrl: s.llm.baseUrl },
+                };
+                const back = saved[p.id];
                 updateSettings({
-                  llm: { ...s.llm, preset: p.id, baseUrl: p.baseUrl || s.llm.baseUrl, model: p.model || s.llm.model },
+                  llm: {
+                    preset: p.id,
+                    baseUrl: back?.baseUrl || p.baseUrl || s.llm.baseUrl,
+                    apiKey: back?.apiKey ?? '',
+                    model: back?.model || p.model || s.llm.model,
+                    saved,
+                  },
                 });
                 setTest(null);
               }}
