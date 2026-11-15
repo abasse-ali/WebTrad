@@ -15,6 +15,7 @@ import { LLM_PRESETS, getSettings } from './settings';
 import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
 import { visionTranslate } from './translate/llm';
+import { TranslateError } from './translate/types';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
 import type { Bubble, Chapter, Page } from './types';
 
@@ -121,11 +122,31 @@ export async function translateBubbles(
 
 const VISION_MAX_SIDE = 1536;
 
+/**
+ * Free AI tiers time out or answer "busy" (429, 5xx) now and then: a slice
+ * is tried again twice, after a pause, before the page is marked in error.
+ */
+async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits = [4000, 15000]): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      const retryable = !(err instanceof TranslateError) || err.retryable;
+      if ((err as Error).name === 'AbortError' || !retryable || attempt >= waits.length) throw err;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, waits[attempt]);
+        signal.addEventListener('abort', () => (clearTimeout(timer), reject(new DOMException('Aborted', 'AbortError'))), { once: true });
+      });
+    }
+  }
+}
+
 /** AI vision mode: one request per slice of the page reads and translates. */
 async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
-  const sliceH = Math.min(H, Math.round(W * 1.6));
+  // Tall slices: a webtoon page costs fewer requests (vision models read tall images well).
+  const sliceH = Math.min(H, Math.round(W * 2.2));
   const overlap = sliceH < H ? Math.round(sliceH * 0.12) : 0;
   const scale = Math.min(1, Math.sqrt(12_000_000 / (W * H)));
   const px = bitmapPixels(bitmap, scale);
@@ -138,10 +159,11 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
     const c = context2d(canvas);
     c.imageSmoothingQuality = 'high';
     c.drawImage(bitmap.source, 0, top, W, h, 0, 0, canvas.width, canvas.height);
-    const result = await visionTranslate(canvas.toDataURL('image/jpeg', 0.88), chapter.sourceLang, chapter.targetLang, signal, undefined, {
-      width: canvas.width,
-      height: canvas.height,
-    });
+    const image = canvas.toDataURL('image/jpeg', 0.88);
+    const result = await withRetries(
+      () => visionTranslate(image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: canvas.width, height: canvas.height }),
+      signal,
+    );
     const found = result.bubbles;
     const detected = normaliseSourceCode(result.sourceLanguage);
     if (chapter.sourceLang === AUTO && detected) {
