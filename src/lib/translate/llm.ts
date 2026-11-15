@@ -104,14 +104,83 @@ export function parseStream(text: string): { choices: { message: { content: stri
   return { choices: [{ message: { content } }] };
 }
 
-/** Models the key gives access to (OpenAI-compatible /models), sorted by name. */
-export async function listModels(llm: LlmSettings): Promise<string[]> {
+export interface ModelInfo {
+  id: string;
+  /** Reads images (needed by the AI OCR mode). */
+  vision: boolean;
+  /** Free to use (only known for providers that publish prices, e.g. OpenRouter). */
+  free?: boolean;
+}
+
+/** Names of models that read images, as providers publish them. */
+const VISION_NAME =
+  /(\bvl\b|-vl|vl-|vision|multimodal|qwen3\.5|qwen3-vl|qwen2\.5-vl|llama-4|gemma-3|pixtral|mistral-(large|medium|small)-3|kimi-k2\.5|kimi-vl|llava|paligemma|neva|kosmos|fuyu|cosmos-reason|nemotron.*vl|gemini|glm-4\.\dv|internvl|minicpm-v|phi-4-multimodal)/i;
+/** Models that are not chat models at all (embeddings, safety filters, rerankers…). */
+const NOT_CHAT = /(embed|rerank|retriev|guard|safety|reward|moderation|whisper|tts|asr|parakeet|canary|nv-clip|dinov|ocdrnet|nemoretriever|paddleocr|parse|detector|grounding-dino|deplot|sdxl|flux|stable-diffusion|cosmos-predict|audio)/i;
+
+/** Models the key gives access to, sorted by name; image readers flagged. */
+export async function listModels(llm: LlmSettings): Promise<ModelInfo[]> {
   if (!baseOf(llm)) throw new TranslateError('AI engine not configured', 'llm', false);
-  const data = (await request(llm, 'GET', '/models')) as { data?: { id?: string }[] };
+  const data = (await request(llm, 'GET', '/models')) as {
+    data?: {
+      id?: string;
+      architecture?: { input_modalities?: string[]; modality?: string };
+      pricing?: { prompt?: string | number; completion?: string | number };
+    }[];
+  };
   return (data.data ?? [])
-    .map((m) => m.id ?? '')
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+    .filter((m) => m.id && !NOT_CHAT.test(m.id))
+    .map((m) => {
+      const id = m.id!;
+      // OpenRouter says what each model takes and costs; others only have names.
+      const inputs = m.architecture?.input_modalities ?? (m.architecture?.modality ? m.architecture.modality.split('->')[0].split('+') : undefined);
+      const vision = inputs ? inputs.includes('image') : VISION_NAME.test(id);
+      const free = m.pricing ? Number(m.pricing.prompt) === 0 && Number(m.pricing.completion) === 0 : id.endsWith(':free') ? true : undefined;
+      return { id, vision, free };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** A 200×70 image reading "HELLO", to check that a model really reads images. */
+const HELLO_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAABGCAAAAACsiYTqAAACN0lEQVR42mP8zzA8ABPDqEdGPTLqkVGPjHpk1COjHhn1yKhHRj0y6pFRj4x6ZNQjox4Z9QidPRLAyMjIyMj4Bi4gwMjIyMiogyKLBApwaMMrzMDAwPB2VY65sgCbuJZH65F/FHqEZeDC8EH3vB8MDAwMDK9eXd/JoFoazzY0k9Y8zWk/kLi308zvDkmPZCf/QBO5YHJ4CHqkYxqm2IfA+wPgkdf/4WAC6boPV0OzaOahNz8eLTaDZv6gf0MtRqohLhY6Ps1WmF025gTUXxdWDjGPHILkBsY1JhA+Y0s0hNEyxDyyEUIFO8JFeiFl77W7Q8sjeyFUEkJE3AdFhqoeEYVX3R/xysqQbOnfS5AEZY0kZgOhzg2pGHkLmV2S5kMS04QWhkPKI9B2lwCymACK1NBq/TJi4fwfUh4RhtbkyGLvoVmPBh5B1N38eGWfkO4RSPA//YwkdgNCiQypGGGBdG3+HUUSOwKhDIdWHnGBtuSRIngzisxQ8Yg/hFpzCC5S/IuBgYGBQUNlaHnEHlIV/g+G1n//GxZDGDVDrfXbCsnubyxyjr7/9WSZVSNEWDeSfCP/YwJ/7KWWNoosEuDGK4FdGGszV+j2f7LBQFWI1WmYYnxrVRiGWtJiYJg5gx1NRPeMw5AcRUm/ms6BxFWeflqVorpp4JpayjNa9hw68/rtd0EhOVt7a2YKG26j67VGPTLqkVGPjHpk1COjHhn1yKhHRj0y6pFRj4x6ZNQjox4Z9cioR4gAAFvf+KMHO9kOAAAAAElFTkSuQmCC';
+
+export interface ModelCheck {
+  model: string;
+  ok: boolean;
+  /** Answer time in milliseconds. */
+  ms: number;
+  error?: string;
+}
+
+/** Asks `model` to read a small image: does it answer, read it right, and how fast. */
+export async function checkVisionModel(llm: LlmSettings, model: string, timeoutMs = 60_000): Promise<ModelCheck> {
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const answer = await Promise.race([
+      chat(
+        { ...llm, model },
+        [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'What word is written in this image? Answer with the word only.' },
+              { type: 'image_url', image_url: { url: HELLO_IMAGE } },
+            ],
+          },
+        ],
+        controller.signal,
+      ),
+      new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new Error('timeout')), { once: true })),
+    ]);
+    const ok = /hello/i.test(answer);
+    return { model, ok, ms: Date.now() - start, error: ok ? undefined : `« ${answer.trim().slice(0, 40)} »` };
+  } catch (err) {
+    return { model, ok: false, ms: Date.now() - start, error: (err as Error).message.slice(0, 120) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: AbortSignal): Promise<string> {

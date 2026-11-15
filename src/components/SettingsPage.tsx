@@ -6,7 +6,7 @@ import { displayName } from '../lib/languages';
 import { clearAllPositions } from '../lib/progress';
 import { LLM_PRESETS, updateSettings, useSettings } from '../lib/settings';
 import { builtinAvailability, hasBuiltinTranslator } from '../lib/translate/chrome';
-import { listModels, testLlm } from '../lib/translate/llm';
+import { checkVisionModel, listModels, testLlm, type ModelCheck, type ModelInfo } from '../lib/translate/llm';
 import { clearLayoutCache } from '../lib/layout';
 import type { FontId, LetterCase, OcrEngine, ProviderId, ThemeId } from '../lib/types';
 import { Icon } from './Icon';
@@ -22,24 +22,50 @@ export function SettingsPage() {
   const [builtin, setBuiltin] = useState<string>('…');
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
-  const [models, setModels] = useState<string[] | null>(null);
+  const [allModels, setAllModels] = useState<ModelInfo[] | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [checks, setChecks] = useState<ModelCheck[] | null>(null);
+  const [checking, setChecking] = useState<{ done: number; total: number } | null>(null);
 
   const loadModels = async () => {
     setModelsError(null);
+    setChecks(null);
     try {
       const list = await listModels(s.llm);
-      setModels(list);
+      setAllModels(list);
       if (list.length === 0) setModelsError(t('settings.llm.noModels'));
     } catch (err) {
-      setModels(null);
+      setAllModels(null);
       setModelsError((err as Error).message);
     }
   };
-  // Models that read images, needed by the AI OCR mode (names as providers publish them).
-  const VISION = /(\bvl\b|-vl|vl-|vision|multimodal|qwen3\.5|qwen3-vl|llama-4|gemma-3|pixtral|mistral-(large|medium)-3|kimi-k2\.5|llava|paligemma|neva|kosmos|fuyu|cosmos-reason|nemotron.*vl|gemini)/i;
-  const visionModels = (models ?? []).filter((m) => VISION.test(m));
-  const textModels = (models ?? []).filter((m) => !VISION.test(m));
+  // Where prices are known (OpenRouter), only the free models are offered.
+  const priced = (allModels ?? []).some((m) => m.free !== undefined);
+  const offered = (allModels ?? []).filter((m) => !priced || m.free);
+  const models = allModels ? offered.map((m) => m.id) : null;
+  const visionModels = offered.filter((m) => m.vision).map((m) => m.id);
+  const textModels = offered.filter((m) => !m.vision).map((m) => m.id);
+
+  /** Tries every image-reading model on a small image: which answer, read it right, and how fast. */
+  const checkModels = async () => {
+    const list = visionModels.slice(0, 40);
+    const results: ModelCheck[] = [];
+    setChecks([]);
+    setChecking({ done: 0, total: list.length });
+    let next = 0;
+    const worker = async () => {
+      while (next < list.length) {
+        const model = list[next++];
+        results.push(await checkVisionModel(s.llm, model));
+        setChecks([...results]);
+        setChecking({ done: results.length, total: list.length });
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    setChecking(null);
+  };
+  const working = (checks ?? []).filter((c) => c.ok).sort((a, b) => a.ms - b.ms);
+  const failed = (checks ?? []).filter((c) => !c.ok).length;
   const pickModel = (model: string) => {
     updateSettings({ llm: { ...s.llm, model } });
     setTest(null);
@@ -297,6 +323,33 @@ export function SettingsPage() {
                 </optgroup>
               </select>
             </label>
+          )}
+          {visionModels.length > 0 && (
+            <div className="model-check">
+              <button className="btn primary small" onClick={() => void checkModels()} disabled={checking !== null}>
+                <Icon name="sparkles" size={14} /> {t('settings.llm.check', { n: Math.min(40, visionModels.length) })}
+              </button>
+              {checking && <p className="muted small">{t('settings.llm.checking', checking)}</p>}
+              {checks && !checking && (
+                <p className="muted small">{t('settings.llm.checked', { ok: working.length, failed })}</p>
+              )}
+              {working.length > 0 && (
+                <ul className="model-results">
+                  {working.map((c, i) => (
+                    <li key={c.model}>
+                      <button className={`choice ${s.llm.model === c.model ? 'active' : ''}`} onClick={() => pickModel(c.model)}>
+                        <span>
+                          <strong>
+                            {c.model} {i === 0 ? `· ${t('settings.llm.fastest')}` : ''}
+                          </strong>
+                          <small>{(c.ms / 1000).toFixed(1)} s</small>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
           {modelsError && <p className="small error">{modelsError}</p>}
         </section>

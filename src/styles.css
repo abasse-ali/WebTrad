@@ -1507,3 +1507,24 @@ textarea {
     transition: none !important;
   }
 }
+
+.model-check {
+  margin-top: 12px;
+}
+.model-results {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 6px;
+}
+.model-results .choice {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+}
+.model-results strong {
+  overflow-wrap: anywhere;
+}
