@@ -144,6 +144,8 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
   const bandY = Math.max(3, Math.round(region.h * 0.07));
   // Ink left once the rim is blanked: the lettering alone.
   let ix0 = Infinity, iy0 = Infinity, ix1 = -1, iy1 = -1;
+  const inkX: number[] = [];
+  const inkY: number[] = [];
   const top = new Int32Array(region.w).fill(-1);
   const bottom = new Int32Array(region.w).fill(-1);
   for (let r = 0; r < region.h; r++) {
@@ -172,6 +174,8 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
         if (x > ix1) ix1 = x;
         if (y < iy0) iy0 = y;
         if (y > iy1) iy1 = y;
+        inkX.push(x);
+        inkY.push(y);
       }
       const si = (y * px.width + x) * 4;
       const di = ((y - y0) * w + (x - x0)) * 4;
@@ -180,8 +184,59 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
       out[di + 2] = px.data[si + 2];
     }
   }
-  const ink = ix1 >= 0 ? { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 } : null;
+  const ink = ix1 >= 0 ? (lettering(inkX, inkY, region) ?? { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 }) : null;
   return { pixels: { data: out, width: w, height: h }, x: x0, y: y0, ink };
+}
+
+/**
+ * Box of the lettering among the dark pixels of a bubble. Grainy or spiky
+ * bubble rims leave specks far from the text: taken into the box, they made
+ * it nearly as big as the bubble and off-centre, and the translation was
+ * then lettered too big, in a tall narrow column, beside the original place.
+ * Rows (then columns) holding ink are grouped when they are close; the group
+ * holding most ink is the text.
+ */
+export function lettering(xs: number[], ys: number[], region: Box): Box | null {
+  if (xs.length === 0) return null;
+  const densest = (values: number[], from: number, size: number, gap: number): [number, number] | null => {
+    const counts = new Int32Array(size);
+    for (const v of values) counts[v - from]++;
+    // A row with one or two dark pixels is a speck, not a line of letters.
+    let peak = 0;
+    for (const c of counts) peak = Math.max(peak, c);
+    const floor = Math.max(1, Math.min(3, Math.round(peak * 0.04)));
+    let best: [number, number] | null = null;
+    let bestSum = 0;
+    let start = -1;
+    let end = -1;
+    let sum = 0;
+    let empty = 0;
+    for (let i = 0; i <= size; i++) {
+      const on = i < size && counts[i] >= floor;
+      if (on) {
+        if (start < 0) start = i;
+        end = i;
+        sum += counts[i];
+        empty = 0;
+      } else if (start >= 0 && ++empty > gap) {
+        if (sum > bestSum) {
+          bestSum = sum;
+          best = [start + from, end + from];
+        }
+        start = -1;
+        sum = 0;
+        empty = 0;
+      }
+    }
+    if (start >= 0 && sum > bestSum) best = [start + from, end + from];
+    return best;
+  };
+  const rows = densest(ys, region.y, region.h, Math.max(4, Math.round(region.h * 0.08)));
+  if (!rows) return null;
+  const inRows = xs.filter((_, i) => ys[i] >= rows[0] && ys[i] <= rows[1]);
+  const cols = densest(inRows, region.x, region.w, Math.max(6, Math.round(region.w * 0.1)));
+  if (!cols) return null;
+  return { x: cols[0], y: rows[0], w: cols[1] - cols[0] + 1, h: rows[1] - rows[0] + 1 };
 }
 
 /** Largest axis-aligned rectangle centred on (cx, cy) that stays inside the bubble. */
@@ -205,9 +260,10 @@ export function innerBox(region: BubbleRegion, cx: number, cy: number, minH: num
     if (halfW <= 0 || !Number.isFinite(halfW)) break;
     const w = halfW * 2;
     const h = half * 2;
-    // Prefer roomy but not extremely flat or tall areas.
+    // Prefer roomy areas, wider than tall like a block of text: a tall
+    // narrow column (a bubble merged with bright artwork below) is avoided.
     const aspect = w / h;
-    const score = w * h * (aspect > 4 ? 4 / aspect : aspect < 0.5 ? aspect / 0.5 : 1);
+    const score = w * h * (aspect > 4 ? 4 / aspect : aspect < 1.1 ? (aspect / 1.1) ** 2 : 1);
     if (score > bestScore) {
       bestScore = score;
       best = { x: cx - halfW, y: top, w, h };
