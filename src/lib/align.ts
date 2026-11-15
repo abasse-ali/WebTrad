@@ -31,13 +31,17 @@ const centreX = (b: Box) => b.x + b.w / 2;
 function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: number; error: number } {
   let matched = 0;
   let error = 0;
+  // Two texts at most per shape (two bubbles drawn joined). Without a limit,
+  // squeezing the twenty lines of a game chat into one big bubble "explained"
+  // them all, and they were lettered there, one over the other.
+  const held = new Array<number>(bubbles.length).fill(0);
   for (const it of items) {
     const y = a * centre(it) + b;
     const x = centreX(it);
     let best = -1;
     let bestD = Infinity;
     for (const [j, r] of bubbles.entries()) {
-      if (x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) continue;
+      if (held[j] >= 2 || x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) continue;
       const d = Math.abs(y - centre(r)) / r.h;
       if (d < bestD) {
         bestD = d;
@@ -45,6 +49,7 @@ function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: n
       }
     }
     if (best >= 0) {
+      held[best]++;
       matched++;
       error += bestD;
     }

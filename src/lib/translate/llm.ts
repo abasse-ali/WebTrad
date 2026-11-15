@@ -75,6 +75,23 @@ export function rateLimitWait(body: string, now = Date.now()): number {
   return 20_000;
 }
 
+/**
+ * Refusals that no pause or new try can fix, explained to the user: the
+ * day's free quota is spent (waiting a minute only repeats the refusal for
+ * hours), the key is refused, or the model is gone. The chapter stops on
+ * them instead of putting every page in error, one request after another.
+ */
+export function fatalReason(status: number, body: string): string | undefined {
+  if (status === 429 && /per[-_ ]day|daily/i.test(body))
+    return 'Quota gratuit du jour épuisé chez ce fournisseur : reprenez demain, ou choisissez un autre fournisseur (par exemple NVIDIA) dans Réglages.';
+  if (status === 401 || (status === 403 && !/region/i.test(body)))
+    return 'Clé API absente ou refusée par le fournisseur : vérifiez-la dans Réglages.';
+  if (status === 403) return 'Ce modèle n’est pas disponible dans votre région : choisissez-en un autre dans Réglages.';
+  if (status === 404 && /model|unavailable|not found|no endpoints/i.test(body))
+    return 'Ce modèle n’est plus disponible (ou plus gratuit) : choisissez-en un autre dans Réglages.';
+  return undefined;
+}
+
 function limitOf(body: string): string | undefined {
   return body.match(/"X-RateLimit-Limit"\s*:\s*"?(\d+)/i)?.[1];
 }
@@ -136,6 +153,11 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   }
   const meta = { fournisseur: host, modèle: model, statut: res.status, ms: since(start), images: images || undefined, octets: res.text.length };
   if (path === '/chat/completions') countRequest(host, res.status === 429 ? 'limited' : res.status >= 200 && res.status < 300 ? 'ok' : 'failed');
+  const fatal = fatalReason(res.status, res.text);
+  if (fatal) {
+    logError('ia', `${method} ${path} → HTTP ${res.status} : ${fatal}`, meta);
+    throw new TranslateError(`${fatal} (HTTP ${res.status})`, 'llm', false, true);
+  }
   if (res.status === 429) {
     const waitMs = rateLimitWait(res.text);
     cooldowns.set(host, Math.max(cooldowns.get(host) ?? 0, Date.now() + waitMs));
@@ -201,12 +223,13 @@ export async function listModels(llm: LlmSettings): Promise<ModelInfo[]> {
   const data = (await request(llm, 'GET', '/models')) as {
     data?: {
       id?: string;
-      architecture?: { input_modalities?: string[]; modality?: string };
+      architecture?: { input_modalities?: string[]; output_modalities?: string[]; modality?: string };
       pricing?: { prompt?: string | number; completion?: string | number };
     }[];
   };
   return (data.data ?? [])
-    .filter((m) => m.id && !NOT_CHAT.test(m.id))
+    // Music or picture generators (they answer with sound, not text).
+    .filter((m) => m.id && !NOT_CHAT.test(m.id) && (m.architecture?.output_modalities?.includes('text') ?? true))
     .map((m) => {
       const id = m.id!;
       // OpenRouter says what each model takes and costs; others only have names.

@@ -41,3 +41,15 @@ describe('alignToBubbles with two texts in one shape', () => {
     expect(alignToBubbles(items, joined)).toMatchObject({ a: 1, b: 0, matched: 2 });
   });
 });
+
+describe('alignToBubbles and a game chat', () => {
+  it('does not squeeze the lines of a chat into one big bubble', () => {
+    // Twelve chat lines (light letters on a dark screen: no bubble, no block
+    // found under them), and one big white bubble below.
+    const lines = Array.from({ length: 12 }, (_, i) => ({ x: 40, y: 100 + i * 60, w: 500, h: 40 }));
+    const bubble = { x: 100, y: 900, w: 600, h: 500 };
+    const m = alignToBubbles(lines, [bubble]);
+    expect(m.a).toBe(1);
+    expect(m.b).toBe(0);
+  });
+});

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listModels, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
+import { fatalReason, listModels, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
 
 const nvidia = { preset: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', apiKey: 'nvapi-test', model: 'qwen/qwen3.5-397b-a17b' };
 const gemini = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: 'k', model: 'gemini-flash-latest' };
@@ -143,5 +143,16 @@ describe('parseJsonAnswer on a cut answer', () => {
   it('keeps the complete items', () => {
     const cut = '{"source_language":"en","bubbles":[{"box_2d":[1,2,3,4],"text":"Hi","translation":"Salut"},{"box_2d":[5,6,7,8],"text":"Bye","transl';
     expect(parseJsonAnswer<{ bubbles: unknown[] }>(cut).bubbles).toEqual([{ box_2d: [1, 2, 3, 4], text: 'Hi', translation: 'Salut' }]);
+  });
+});
+
+describe('fatalReason', () => {
+  it('stops on refusals no new try can fix', () => {
+    expect(fatalReason(429, '{"error":{"message":"Rate limit exceeded: free-models-per-day-high-balance."}}')).toMatch(/jour/);
+    expect(fatalReason(429, '{"error":{"message":"Rate limit exceeded: free-models-per-min."}}')).toBeUndefined();
+    expect(fatalReason(401, '{"error":{"message":"No cookie auth credentials found"}}')).toMatch(/Clé API/);
+    expect(fatalReason(404, '{"error":{"message":"This model is unavailable for free."}}')).toMatch(/modèle/);
+    expect(fatalReason(403, '{"error":{"message":"This model is not available in your region."}}')).toMatch(/région/);
+    expect(fatalReason(502, 'Bad Gateway')).toBeUndefined();
   });
 });
