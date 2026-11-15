@@ -20,6 +20,7 @@ interface BrowserPage {
 interface WebTradBrowserPlugin {
   open(options: { url?: string; labels: Record<string, string>; auto?: boolean }): Promise<BrowserPage>;
   download(options: { urls: string[]; referer?: string }): Promise<{ files: { url: string; path: string }[]; failed: number }>;
+  readClipboard(): Promise<{ text: string }>;
   addListener(event: 'progress', listener: (e: { done: number; total: number }) => void): Promise<PluginListenerHandle>;
 }
 
@@ -123,4 +124,19 @@ export async function coverWithBrowser(url: string, labels: Record<string, strin
   if (files.length === 0) return undefined;
   const blob = await (await fetch(Capacitor.convertFileSrc(files[0].path))).blob();
   return (await usableCover(blob)) ? blob : undefined;
+}
+
+/**
+ * Text of the clipboard. In the iPhone app it is read natively: no "Paste"
+ * bubble at each tap (iOS asks once, and can be told to always allow).
+ */
+export async function readClipboard(): Promise<string> {
+  if (isNativeApp()) {
+    try {
+      return (await WebTradBrowser.readClipboard()).text;
+    } catch {
+      /* older app build: the web way below */
+    }
+  }
+  return navigator.clipboard.readText();
 }
