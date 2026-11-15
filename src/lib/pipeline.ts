@@ -17,6 +17,7 @@ import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
 import { visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
+import { isSoundEffect } from './text';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
 import type { Bubble, Chapter, Page } from './types';
 
@@ -128,15 +129,22 @@ const VISION_MAX_SIDE = 1536;
  * is tried again twice, after a pause, before the page is marked in error.
  */
 async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits = [4000, 15000]): Promise<T> {
+  let limited = 0;
   for (let attempt = 0; ; attempt++) {
     try {
       return await run();
     } catch (err) {
       const retryable = !(err instanceof TranslateError) || err.retryable;
-      if ((err as Error).name === 'AbortError' || !retryable || attempt >= waits.length) throw err;
-      logWarn('ia', `Nouvel essai dans ${waits[attempt] / 1000} s : ${(err as Error).message.slice(0, 120)}`, { essai: attempt + 2 });
+      // Rate limits (429) only mean "wait": the request waits for the window
+      // to reset (see llm.ts) and is tried again, up to 8 times.
+      const rateLimited = /HTTP 429/.test((err as Error).message);
+      if (rateLimited) limited++;
+      const giveUp = rateLimited ? limited > 8 : attempt - limited >= waits.length;
+      if ((err as Error).name === 'AbortError' || !retryable || giveUp) throw err;
+      const wait = rateLimited ? 0 : waits[attempt - limited];
+      if (!rateLimited) logWarn('ia', `Nouvel essai dans ${wait / 1000} s : ${(err as Error).message.slice(0, 120)}`, { essai: attempt + 2 });
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, waits[attempt]);
+        const timer = setTimeout(resolve, wait);
         signal.addEventListener('abort', () => (clearTimeout(timer), reject(new DOMException('Aborted', 'AbortError'))), { once: true });
       });
     }
@@ -213,6 +221,8 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       if (cy < ownTop || cy >= ownBottom) continue;
       const cx = box.x + box.w / 2;
       const region = regions.find((r) => cx * scale >= r.x && cx * scale <= r.x + r.w && cy * scale >= r.y && cy * scale <= r.y + r.h);
+      // Sound effects drawn on the artwork are not translated, even when the model sends them.
+      if (!region && isSoundEffect(f.text)) continue;
       const lines = Math.max(1, f.text.split('\n').length);
       const vertical = box.h > box.w * 1.6;
       const ink = region ? maskedCrop(px, region).ink : null;

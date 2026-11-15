@@ -1,6 +1,6 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { englishName } from '../languages';
-import { logError, logInfo, since } from '../log';
+import { logError, logInfo, logWarn, since } from '../log';
 import { LLM_PRESETS, getSettings } from '../settings';
 import type { LlmSettings } from '../types';
 import { TranslateError, type TranslationEngine } from './types';
@@ -57,6 +57,40 @@ function baseOf(llm: LlmSettings): string {
   return llm.baseUrl.trim().replace(/\/+$/, '');
 }
 
+/** Time before which no request goes to a provider (ms since 1970), after a 429. */
+const cooldowns = new Map<string, number>();
+
+/** How long to wait after a 429: until the provider's reset time if it gave one. */
+export function rateLimitWait(body: string, now = Date.now()): number {
+  const reset = Number(body.match(/"X-RateLimit-Reset"\s*:\s*"?(\d{10,13})/i)?.[1]);
+  if (reset) {
+    const at = reset < 1e12 ? reset * 1000 : reset;
+    // A little margin; never less than 2 s nor more than 70 s (clocks may differ).
+    return Math.min(70_000, Math.max(2_000, at - now + 1_000));
+  }
+  const after = Number(body.match(/retry[-_ ]after"?\s*[:=]\s*"?(\d+(?:\.\d+)?)/i)?.[1]);
+  if (after) return Math.min(70_000, Math.max(2_000, after * 1000));
+  return 20_000;
+}
+
+function limitOf(body: string): string | undefined {
+  return body.match(/"X-RateLimit-Limit"\s*:\s*"?(\d+)/i)?.[1];
+}
+
+/** Milliseconds left before requests to any provider may go again. */
+export function cooldownLeft(): number {
+  return Math.max(0, ...[...cooldowns.values()].map((t) => t - Date.now()));
+}
+
+async function waitForCooldown(host: string, signal?: AbortSignal): Promise<void> {
+  const wait = (cooldowns.get(host) ?? 0) - Date.now();
+  if (wait <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, wait);
+    signal?.addEventListener('abort', () => (clearTimeout(timer), reject(new DOMException('Aborted', 'AbortError'))), { once: true });
+  });
+}
+
 async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
   let res: RawResponse;
   const start = performance.now();
@@ -68,7 +102,9 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     }
   })();
   const model = (body as { model?: string } | undefined)?.model;
-  const images = JSON.stringify((body as { messages?: unknown } | undefined)?.messages ?? '').split('"image_url"').length - 1;
+  // A rate limit was hit: every request waits for the provider's window to reset.
+  await waitForCooldown(host, signal);
+  const images = JSON.stringify((body as { messages?: unknown } | undefined)?.messages ?? '').split('"type":"image_url"').length - 1;
   try {
     res = await call(method, `${baseOf(llm)}${path}`, authHeaders(llm), body, signal);
   } catch (err) {
@@ -83,6 +119,12 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     throw new TranslateError(`AI endpoint unreachable (${(err as Error).message}). ${hint}`, 'llm');
   }
   const meta = { fournisseur: host, modèle: model, statut: res.status, ms: since(start), images: images || undefined, octets: res.text.length };
+  if (res.status === 429) {
+    const waitMs = rateLimitWait(res.text);
+    cooldowns.set(host, Math.max(cooldowns.get(host) ?? 0, Date.now() + waitMs));
+    logWarn('ia', `Limite de requêtes atteinte (${limitOf(res.text) ?? '?'} par minute) : pause de ${Math.round(waitMs / 1000)} s`, meta);
+    throw new TranslateError(`AI endpoint HTTP 429 (rate limit) ${res.text.slice(0, 200)}`, 'llm', true);
+  }
   if (res.status < 200 || res.status >= 300) {
     logError('ia', `${method} ${path} → HTTP ${res.status} : ${res.text.slice(0, 160)}`, meta);
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
@@ -285,10 +327,11 @@ function visionPrompt(order: 'yxyx' | 'xyxy'): string {
   const box = order === 'xyxy' ? '[xmin, ymin, xmax, ymax]' : '[ymin, xmin, ymax, xmax]';
   const key = order === 'xyxy' ? 'bbox_2d' : 'box_2d';
   return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
-Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, sound effects, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers and credits.
+Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers and credits.
+Do NOT include sound effects or onomatopoeia: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
 For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a natural translation in the requested language.
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
-Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;
+Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|narration|sign","text":"...","translation":"..."}]} in reading order. Return {"bubbles":[]} if there is no text.`;
 }
 
 /** Box order the configured provider is best at. */
@@ -332,7 +375,9 @@ export async function visionTranslate(
   const out: VisionBubble[] = [];
   const boxes: { box: number[]; xyxy: boolean; item: { text?: unknown; translation?: unknown } }[] = [];
   for (const raw of list) {
-    const item = raw as { box_2d?: unknown; bbox_2d?: unknown; bbox?: unknown; box?: unknown; text?: unknown; translation?: unknown };
+    const item = raw as { box_2d?: unknown; bbox_2d?: unknown; bbox?: unknown; box?: unknown; text?: unknown; translation?: unknown; kind?: unknown; type?: unknown };
+    // Sound effects are left drawn as they are, whatever the model sent.
+    if (/^(sfx|sound|onomatop)/i.test(String(item.kind ?? item.type ?? ''))) continue;
     // The key tells the order when the model picked its own habit.
     const xyxy = item.bbox_2d !== undefined || item.bbox !== undefined ? true : item.box_2d !== undefined ? false : order === 'xyxy';
     const box = (item.box_2d ?? item.bbox_2d ?? item.bbox ?? item.box) as unknown;

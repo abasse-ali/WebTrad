@@ -404,3 +404,28 @@ export function guessLatinLanguage(text: string): string {
   }
   return best;
 }
+
+/** Common comic sound effects (English lettering of webtoons and manga). */
+const SFX_WORDS = new Set(
+  (
+    'huff puff pant gasp sigh gulp slurp lick slap smack spank thrust pound bang boom crash thud thump bump knock ' +
+    'twitch tremble shiver shake quiver jolt jerk flinch grip grab clutch clasp squeeze squish squelch wriggle ' +
+    'swoosh whoosh swish swing woosh fwoosh whip zip zoom dash rush spurt squirt splash splurt drip drop plop ' +
+    'pop snap crack click clack tap tick tock ring ding beep buzz whirr rustle shuffle step stomp thwack whack ' +
+    'smash crunch rip tear swell throb pulse thump-thump ba-dump badump kiss chu smooch muah slide flop toss ' +
+    'turn stare glare blush flush shudder sniff sniffle sob hic cough ahem rumble growl roar hiss sizzle'
+  ).split(' '),
+);
+
+/**
+ * Text that is only a drawn sound effect ("HUFF", "SLAP SLAP", "TWITCH!",
+ * "SPUUURT"): one to three words, each a known effect (letters may be
+ * stretched) or a word repeated.
+ */
+export function isSoundEffect(text: string): boolean {
+  const words = text.toLowerCase().replace(/[!?.…~♥♡*\-]+/g, ' ').split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 3) return false;
+  const squeeze = (w: string) => w.replace(/(.)\1+/g, '$1');
+  const known = new Set([...SFX_WORDS].map(squeeze));
+  return words.every((w) => /^\p{L}+$/u.test(w) && (SFX_WORDS.has(w) || known.has(squeeze(w))));
+}

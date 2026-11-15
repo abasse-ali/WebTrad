@@ -112,3 +112,29 @@ describe('checkVisionModel', () => {
 function answerText(text: string) {
   return vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: text } }] }), { status: 200 }));
 }
+
+describe('rate limits and sound effects', () => {
+  it('waits until the reset time given by OpenRouter', async () => {
+    const { rateLimitWait } = await import('../src/lib/translate/llm');
+    const now = 1_794_711_100_000;
+    const body = '{"error":{"code":429,"metadata":{"headers":{"X-RateLimit-Limit":"20","X-RateLimit-Remaining":"0","X-RateLimit-Reset":"1794711120000"}}}}';
+    expect(rateLimitWait(body, now)).toBe(21_000);
+    expect(rateLimitWait('{"error":"slow down"}', now)).toBe(20_000);
+    expect(rateLimitWait('"X-RateLimit-Reset":"1794711100"', now)).toBe(2_000);
+  });
+
+  it('drops sound effects the model tags', async () => {
+    vi.stubGlobal('fetch', answer({ bubbles: [
+      { box_2d: [10, 10, 50, 50], kind: 'sfx', text: 'HUFF', translation: 'HAN' },
+      { box_2d: [60, 10, 90, 50], kind: 'dialogue', text: 'HI', translation: 'SALUT' },
+    ] }));
+    const out = await visionTranslate('data:image/jpeg;base64,', 'en', 'fr', undefined, gemini);
+    expect(out.bubbles.map((b) => b.translation)).toEqual(['SALUT']);
+  });
+
+  it('recognises drawn sound effects', async () => {
+    const { isSoundEffect } = await import('../src/lib/text');
+    for (const t of ['HUFF', 'HUFF HUFF', 'TWITCH!', 'SPUUURT', 'slap slap', 'SWOOSH', 'GRIP']) expect(isSoundEffect(t)).toBe(true);
+    for (const t of ['HI!', 'WEAPON SHOP', 'I WAS LOOKING FOR YOU.', 'FUCK...', 'HNGH!', 'WANTED']) expect(isSoundEffect(t)).toBe(false);
+  });
+});
