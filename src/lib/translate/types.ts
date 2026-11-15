@@ -15,6 +15,8 @@ export class TranslateError extends Error {
     message: string,
     readonly engine: string,
     readonly retryable = true,
+    /** Nothing more can work until the user acts (key, model, daily quota): the chapter stops. */
+    readonly fatal = false,
   ) {
     super(message);
     this.name = 'TranslateError';

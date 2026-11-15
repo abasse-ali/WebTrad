@@ -1108,6 +1108,7 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     }
     let done = 0;
     let failed = 0;
+    let stopped = false;
     for (const page of todo) {
       if (controller.signal.aborted) break;
       try {
@@ -1128,8 +1129,16 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
           await patchPage(page.id, { status: page.bubbles.length ? 'done' : 'pending' });
           break;
         }
-        failed++;
         const message = (err as Error).message || String(err);
+        if (err instanceof TranslateError && err.fatal) {
+          // The next pages would be refused the same way: they wait, untouched.
+          await patchPage(page.id, { status: page.bubbles.length ? 'done' : 'pending', error: undefined });
+          logError('job', `Traduction arrêtée à la page ${page.index + 1} : ${message}`, { chapitre: chapter.title });
+          setJob(chapterId, { message });
+          stopped = true;
+          break;
+        }
+        failed++;
         logError('job', `Page ${page.index + 1} en erreur : ${message}`, { chapitre: chapter.title });
         await patchPage(page.id, { status: 'error', error: message });
         setJob(chapterId, { failed, message });
@@ -1137,7 +1146,7 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
       await refreshStats(chapterId);
     }
     await refreshStats(chapterId);
-    logInfo('job', `Fin de « ${chapter.title} » : ${done} page(s) faite(s), ${failed} en erreur${controller.signal.aborted ? ', arrêté' : ''}`, {
+    logInfo('job', `Fin de « ${chapter.title} » : ${done} page(s) faite(s), ${failed} en erreur${controller.signal.aborted || stopped ? ', arrêté' : ''}`, {
       ms: since(jobStart),
     });
     setOcrStatusListener(null);
