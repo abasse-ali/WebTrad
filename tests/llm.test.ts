@@ -173,4 +173,23 @@ describe('paceRequest', () => {
     expect(started).toBe(true);
     vi.useRealTimers();
   });
+
+  it('never learns a limit under 8 per minute, and lifts it after quiet minutes', async () => {
+    vi.useFakeTimers();
+    const host = 'pace-grow.test';
+    for (let i = 0; i < 3; i++) await paceRequest(host);
+    learnLimit(host);
+    // 3 seen, but the floor is 8: five more go at once.
+    for (let i = 0; i < 5; i++) await paceRequest(host);
+    let started = false;
+    const ninth = paceRequest(host).then(() => (started = true));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(started).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await ninth;
+    // Half an hour without a refusal: the limit is gone, 40 go at once.
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    for (let i = 0; i < 40; i++) await paceRequest(host);
+    vi.useRealTimers();
+  });
 });

@@ -101,7 +101,23 @@ function limitOf(body: string): string | undefined {
  * (NVIDIA says nothing of its limit): the next requests are spaced to stay
  * under it, instead of being refused and paused 20 s again and again.
  */
-const learntLimit = new Map<string, number>();
+const learntLimit = new Map<string, { limit: number; at: number }>();
+
+/**
+ * The per-minute limit in force for a host. A limit learnt from one refusal
+ * may be too strict (a burst at startup, a short-lived quota): each minute
+ * without a new refusal allows two more requests, and past 60 the limit goes.
+ */
+function limitFor(host: string, now = Date.now()): number | undefined {
+  const learnt = learntLimit.get(host);
+  if (!learnt) return undefined;
+  const limit = learnt.limit + 2 * Math.floor((now - learnt.at) / 60_000);
+  if (limit > 60) {
+    learntLimit.delete(host);
+    return undefined;
+  }
+  return limit;
+}
 const recentStarts = new Map<string, number[]>();
 
 function startsInLastMinute(host: string, now = Date.now()): number[] {
@@ -114,7 +130,7 @@ function startsInLastMinute(host: string, now = Date.now()): number[] {
 export async function paceRequest(host: string, signal?: AbortSignal): Promise<void> {
   for (;;) {
     const list = startsInLastMinute(host);
-    const limit = learntLimit.get(host);
+    const limit = limitFor(host);
     if (!limit || list.length < limit) {
       list.push(Date.now());
       return;
@@ -127,11 +143,12 @@ export async function paceRequest(host: string, signal?: AbortSignal): Promise<v
   }
 }
 
-/** Remembers the rate a provider refused at (a little under it, never below 4 per minute). */
+/** Remembers the rate a provider refused at (a little under it, never below 8 per minute). */
 export function learnLimit(host: string, said?: number): void {
   const seen = startsInLastMinute(host).length;
-  const limit = said && said < 1000 ? said : Math.max(4, seen - 2);
-  learntLimit.set(host, Math.min(learntLimit.get(host) ?? Infinity, limit));
+  const limit = said && said < 1000 ? said : Math.max(8, Math.floor(seen * 0.8));
+  const now = Date.now();
+  learntLimit.set(host, { limit: Math.min(limitFor(host, now) ?? Infinity, limit), at: now });
 }
 
 /** Milliseconds left before requests to any provider may go again. */
@@ -201,7 +218,7 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     const waitMs = rateLimitWait(res.text);
     cooldowns.set(host, Math.max(cooldowns.get(host) ?? 0, Date.now() + waitMs));
     learnLimit(host, Number(limitOf(res.text)) || undefined);
-    logWarn('ia', `Limite de requêtes atteinte : pause de ${Math.round(waitMs / 1000)} s, puis ${learntLimit.get(host)} requêtes par minute au plus`, meta);
+    logWarn('ia', `Limite de requêtes atteinte : pause de ${Math.round(waitMs / 1000)} s, puis ${limitFor(host)} requêtes par minute au plus`, meta);
     throw new TranslateError(`AI endpoint HTTP 429 (rate limit) ${res.text.slice(0, 200)}`, 'llm', true);
   }
   if (res.status < 200 || res.status >= 300) {
