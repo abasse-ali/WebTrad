@@ -2132,3 +2132,76 @@ textarea {
   display: block;
   margin-top: 4px;
 }
+
+/* ---------- animated reading ---------- */
+
+/* Translated bubbles pop in when they come into view. */
+.tb-layer.animated .tb .tb-text {
+  opacity: 0;
+  transform: scale(0.82);
+}
+.tb-layer.animated .tb.in .tb-text {
+  animation: bubble-in 0.45s cubic-bezier(0.2, 1.5, 0.4, 1) both;
+}
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Drawn sound effects: a window on the page that moves over the lettering. */
+.fx-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.fx {
+  position: absolute;
+  overflow: hidden;
+  will-change: transform;
+}
+.fx img {
+  position: absolute;
+  max-width: none;
+  height: auto;
+}
+.fx-shake {
+  animation: fx-shake 2.6s ease-in-out infinite;
+}
+.fx-hit {
+  animation: fx-hit 2.2s ease-out infinite;
+}
+.fx-breathe {
+  animation: fx-breathe 2.8s ease-in-out infinite;
+}
+.fx-pulse {
+  animation: fx-pulse 3s ease-in-out infinite;
+}
+@keyframes fx-shake {
+  0%, 30%, 100% { transform: none; }
+  3% { transform: translate(-2px, 1px) rotate(-1.2deg); }
+  6% { transform: translate(2px, -1px) rotate(1.2deg); }
+  9% { transform: translate(-2px, -1px) rotate(-0.8deg); }
+  12% { transform: translate(2px, 1px) rotate(0.8deg); }
+  15% { transform: translate(-1px, 1px) rotate(-0.5deg); }
+  18% { transform: translate(1px, 0) rotate(0.3deg); }
+}
+@keyframes fx-hit {
+  0%, 40%, 100% { transform: none; }
+  6% { transform: scale(1.14) rotate(-2deg); }
+  14% { transform: scale(0.97); }
+  22% { transform: scale(1.03); }
+}
+@keyframes fx-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06) translateY(-1%); }
+}
+@keyframes fx-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}

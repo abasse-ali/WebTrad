@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
+import type { Pixels } from './imageproc';
 import { cleanBubble, contrastColor, detectAllBubbles, findTextBlocks, fitShift, innerBox, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
@@ -20,7 +21,7 @@ import { TranslateError } from './translate/types';
 import { isDrawnEffect, isSoundEffect, isWatermark } from './text';
 import { alignToBubbles } from './align';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
-import type { Bubble, Chapter, Page } from './types';
+import type { Bubble, Chapter, Page, SoundEffect } from './types';
 
 // --- job state store ----------------------------------------------------------
 
@@ -172,7 +173,12 @@ function sameText(a: string, b: string): boolean {
 const VISION_PARALLEL = 3;
 
 /** AI vision mode: the page is cut in slices, each read and translated by one request. */
-async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortSignal, context?: string): Promise<Bubble[]> {
+async function visionPage(
+  bitmap: DecodedImage,
+  chapter: Chapter,
+  signal: AbortSignal,
+  context?: string,
+): Promise<{ bubbles: Bubble[]; effects: SoundEffect[] }> {
   const W = bitmap.width;
   const H = bitmap.height;
   // Tall slices: a webtoon page costs fewer requests (vision models read tall images well).
@@ -212,7 +218,7 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
         // the page is still lettered instead of the whole page failing.
         if (!/not valid JSON|Empty AI response/.test((err as Error).message)) throw err;
         logWarn('ia', `Morceau ${i + 1}/${slices.length} de la page ignoré : réponse illisible de l’IA`);
-        results[i] = { bubbles: [] };
+        results[i] = { bubbles: [], effects: [] };
       }
     }
   };
@@ -229,6 +235,7 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
   // Every text the model found, in page coordinates, matched to its bubble.
   type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number] };
   const found: Found[] = [];
+  const effects: SoundEffect[] = [];
   const inRegion = (x: number, y: number) =>
     regions.find((r) => x * scale >= r.x && x * scale <= r.x + r.w && y * scale >= r.y && y * scale <= r.y + r.h);
   const inkOf = new Map<(typeof regions)[number], boolean>();
@@ -288,6 +295,11 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
     const shiftX = clampShift(fitShift(xs));
     const typical = ys.length > 0 ? Math.max(...ys.map((p) => Math.abs(shiftY(p.at))), ...xs.map((p) => Math.abs(shiftX(p.at)))) : 0;
     if (typical > 4) logInfo('ocr', `Cadres de l’IA recalés sur le texte (jusqu’à ${Math.round(typical)} px)`, { morceau: i + 1, mesures: ys.length });
+    for (const f of results[i].effects) {
+      const box = toPage(f.box);
+      const cy = box.y + box.h / 2;
+      if (cy >= ownTop && cy < ownBottom) effects.push({ ...box, text: f.text });
+    }
     for (const f of results[i].bubbles) {
       // Untranslatable sound effects ("HUFF" → "HUFF"): the drawn lettering stays.
       if (!f.translation.trim() || sameText(f.text, f.translation)) continue;
@@ -300,7 +312,10 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       if (cy < ownTop || cy >= ownBottom) continue;
       const region = inRegion(box.x + box.w / 2, cy);
       // Sound effects drawn on the artwork are not translated, even when the model sends them.
-      if (!region && isDrawnEffect(f.text)) continue;
+      if (!region && isDrawnEffect(f.text)) {
+        effects.push({ ...box, text: f.text });
+        continue;
+      }
       // Website watermarks are not translated, even over a bubble.
       if (isWatermark(f.text)) continue;
       found.push({ f, box, region });
@@ -511,7 +526,25 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       patchBox: look.patchBox,
     });
   }
-  return bubbles;
+  return { bubbles, effects: placeEffects(px, scale, effects, bubbles) };
+}
+
+/**
+ * Sound effects kept for the animated reading: only where drawn lettering
+ * really is (a box the model misplaced would make a piece of artwork move),
+ * moved onto it, never over a translated text, each once.
+ */
+function placeEffects(px: Pixels, scale: number, effects: SoundEffect[], bubbles: Bubble[]): SoundEffect[] {
+  const out: SoundEffect[] = [];
+  for (const e of effects) {
+    if (e.w < 8 || e.h < 8) continue;
+    const s = snapToText(px, { x: e.x * scale, y: e.y * scale, w: e.w * scale, h: e.h * scale }, { y: 0.8, x: 0.4 });
+    if (!s.found) continue;
+    const box = { x: s.x / scale, y: s.y / scale, w: e.w, h: e.h };
+    if (bubbles.some((b) => overlapShare(b, box) > 0.2) || out.some((o) => overlapShare(o, box) > 0.5)) continue;
+    out.push({ ...box, text: e.text });
+  }
+  return out;
 }
 
 /** Share of the smaller box covered by the other one. */
@@ -722,7 +755,9 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   try {
     if (useVision) {
       const context = await storySoFar(chapter, page.index);
-      let bubbles = await visionPage(bitmap, chapter, signal, context);
+      const read = await visionPage(bitmap, chapter, signal, context);
+      let bubbles = read.bubbles;
+      const effects = read.effects;
       try {
         bubbles = await stitchSeam(page, bitmap, chapter, signal, bubbles, context);
       } catch (err) {
@@ -732,8 +767,13 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
       // The end of a bubble begun on the previous page is already lettered.
       const own = (await getPage(page.id))?.bubbles.filter((b) => b.seam === 'prev') ?? [];
       if (own.length > 0) bubbles = [...bubbles.filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmap.height), b))), ...own];
-      logInfo('ocr', `Page ${page.index + 1} lue par l’IA : ${bubbles.length} texte(s)`, { ...where, modèle: settings.llm.model, ms: since(start) });
-      await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
+      logInfo('ocr', `Page ${page.index + 1} lue par l’IA : ${bubbles.length} texte(s)`, {
+        ...where,
+        effets: effects.length || undefined,
+        modèle: settings.llm.model,
+        ms: since(start),
+      });
+      await patchPage(page.id, { bubbles, effects, status: 'done', stalled: 0 });
       return 'llm';
     }
     const detected = await ocrPage(bitmap, chapter.sourceLang, { minConfidence: settings.minConfidence, signal });

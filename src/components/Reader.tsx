@@ -12,7 +12,7 @@ import { cancelChapter, startChapter, stopChapter, translateBubbles, useJob } fr
 import { clearPosition, loadPosition, savePosition, setLastRead, type ReadingPosition } from '../lib/progress';
 import { guessNextUrl, neighbours, seriesOf } from '../lib/series';
 import { quickImport } from '../lib/quick';
-import { useSettings } from '../lib/settings';
+import { updateSettings, useSettings } from '../lib/settings';
 import type { Box } from '../lib/text';
 import type { Bubble, Chapter, Page, ReaderMode } from '../lib/types';
 import { navigate } from '../router';
@@ -485,6 +485,7 @@ export function Reader({ id }: { id: string }) {
         onCreate={onCreate}
         onRetry={onRetry}
         onTap={onTap}
+        animated={settings.animated}
       />
     ));
 
@@ -544,6 +545,9 @@ export function Reader({ id }: { id: string }) {
                 </button>
                 <button role="menuitem" onClick={reanalyseAll}>
                   <Icon name="sparkles" size={16} /> {t('reader.reanalyse')}
+                </button>
+                <button role="menuitem" onClick={() => (setMenuOpen(false), updateSettings({ animated: !settings.animated }))}>
+                  <Icon name="sparkles" size={16} /> {settings.animated ? t('reader.animated.off') : t('reader.animated.on')}
                 </button>
                 <button role="menuitem" onClick={() => (setMenuOpen(false), setLangOpen(true))}>
                   <Icon name="globe" size={16} /> {t('reader.languages')}

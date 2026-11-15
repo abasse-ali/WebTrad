@@ -130,6 +130,7 @@ export const DEFAULT_SETTINGS: Settings = {
   corsProxy: '',
   exportMaxMB: 30,
   background: true,
+  animated: true,
 };
 
 function load(): Settings {
