@@ -6,7 +6,80 @@
  *    do not mistake its in-flight pages for leftovers of a dead session.
  */
 
+import { logInfo } from './log';
+import { isNativeApp, nativeKeepAlive } from './native';
+import { getSettings } from './settings';
+
 const JOB_LOCK = 'webtrad-job';
+
+// --- working in the background (iPhone app) ---------------------------------
+//
+// iOS suspends an app a few seconds after it leaves the screen, and the
+// translation stops with it. While a chapter is processed the app plays
+// silence: natively (keeps the app running) and in the page itself (keeps
+// the web view's JavaScript running), both mixed with the reader's music.
+
+/** One second of silence, as a WAV data URL. */
+function silentWav(): string {
+  const n = 8000;
+  const bytes = new Uint8Array(44 + n);
+  const view = new DataView(bytes.buffer);
+  const text = (at: number, s: string) => [...s].forEach((c, i) => (bytes[at + i] = c.charCodeAt(0)));
+  text(0, 'RIFF');
+  view.setUint32(4, 36 + n, true);
+  text(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 8000, true);
+  view.setUint32(28, 8000, true);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true);
+  text(36, 'data');
+  view.setUint32(40, n, true);
+  bytes.fill(128, 44);
+  let bin = '';
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return `data:audio/wav;base64,${btoa(bin)}`;
+}
+
+let silence: HTMLAudioElement | null = null;
+
+function silenceElement(): HTMLAudioElement {
+  if (!silence) {
+    silence = new Audio(silentWav());
+    silence.loop = true;
+    silence.volume = 0.01;
+    silence.setAttribute('playsinline', '');
+  }
+  return silence;
+}
+
+// iOS only lets a page start a sound from a tap: the element is unlocked by
+// the reader's first tap, so it can be started later by the job itself.
+if (typeof window !== 'undefined' && isNativeApp()) {
+  const unlock = () => {
+    const audio = silenceElement();
+    void audio
+      .play()
+      .then(() => {
+        if (!processing) audio.pause();
+      })
+      .catch(() => undefined);
+    window.removeEventListener('pointerdown', unlock, true);
+  };
+  window.addEventListener('pointerdown', unlock, true);
+}
+
+function backgroundWork(on: boolean): void {
+  if (!isNativeApp()) return;
+  const wanted = on && getSettings().background !== false;
+  void nativeKeepAlive(wanted);
+  if (wanted) {
+    void silenceElement().play().catch(() => undefined);
+    logInfo('app', 'Traduction en arrière-plan activée (son silencieux)');
+  } else silence?.pause();
+}
 
 let processing = false;
 let sentinel: WakeLockSentinel | null = null;
@@ -52,7 +125,9 @@ export function setProcessing(active: boolean): void {
     }
     void acquireWakeLock();
     holdJobLock();
+    backgroundWork(true);
   } else {
+    backgroundWork(false);
     void sentinel?.release().catch(() => undefined);
     sentinel = null;
     releaseJobLock?.();

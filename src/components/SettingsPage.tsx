@@ -1,3 +1,4 @@
+import { isNativeApp } from '../lib/native';
 import { UsageMeter } from './UsageMeter';
 import { useEffect, useState } from 'react';
 import { formatBytes, useT, type MessageKey } from '../i18n';
@@ -152,6 +153,15 @@ export function SettingsPage() {
             ))}
           </select>
         </label>
+        {isNativeApp() && (
+          <label className="check">
+            <input type="checkbox" checked={s.background} onChange={(e) => updateSettings({ background: e.target.checked })} />
+            <span>
+              {t('settings.background')}
+              <small className="block muted">{t('settings.background.hint')}</small>
+            </span>
+          </label>
+        )}
         <div className="two">
           <label className="field">
             <span>{t('settings.defaultSource')}</span>
