@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { saveChapter, savePages, uid } from './db';
 import { imageSize, makeThumbnail } from './image';
+import { logInfo, logWarn, since } from './log';
 import type { Chapter, Page } from './types';
 
 export interface ImportedImage {
@@ -183,6 +184,7 @@ async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSi
           }
         }
         preferredRoute.set(host, route.id);
+        if (kind === 'page') logInfo('import', `Page lue via ${route.id} : ${url}`);
         return { res, route: route.id };
       } catch (err) {
         if (signal?.aborted) throw err;
@@ -190,6 +192,7 @@ async function fetchAny(url: string, kind: Kind, proxy: string, signal?: AbortSi
       }
     }
   }
+  logWarn('import', `${kind === 'page' ? 'Page' : 'Image'} illisible${blocked ? ` (bloquée par ${blocked})` : ''} : ${url}`, { essais: errors.join(' · ').slice(0, 280) });
   throw new ImportError(kind === 'page' ? (blocked ? 'PAGE_BLOCKED' : 'PAGE_UNREACHABLE') : 'IMAGE_UNREACHABLE', url, errors.join(' · '));
 }
 
@@ -332,6 +335,7 @@ export async function urlsToImages(
   signal?: AbortSignal,
   onPage?: (url: string) => void,
 ): Promise<UrlImportResult> {
+  const start = performance.now();
   const candidates: { url: string; fromPage: boolean; referer?: string }[] = [];
   let title = '';
   let nextUrl: string | undefined;
@@ -368,6 +372,7 @@ export async function urlsToImages(
     found.forEach((url) => candidates.push({ url, fromPage: true, referer: line }));
   }
   const images = await downloadImages(candidates, proxy, onProgress, signal);
+  logInfo('import', `Import par lien : ${images.length} image(s) sur ${candidates.length} trouvée(s)`, { titre: title, suivant: nextUrl, ms: since(start) });
   return { images, title, nextUrl };
 }
 

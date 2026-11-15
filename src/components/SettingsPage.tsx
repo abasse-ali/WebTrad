@@ -427,6 +427,14 @@ export function SettingsPage() {
       </section>
 
       <section className="panel">
+        <h2>{t('log.title')}</h2>
+        <p className="muted small">{t('log.intro')}</p>
+        <a className="btn" href="#/log">
+          <Icon name="library" size={16} /> {t('log.open')}
+        </a>
+      </section>
+
+      <section className="panel">
         <h2>{t('settings.about')}</h2>
         <p className="muted">{t('settings.about.text')}</p>
       </section>

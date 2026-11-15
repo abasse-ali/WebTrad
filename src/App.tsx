@@ -4,6 +4,7 @@ import { useSettings } from './lib/settings';
 import { navigate, useRoute } from './router';
 import { Icon } from './components/Icon';
 import { Library } from './components/Library';
+import { LogPage } from './components/LogPage';
 import { QuickStatus } from './components/QuickImport';
 import { NewChapter } from './components/NewChapter';
 import { Reader } from './components/Reader';
@@ -52,7 +53,7 @@ export function App() {
             <Icon name="plus" size={18} />
             <span>{t('nav.new')}</span>
           </a>
-          <a href="#/settings" className={route.name === 'settings' ? 'active' : ''}>
+          <a href="#/settings" className={route.name === 'settings' || route.name === 'log' ? 'active' : ''}>
             <Icon name="settings" size={18} />
             <span>{t('nav.settings')}</span>
           </a>
@@ -62,6 +63,7 @@ export function App() {
         {route.name === 'library' && <Library onNew={() => navigate('/new')} />}
         {route.name === 'new' && <NewChapter key={route.key} initialUrl={route.url} handoff={route.handoff} />}
         {route.name === 'settings' && <SettingsPage />}
+        {route.name === 'log' && <LogPage />}
       </main>
       <QuickStatus />
       <footer className="footer">

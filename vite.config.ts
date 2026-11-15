@@ -6,6 +6,10 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   base: './',
   plugins: [react()],
+  define: {
+    // Shown in the activity log, to know which version produced it.
+    __APP_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ')),
+  },
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1500,
