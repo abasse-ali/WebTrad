@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fitShift, lettering, snapToText } from '../src/lib/imageproc';
+import { detectAllBubbles, fitShift, lettering, snapToText } from '../src/lib/imageproc';
 
 /** White image with black vertical strokes (fake letters) in a band. */
 function page(w: number, h: number, band: { x: number; y: number; w: number; h: number }) {
@@ -75,5 +75,28 @@ describe('lettering', () => {
       ys.push(y);
     }
     expect(lettering(xs, ys, { x: 100, y: 100, w: 300, h: 200 })).toEqual({ x: 190, y: 180, w: 119, h: 32 });
+  });
+});
+
+describe('detectAllBubbles and whispered bubbles', () => {
+  it('finds a grey glossy bubble on a dark page', () => {
+    const W = 400, H = 300;
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const dx = (x - 200) / 150, dy = (y - 150) / 90;
+        let v = 90; // dark page
+        if (dx * dx + dy * dy <= 1) {
+          v = 180 + Math.round(15 * (1 - (y - 60) / 180)); // grey gradient, never white
+          if (dy < -0.5 && dy > -0.75) v = 250; // glossy highlight
+          // a few lines of black letters
+          if ((y >= 135 && y <= 145) || (y >= 155 && y <= 165)) if (x >= 130 && x <= 270 && x % 7 < 2) v = 10;
+        }
+        data[i] = data[i + 1] = data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    const found = detectAllBubbles({ data, width: W, height: H });
+    expect(found.some((r) => r.x < 120 && r.x + r.w > 280 && r.y < 140 && r.y + r.h > 160)).toBe(true);
   });
 });

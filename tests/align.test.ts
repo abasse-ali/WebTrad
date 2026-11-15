@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { alignToBubbles } from '../src/lib/align';
+import { evenCutText } from '../src/lib/pipeline';
 
 const box = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
 
@@ -51,5 +52,14 @@ describe('alignToBubbles and a game chat', () => {
     const m = alignToBubbles(lines, [bubble]);
     expect(m.a).toBe(1);
     expect(m.b).toBe(0);
+  });
+});
+
+describe('evenCutText', () => {
+  it('gives a line cut by the page edge the usual size of the page', () => {
+    const b = (y: number, h: number, fontSize: number) => ({ id: String(y), x: 100, y, w: 300, h, original: '', translation: 'x', fontSize });
+    const out = evenCutText([b(0, 20, 9), b(500, 60, 24), b(1200, 60, 26), b(1900, 60, 25)], 2000);
+    expect(out[0].fontSize).toBe(25);
+    expect(out[1].fontSize).toBe(24);
   });
 });

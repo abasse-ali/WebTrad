@@ -52,6 +52,8 @@ export function looksLikeBubble(
   y0: number,
   x1: number,
   y1: number,
+  maxSpread = 9,
+  maxChroma = 22,
 ): boolean {
   const mx = Math.round((x1 - x0) * 0.2);
   const my = Math.round((y1 - y0) * 0.2);
@@ -78,7 +80,7 @@ export function looksLikeBubble(
   if (n < 12) return true; // too small to judge: the other checks decide
   const mean = sum / n;
   const spread = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
-  return chroma / n < 22 && spread < 9;
+  return chroma / n < maxChroma && spread < maxSpread;
 }
 
 /**
@@ -112,7 +114,7 @@ export function looksLikeLettering(lum: Uint8Array, W: number, box: Box, isInk?:
  * Finds speech bubbles: connected regions of bright pixels, large enough,
  * not spanning the whole page, and containing enclosed dark "ink".
  */
-export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: number } = {}): BubbleRegion[] {
+export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: number; shaded?: boolean } = {}): BubbleRegion[] {
   const { data, width: W, height: H } = px;
   const bright = opts.bright ?? 200;
   const minSide = opts.minSide ?? Math.max(24, Math.round(W * 0.04));
@@ -151,7 +153,12 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
     // Bubbles are ellipses or rounded boxes (≥ 0.78 of their box); clothes and
     // highlights are ragged. A little margin for grainy rims and letters.
     if (area < w * h * 0.6) continue;
-    if (!looksLikeBubble(data, labels, id, W, x0, y0, x1, y1)) continue;
+    // Shaded ones: pure grey (no colour at all), gradients and highlights allowed.
+    if (!looksLikeBubble(data, labels, id, W, x0, y0, x1, y1, opts.shaded ? 36 : 9, opts.shaded ? 6 : 22)) continue;
+    // Shaded (grey, glossy) bubbles are only taken on a dark page, where
+    // nothing else light and round holds lettering.
+    // They are wide ovals inside the page (a lit desk or wall is tall, or cut by the edge).
+    if (opts.shaded && (w < h * 0.9 || area < w * h * 0.7 || x0 <= 2 || x1 >= W - 3 || ringLuminance(data, W, H, x0, y0, x1, y1) > 150)) continue;
     comps.push({ id, x0, y0, x1, y1, area });
   }
 
@@ -232,7 +239,34 @@ export function detectAllBubbles(px: Pixels): BubbleRegion[] {
   for (const strict of detectBubbles(px, { bright: 240 })) {
     if (!regions.some((r) => overlap(r, strict) > 0.5)) regions.push(strict);
   }
+  // Whispered lines: grey bubbles with a gradient and a glossy highlight,
+  // on a dark page. Missed above (not plain white), their text was taken
+  // for part of the artwork: blurred away, or left in English.
+  for (const shaded of detectBubbles(px, { bright: 170, shaded: true })) {
+    if (!regions.some((r) => overlap(r, shaded) > 0.3)) regions.push(shaded);
+  }
   return regions;
+}
+
+/** Mean luminance just outside a box (a few pixels around it). */
+function ringLuminance(data: Uint8ClampedArray, W: number, H: number, x0: number, y0: number, x1: number, y1: number): number {
+  const d = 4;
+  let sum = 0;
+  let n = 0;
+  const add = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= W || y >= H) return;
+    sum += luminance(data, (y * W + x) * 4);
+    n++;
+  };
+  for (let x = x0 - d; x <= x1 + d; x += 2) {
+    add(x, y0 - d);
+    add(x, y1 + d);
+  }
+  for (let y = y0 - d; y <= y1 + d; y += 2) {
+    add(x0 - d, y);
+    add(x1 + d, y);
+  }
+  return n ? sum / n : 255;
 }
 
 /**
