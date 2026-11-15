@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, fitShift, innerBox, maskedCrop, regionFill, snapToText } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, findTextBlocks, fitShift, innerBox, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -18,6 +18,7 @@ import { translateTexts } from './translate';
 import { visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
 import { isDrawnEffect, isSoundEffect, isWatermark } from './text';
+import { alignToBubbles } from './align';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
 import type { Bubble, Chapter, Page } from './types';
 
@@ -230,12 +231,37 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
   const found: Found[] = [];
   const inRegion = (x: number, y: number) =>
     regions.find((r) => x * scale >= r.x && x * scale <= r.x + r.w && y * scale >= r.y && y * scale <= r.y + r.h);
+  const inkOf = new Map<(typeof regions)[number], boolean>();
+  const withInk = (r: (typeof regions)[number]) => {
+    if (!inkOf.has(r)) inkOf.set(r, maskedCrop(px, r).ink !== null);
+    return inkOf.get(r)!;
+  };
   for (const [i, { top, h }] of slices.entries()) {
     const ownTop = top === 0 ? 0 : top + overlap / 2;
     const ownBottom = top + h >= H ? H : top + h - overlap / 2;
-    const toPage = (b: [number, number, number, number]): Box => {
+    const rawBox = (b: [number, number, number, number]): Box => {
       const [y0, x0, y1, x1] = b;
       return { x: (x0 / 1000) * W, y: top + (y0 / 1000) * h, w: ((x1 - x0) / 1000) * W, h: ((y1 - y0) / 1000) * h };
+    };
+    // Boxes squeezed or stretched by the model are first mapped back onto
+    // the bubbles of the slice (see align.ts); small offsets are fixed below.
+    const sliceBubbles = regions
+      .filter((r) => withInk(r) && (r.y + r.h / 2) / scale >= top && (r.y + r.h / 2) / scale < top + h)
+      .map((r) => ({ x: r.x / scale, y: r.y / scale, w: r.w / scale, h: r.h / scale }));
+    const dialogue = results[i].bubbles
+      .filter((f) => f.translation.trim() && !isDrawnEffect(f.text) && !isWatermark(f.text))
+      .map((f) => rawBox(f.box));
+    const mapping = alignToBubbles(dialogue, sliceBubbles);
+    if (mapping.a !== 1 || mapping.b !== 0) {
+      logInfo('ocr', `Cadres de l’IA replacés sur les bulles (échelle ${mapping.a.toFixed(2)}, décalage ${Math.round(mapping.b)} px)`, {
+        morceau: i + 1,
+        bulles: mapping.matched,
+      });
+    }
+    const toPage = (b: [number, number, number, number]): Box => {
+      const r = rawBox(b);
+      const c = mapping.a * (r.y + r.h / 2) + mapping.b;
+      return { ...r, y: c - (r.h * mapping.a) / 2, h: r.h * mapping.a };
     };
     // Models often place their boxes a little off the letters, the same way
     // for the whole image (shifted, or stretched): measured on every text
@@ -280,13 +306,79 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       found.push({ f, box, region });
     }
   }
+  // Lettering found on the page itself. A box that lies on no lettering
+  // (the model placed it wrong, sometimes a bubble's height away) takes the
+  // nearest block of lettering that no other box has, in reading order.
+  const blocks = findTextBlocks(px).map((b) => ({ x: b.x / scale, y: b.y / scale, w: b.w / scale, h: b.h / scale }));
+  const grow = (b: Box, k: number): Box => ({ x: b.x - b.w * k, y: b.y - b.h * k, w: b.w * (1 + 2 * k), h: b.h * (1 + 2 * k) });
+  const inside = (b: Box, x: number, y: number) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+  const taken = new Set<number>();
+  const loose: Found[] = [];
+  for (const t of found) {
+    const cx = t.box.x + t.box.w / 2;
+    const cy = t.box.y + t.box.h / 2;
+    const hit = blocks.findIndex((b, j) => !taken.has(j) && inside(grow(b, 0.4), cx, cy));
+    if (hit >= 0) taken.add(hit);
+    // In a bubble that holds lettering: in place, even if its letters are too small to be found as a block.
+    else if (!t.region) {
+      // Light text on a dark screen or panel (a game chat) is not found as
+      // lettering on paper: such a box is left where the model put it.
+      if (meanLuminance(px, { x: t.box.x * scale, y: t.box.y * scale, w: t.box.w * scale, h: t.box.h * scale }) >= 110) loose.push(t);
+    }
+  }
+  let lastY = -Infinity;
+  for (const t of loose.sort((a, b) => a.box.y - b.box.y)) {
+    const cy = t.box.y + t.box.h / 2;
+    let best = -1;
+    let bestD = Infinity;
+    for (const [j, b] of blocks.entries()) {
+      if (taken.has(j)) continue;
+      const by = b.y + b.h / 2;
+      const d = Math.abs(by - cy);
+      const overlapX = Math.min(b.x + b.w, t.box.x + t.box.w + W * 0.15) - Math.max(b.x, t.box.x - W * 0.15);
+      // Reading order kept; within about half a page width; side by side; a block about as wide as the text read.
+      if (by < lastY || d > W * 0.6 || overlapX <= 0 || b.w < t.box.w * 0.45 || b.w > t.box.w * 2.2) continue;
+      if (d < bestD) {
+        bestD = d;
+        best = j;
+      }
+    }
+    if (best < 0) continue;
+    taken.add(best);
+    const b = blocks[best];
+    lastY = b.y + b.h / 2;
+    t.box = { ...b };
+    t.region = inRegion(b.x + b.w / 2, b.y + b.h / 2);
+    logInfo('ocr', `Texte replacé sur le lettrage de la page (${Math.round(bestD)} px)`, { texte: t.f.text.slice(0, 40) });
+  }
+  // The lettering of a bubble: the blocks of letter-sized marks found in it
+  // (a big drawn sound effect overlapping the bubble is not one), else its ink.
+  const letteringIn = (r: (typeof regions)[number]): Box | null => {
+    const mine = blocks
+      .map((b) => ({ x: b.x * scale, y: b.y * scale, w: b.w * scale, h: b.h * scale }))
+      .filter((b) => {
+        const cx = b.x + b.w / 2;
+        const cy = b.y + b.h / 2;
+        return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+      });
+    if (mine.length === 0) return maskedCrop(px, r).ink;
+    const x0 = Math.min(...mine.map((b) => b.x));
+    const y0 = Math.min(...mine.map((b) => b.y));
+    const x1 = Math.max(...mine.map((b) => b.x + b.w));
+    const y1 = Math.max(...mine.map((b) => b.y + b.h));
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  };
   // A box a little off its bubble (the model misplaced it): moved into the
   // nearest bubble that has no text of its own, instead of being lettered
   // over the artwork while the bubble stays untranslated.
   const claimed = new Set(found.map((t) => t.region).filter(Boolean));
   for (const t of found) {
     if (t.region) continue;
-    const reach = Math.max(t.box.h * 1.5, W * 0.08);
+    // Free models sometimes place a box a bubble's height away (on a shirt,
+    // on a sound effect): a bubble holding untranslated lettering up to
+    // about half a page width away is taken, if its lettering is about the
+    // size of the text read.
+    const reach = Math.max(t.box.h * 1.5, W * 0.55);
     let best: (typeof regions)[number] | undefined;
     let bestGap = Infinity;
     for (const r of regions) {
@@ -298,13 +390,16 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       const overlapX = Math.min(rx + rw, t.box.x + t.box.w) - Math.max(rx, t.box.x);
       if (overlapX < Math.min(rw, t.box.w) * 0.3) continue;
       const gap = Math.max(0, ry - (t.box.y + t.box.h), t.box.y - (ry + rh));
-      if (gap < reach && gap < bestGap) {
-        best = r;
-        bestGap = gap;
-      }
+      if (gap >= reach || gap >= bestGap) continue;
+      const ink = maskedCrop(px, r).ink;
+      // Only bubbles that really hold lettering, of a size close to the text read.
+      if (!ink) continue;
+      const ratio = ink.w / scale / Math.max(1, t.box.w);
+      if (gap > W * 0.08 && (ratio < 0.4 || ratio > 2.5)) continue;
+      best = r;
+      bestGap = gap;
     }
-    // Only bubbles that really hold lettering.
-    if (best && maskedCrop(px, best).ink) {
+    if (best) {
       t.region = best;
       claimed.add(best);
     }
@@ -347,7 +442,7 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
     const cy = box.y + box.h / 2;
     const lines = Math.max(1, f.text.split('\n').length);
     const vertical = box.h > box.w * 1.6;
-    const ink = region ? maskedCrop(px, region).ink : null;
+    const ink = region ? letteringIn(region) : null;
     if (region && ink && !vertical) {
       // In a bubble: sized on the real letters, erased within the bubble's shape.
       const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };

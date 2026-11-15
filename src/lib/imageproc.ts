@@ -72,6 +72,33 @@ export function looksLikeBubble(
 }
 
 /**
+ * Lettering switches between ink and paper many times along a line (every
+ * stroke of every letter); the folds of a white shirt or the outline of an
+ * arm cross a row once or twice. Counted on the rows that hold ink, per 100
+ * pixels of width.
+ */
+export function looksLikeLettering(lum: Uint8Array, W: number, box: Box): boolean {
+  let rows = 0;
+  let switches = 0;
+  for (let y = box.y; y < box.y + box.h; y++) {
+    let prev = false;
+    let n = 0;
+    for (let x = box.x; x < box.x + box.w; x++) {
+      const dark = lum[y * W + x] < 128;
+      if (dark !== prev) n++;
+      prev = dark;
+    }
+    if (n > 0) {
+      rows++;
+      switches += n;
+    }
+  }
+  if (rows === 0) return false;
+  // Narrow ink ("I…", "!") is judged on its own width, but never below 4 switches a row.
+  return switches / rows >= Math.min(4, Math.max(2, (box.w / 100) * 5));
+}
+
+/**
  * Finds speech bubbles: connected regions of bright pixels, large enough,
  * not spanning the whole page, and containing enclosed dark "ink".
  */
@@ -154,6 +181,8 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
     const inkBox = { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 };
     // Text should sit well inside the bubble, not be a line hugging its border.
     if (inkBox.w < 6 || inkBox.h < 6) continue;
+    // Its ink must look like letters, not like the folds of a white shirt.
+    if (!looksLikeLettering(lum, W, inkBox)) continue;
     regions.push({ x: c.x0, y: c.y0, w: c.x1 - c.x0 + 1, h, spans, area: c.area, inkBox, ink });
   }
   return regions;
@@ -819,4 +848,121 @@ export function fitShift(measured: { at: number; shift: number }[]): (at: number
   if (kept.length < 3) return () => mid;
   const fit = line(kept);
   return (at) => fit.base + fit.slope * at;
+}
+
+/**
+ * Blocks of lettering on the page, found without the AI: small dark marks
+ * (letters) on light paper, side by side on lines, lines stacked into a
+ * block. Works whether or not the bubble around them was recognised (a
+ * bubble touching the white margin of the page is not) and ignores drawn
+ * sound effects (letters far too big) and the artwork (no light paper
+ * around). Boxes in the pixels of `px`.
+ */
+export function findTextBlocks(px: Pixels): Box[] {
+  const { data, width: W, height: H } = px;
+  const lum = new Uint8Array(W * H);
+  for (let p = 0, i = 0; p < lum.length; p++, i += 4) lum[p] = luminance(data, i);
+  const seen = new Uint8Array(W * H);
+  const stack = new Int32Array(W * H);
+  const minH = Math.max(3, Math.round(W * 0.006));
+  const maxH = Math.max(12, Math.round(W * 0.045));
+  const marks: Box[] = [];
+  for (let start = 0; start < lum.length; start++) {
+    if (seen[start] || lum[start] >= 110) continue;
+    let sp = 0;
+    stack[sp++] = start;
+    seen[start] = 1;
+    let x0 = W, y0 = H, x1 = 0, y1 = 0, n = 0;
+    let big = false;
+    while (sp > 0) {
+      const p = stack[--sp];
+      const x = p % W;
+      const y = (p - x) / W;
+      n++;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (x1 - x0 > maxH * 3 || y1 - y0 > maxH * 2) big = true; // artwork: keep flooding, then drop
+      if (x > 0 && !seen[p - 1] && lum[p - 1] < 110) { seen[p - 1] = 1; stack[sp++] = p - 1; }
+      if (x < W - 1 && !seen[p + 1] && lum[p + 1] < 110) { seen[p + 1] = 1; stack[sp++] = p + 1; }
+      if (y > 0 && !seen[p - W] && lum[p - W] < 110) { seen[p - W] = 1; stack[sp++] = p - W; }
+      if (y < H - 1 && !seen[p + W] && lum[p + W] < 110) { seen[p + W] = 1; stack[sp++] = p + W; }
+    }
+    const h = y1 - y0 + 1;
+    const w = x1 - x0 + 1;
+    // Dots ("...") are kept: small but square.
+    if (big || h > maxH || w > maxH * 1.6 || (h < minH && !(h >= 2 && w >= 2 && w <= h * 2))) continue;
+    // Letters sit on paper: the ring around the mark is light.
+    let ring = 0;
+    let ringN = 0;
+    const rx0 = Math.max(0, x0 - 2), rx1 = Math.min(W - 1, x1 + 2), ry0 = Math.max(0, y0 - 2), ry1 = Math.min(H - 1, y1 + 2);
+    for (let x = rx0; x <= rx1; x++) {
+      ring += lum[ry0 * W + x] + lum[ry1 * W + x];
+      ringN += 2;
+    }
+    for (let y = ry0; y <= ry1; y++) {
+      ring += lum[y * W + rx0] + lum[y * W + rx1];
+      ringN += 2;
+    }
+    if (ring / ringN < 185 || n < 3) continue;
+    marks.push({ x: x0, y: y0, w, h });
+  }
+  // Marks into lines: overlapping heights, small horizontal gap.
+  marks.sort((a, b) => a.y - b.y || a.x - b.x);
+  const lines: (Box & { count: number })[] = [];
+  for (const m of marks) {
+    const line = lines.find((l) => {
+      const overlap = Math.min(l.y + l.h, m.y + m.h) - Math.max(l.y, m.y);
+      const gap = Math.max(m.x - (l.x + l.w), l.x - (m.x + m.w));
+      return overlap >= Math.min(l.h, m.h) * 0.4 && gap <= Math.max(l.h, m.h) * 1.4;
+    });
+    if (line) {
+      const x1 = Math.max(line.x + line.w, m.x + m.w);
+      const y1 = Math.max(line.y + line.h, m.y + m.h);
+      line.x = Math.min(line.x, m.x);
+      line.y = Math.min(line.y, m.y);
+      line.w = x1 - line.x;
+      line.h = y1 - line.y;
+      line.count++;
+    } else lines.push({ ...m, count: 1 });
+  }
+  // Lines into blocks: stacked closely, overlapping horizontally.
+  const blocks: (Box & { count: number; lines: number })[] = [];
+  for (const l of lines.filter((x) => x.count >= 2).sort((a, b) => a.y - b.y)) {
+    const block = blocks.find((b) => {
+      const gap = l.y - (b.y + b.h);
+      const overlap = Math.min(b.x + b.w, l.x + l.w) - Math.max(b.x, l.x);
+      return gap <= l.h * 1.2 && gap >= -l.h && overlap > Math.min(b.w, l.w) * 0.3;
+    });
+    if (block) {
+      const x1 = Math.max(block.x + block.w, l.x + l.w);
+      const y1 = Math.max(block.y + block.h, l.y + l.h);
+      block.x = Math.min(block.x, l.x);
+      block.y = Math.min(block.y, l.y);
+      block.w = x1 - block.x;
+      block.h = y1 - block.y;
+      block.count += l.count;
+      block.lines++;
+    } else blocks.push({ ...l, lines: 1 });
+  }
+  // A word at least: three marks ("I…" included).
+  return blocks.filter((b) => b.count >= 3).map(({ x, y, w, h }) => ({ x, y, w, h }));
+}
+
+/** Average brightness of a box of `px` (0 dark – 255 white). */
+export function meanLuminance(px: Pixels, box: Box): number {
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const x1 = Math.min(px.width - 1, Math.round(box.x + box.w));
+  const y1 = Math.min(px.height - 1, Math.round(box.y + box.h));
+  let sum = 0;
+  let n = 0;
+  const step = Math.max(1, Math.round(Math.sqrt(((x1 - x0 + 1) * (y1 - y0 + 1)) / 2000)));
+  for (let y = y0; y <= y1; y += step)
+    for (let x = x0; x <= x1; x += step) {
+      sum += luminance(px.data, (y * px.width + x) * 4);
+      n++;
+    }
+  return n ? sum / n : 255;
 }
