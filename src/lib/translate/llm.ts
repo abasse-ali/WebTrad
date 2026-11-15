@@ -36,7 +36,8 @@ async function call(method: 'GET' | 'POST', url: string, headers: Record<string,
       data: body,
       responseType: 'text',
       connectTimeout: 20_000,
-      readTimeout: 180_000,
+      // Reset by every chunk received: with a streamed answer a slow model never times out while it writes.
+      readTimeout: 300_000,
     });
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     return { status: res.status, text: typeof res.data === 'string' ? res.data : JSON.stringify(res.data) };
@@ -69,11 +70,38 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   if (res.status < 200 || res.status >= 300) {
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
+  if (/^\s*(data:|event:|:)/.test(res.text)) return parseStream(res.text);
   try {
     return JSON.parse(res.text);
   } catch {
     throw new TranslateError('AI answer is not valid JSON', 'llm');
   }
+}
+
+/**
+ * Rebuilds a chat answer from a streamed one (server-sent events): the
+ * pieces of `choices[0].delta.content` put back together.
+ */
+export function parseStream(text: string): { choices: { message: { content: string } }[] } {
+  let content = '';
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^data:\s*(.*)$/);
+    if (!m || m[1] === '[DONE]' || !m[1].trim()) continue;
+    let event: { error?: { message?: string } | string; choices?: { delta?: { content?: unknown }; message?: { content?: unknown } }[] };
+    try {
+      event = JSON.parse(m[1]);
+    } catch {
+      continue;
+    }
+    if (event.error) {
+      const message = typeof event.error === 'string' ? event.error : (event.error.message ?? 'error');
+      throw new TranslateError(`AI endpoint: ${message}`, 'llm');
+    }
+    const choice = event.choices?.[0];
+    const piece = choice?.delta?.content ?? choice?.message?.content;
+    if (typeof piece === 'string') content += piece;
+  }
+  return { choices: [{ message: { content } }] };
 }
 
 /** Models the key gives access to (OpenAI-compatible /models), sorted by name. */
@@ -92,7 +120,9 @@ export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: A
     llm,
     'POST',
     '/chat/completions',
-    { model: llm.model.trim(), temperature: 0.2, messages },
+    // Streamed: data keeps flowing while a big model writes a long answer,
+    // instead of one silent wait that ends in a timeout.
+    { model: llm.model.trim(), temperature: 0.2, messages, stream: true },
     signal,
   )) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
   const content = data.choices?.[0]?.message?.content;

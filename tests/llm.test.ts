@@ -53,3 +53,30 @@ describe('listModels', () => {
     await expect(listModels(nvidia)).rejects.toThrow(/iPhone app/);
   });
 });
+
+describe('streamed answers', () => {
+  it('puts the pieces of a streamed answer back together', async () => {
+    const { parseStream } = await import('../src/lib/translate/llm');
+    const sse = [
+      'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+      'data: {"choices":[{"delta":{"content":"{\\"bubbles\\":"}}]}',
+      '',
+      'data: {"choices":[{"delta":{"content":"[]}"}}]}',
+      'data: [DONE]',
+    ].join('\n');
+    expect(parseStream(sse).choices[0].message.content).toBe('{"bubbles":[]}');
+    expect(() => parseStream('data: {"error":{"message":"rate limited"}}')).toThrow(/rate limited/);
+  });
+
+  it('reads a streamed vision answer end to end', async () => {
+    const body = ['{"bubbles":[{"bbox_2d":[100,', '200,300,260],"text":"HI","translation":"SALUT"}]}']
+      .map((c) => `data: ${JSON.stringify({ choices: [{ delta: { content: c } }] })}`)
+      .concat('data: [DONE]')
+      .join('\n\n');
+    const fetchMock = vi.fn(async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const out = await visionTranslate('data:image/jpeg;base64,', 'en', 'fr', undefined, nvidia);
+    expect(out.bubbles[0]).toMatchObject({ box: [200, 100, 260, 300], translation: 'SALUT' });
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)).stream).toBe(true);
+  });
+});
