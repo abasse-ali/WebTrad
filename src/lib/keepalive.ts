@@ -66,9 +66,22 @@ function silenceElement(): HTMLAudioElement {
 /** Plays the page's silence, unless another app is playing sound (it would be cut). */
 async function playPageSilence(): Promise<void> {
   if (!processing || getSettings().background === false) return;
+  const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
   if (await otherAudioPlaying()) {
-    logInfo('app', 'Son d’une autre appli en cours : la traduction ne le coupe pas');
-    return;
+    // Without a sound of its own the page is frozen by iOS a minute after
+    // the app is left (the translation stopped while a video played). The
+    // Audio Session API (iOS 17) makes the page's sound "ambient": mixed
+    // with the video instead of taking its place.
+    if (!session) {
+      logInfo('app', 'Son d’une autre appli en cours : la traduction ne le coupe pas');
+      return;
+    }
+    if (session.type !== 'ambient') {
+      session.type = 'ambient';
+      logInfo('app', 'Son d’une autre appli en cours : silence de la page mélangé à ce son');
+    }
+  } else if (session && session.type !== 'auto') {
+    session.type = 'auto';
   }
   await silenceElement().play().catch(() => undefined);
 }
