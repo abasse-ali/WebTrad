@@ -11,6 +11,7 @@ import {
   setOcrStatusListener,
   type DetectedText,
 } from './ocr';
+import { logError, logInfo, logWarn, since } from './log';
 import { LLM_PRESETS, getSettings } from './settings';
 import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
@@ -133,6 +134,7 @@ async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits 
     } catch (err) {
       const retryable = !(err instanceof TranslateError) || err.retryable;
       if ((err as Error).name === 'AbortError' || !retryable || attempt >= waits.length) throw err;
+      logWarn('ia', `Nouvel essai dans ${waits[attempt] / 1000} s : ${(err as Error).message.slice(0, 120)}`, { essai: attempt + 2 });
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, waits[attempt]);
         signal.addEventListener('abort', () => (clearTimeout(timer), reject(new DOMException('Aborted', 'AbortError'))), { once: true });
@@ -318,19 +320,25 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   setJob(chapter.id, { pageIndex: page.index, phase: 'ocr' });
   await patchPage(page.id, { status: 'ocr', error: undefined });
   const bitmap = await decodeImage(page.blob);
+  const start = performance.now();
+  const where = { page: page.index + 1, taille: `${bitmap.width}×${bitmap.height}` };
   try {
     if (useVision) {
       const bubbles = await visionPage(bitmap, chapter, signal);
+      logInfo('ocr', `Page ${page.index + 1} lue par l’IA : ${bubbles.length} texte(s)`, { ...where, modèle: settings.llm.model, ms: since(start) });
       await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
       return 'llm';
     }
     const detected = await ocrPage(bitmap, chapter.sourceLang, { minConfidence: settings.minConfidence, signal });
+    logInfo('ocr', `Page ${page.index + 1} lue (OCR local) : ${detected.length} texte(s)`, { ...where, langue: chapter.sourceLang, ms: since(start) });
     let bubbles = detected.map((d) => toBubble(d, ''));
     // Save the OCR result first: if translation fails the work is not lost.
     await patchPage(page.id, { bubbles, status: 'translating' });
     setJob(chapter.id, { phase: 'translate' });
+    const tStart = performance.now();
     const result = await translateBubbles(bubbles, chapter, signal);
     bubbles = result.bubbles;
+    logInfo('translate', `Page ${page.index + 1} traduite`, { page: page.index + 1, moteur: result.engine, ms: since(tStart) });
     await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
     return result.engine;
   } finally {
@@ -416,6 +424,15 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     const pages = await getPages(chapterId);
     const todo = pages.filter((p) => (opts.pageIds ? opts.pageIds.includes(p.id) : p.status !== 'done'));
     setJob(chapterId, { total: todo.length });
+    const jobStart = performance.now();
+    const st = getSettings();
+    logInfo('job', `Traitement de « ${chapter.title} » : ${todo.length} page(s)${opts.translateOnly ? ' (retraduction)' : ''}`, {
+      de: chapter.sourceLang,
+      vers: chapter.targetLang,
+      lecture: visionEnabled() ? 'IA' : 'OCR local',
+      traduction: st.provider,
+      modèle: visionEnabled() || st.provider === 'llm' ? st.llm.model : undefined,
+    });
     setOcrStatusListener((message, progress) =>
       setJob(chapterId, {
         phase: 'download',
@@ -424,7 +441,9 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     );
     // Local OCR needs the language up front; the AI vision mode reports it itself.
     if (chapter.sourceLang === AUTO && todo.length > 0 && !visionEnabled() && !opts.translateOnly) {
+      const dStart = performance.now();
       const code = await detectChapterLanguage(chapter, pages, controller.signal);
+      logInfo('ocr', `Langue détectée : ${code}`, { ms: since(dStart) });
       chapter.sourceLang = code;
       chapter.autoSource = true;
       await patchChapter(chapterId, { sourceLang: code, autoSource: true });
@@ -453,12 +472,16 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         }
         failed++;
         const message = (err as Error).message || String(err);
+        logError('job', `Page ${page.index + 1} en erreur : ${message}`, { chapitre: chapter.title });
         await patchPage(page.id, { status: 'error', error: message });
         setJob(chapterId, { failed, message });
       }
       await refreshStats(chapterId);
     }
     await refreshStats(chapterId);
+    logInfo('job', `Fin de « ${chapter.title} » : ${done} page(s) faite(s), ${failed} en erreur${controller.signal.aborted ? ', arrêté' : ''}`, {
+      ms: since(jobStart),
+    });
     setOcrStatusListener(null);
     setJob(chapterId, { running: false, phase: 'idle', pageIndex: null });
     controllers.delete(chapterId);

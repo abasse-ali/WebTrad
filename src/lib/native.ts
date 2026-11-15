@@ -4,6 +4,7 @@
  */
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { imageSize } from './image';
+import { logInfo } from './log';
 import { cleanTitle, pickChapterImages, type ImportedImage, type UrlImportResult } from './importers';
 
 interface BrowserPage {
@@ -42,7 +43,11 @@ export async function importFromBrowser(
   auto = false,
 ): Promise<BrowserImport | null> {
   const found = await WebTradBrowser.open({ url, labels, auto });
-  if (found.cancelled || !found.images?.length) return null;
+  if (found.cancelled || !found.images?.length) {
+    logInfo('import', 'Navigateur intégré fermé sans récupérer de pages', { url });
+    return null;
+  }
+  logInfo('import', `Navigateur intégré : ${found.images.length} image(s) sur la page`, { page: found.page, auto });
   const urls = pickChapterImages(found.images);
   onProgress?.(0, urls.length);
   const listener = await WebTradBrowser.addListener('progress', (e) => onProgress?.(e.done, e.total));

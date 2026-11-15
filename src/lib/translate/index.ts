@@ -1,3 +1,4 @@
+import { logInfo, logWarn, since } from '../log';
 import { getSettings } from '../settings';
 import type { ProviderId } from '../types';
 import { builtinEngine, builtinOnlyEngine, hasBuiltinTranslator, prepareBuiltin } from './chrome';
@@ -54,8 +55,10 @@ export async function translateTexts(
     for (const engine of engineChain(provider)) {
       const pairKey = `${engine.id}|${source}|${target}`;
       if (disabled.has(pairKey)) continue;
+      const start = performance.now();
       try {
         const out = await engine.translate({ texts: missing, source, target, signal });
+        logInfo('translate', `Traduction de ${missing.length} texte(s) par ${engine.id}`, { de: source, vers: target, ms: since(start) });
         missing.forEach((t, i) => {
           if (out[i]) cache.set(keyOf(t), out[i]);
         });
@@ -65,6 +68,7 @@ export async function translateTexts(
       } catch (err) {
         if ((err as Error).name === 'AbortError') throw err;
         errors.push((err as Error).message);
+        logWarn('translate', `${engine.id} a échoué : ${(err as Error).message}`, { de: source, vers: target, ms: since(start) });
         if (err instanceof TranslateError && !err.retryable) disabled.add(pairKey);
       }
     }

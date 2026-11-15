@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { canvasToBlob, context2d, createCanvas, decodeImage } from './image';
 import { drawLayouts, layoutBubble, type BubbleLayout } from './layout';
 import { isNativeApp, shareFile, shareFiles } from './native';
+import { logInfo, since } from './log';
 import { getSettings } from './settings';
 import type { Chapter, Page } from './types';
 
@@ -221,8 +222,18 @@ export interface ExportOptions {
  */
 export async function exportChapter(chapter: Chapter, pages: Page[], options: ExportOptions = {}): Promise<ExportResult> {
   const { mode = 'translated', format = 'cbz', onProgress, maxMB = getSettings().exportMaxMB } = options;
+  const start = performance.now();
+  const done = (r: ExportResult) => {
+    logInfo('export', `Export ${format === 'cbz' ? '.cbz' : 'images'} ${mode === 'compare' ? 'Comparer' : 'traduit'} : ${pages.length} page(s)`, {
+      chapitre: chapter.title,
+      taille: `${Math.round(r.size / 1000)} Ko`,
+      'sans traduction': r.untranslated || undefined,
+      ms: since(start),
+    });
+    return r;
+  };
   const base = `${safeName(chapter.title)} [${chapter.targetLang}]${mode === 'compare' ? ' (comparer)' : ''}`;
-  if (format === 'images') return exportImages(chapter, pages, mode, base, onProgress);
+  if (format === 'images') return done(await exportImages(chapter, pages, mode, base, onProgress));
   // Decimal megabytes, as phones and file managers count them, with a small margin.
   const limit = maxMB > 0 ? maxMB * 1_000_000 * 0.98 : 0;
   let result = await buildArchive(chapter, pages, limit, mode, onProgress);
@@ -231,7 +242,7 @@ export async function exportChapter(chapter: Chapter, pages: Page[], options: Ex
     result = await buildArchive(chapter, pages, limit * Math.pow(0.85, pass), mode, onProgress);
   }
   downloadBlob(result.zip, `${base}.cbz`);
-  return { untranslated: result.untranslated, size: result.zip.size };
+  return done({ untranslated: result.untranslated, size: result.zip.size });
 }
 
 async function exportImages(

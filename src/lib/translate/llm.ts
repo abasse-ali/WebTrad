@@ -1,5 +1,6 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { englishName } from '../languages';
+import { logError, logInfo, since } from '../log';
 import { LLM_PRESETS, getSettings } from '../settings';
 import type { LlmSettings } from '../types';
 import { TranslateError, type TranslationEngine } from './types';
@@ -58,18 +59,35 @@ function baseOf(llm: LlmSettings): string {
 
 async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
   let res: RawResponse;
+  const start = performance.now();
+  const host = (() => {
+    try {
+      return new URL(baseOf(llm)).host;
+    } catch {
+      return baseOf(llm);
+    }
+  })();
+  const model = (body as { model?: string } | undefined)?.model;
+  const images = JSON.stringify((body as { messages?: unknown } | undefined)?.messages ?? '').split('"image_url"').length - 1;
   try {
     res = await call(method, `${baseOf(llm)}${path}`, authHeaders(llm), body, signal);
   } catch (err) {
-    if ((err as Error).name === 'AbortError') throw err;
+    if ((err as Error).name === 'AbortError') {
+      logInfo('ia', `${method} ${path} annulé`, { fournisseur: host, modèle: model, ms: since(start) });
+      throw err;
+    }
+    logError('ia', `${method} ${path} injoignable : ${(err as Error).message}`, { fournisseur: host, modèle: model, ms: since(start) });
     const hint = Capacitor.isNativePlatform()
       ? 'Check the URL and the network.'
       : 'Check the URL. If the provider refuses calls from web pages (CORS, e.g. NVIDIA), use the iPhone app.';
     throw new TranslateError(`AI endpoint unreachable (${(err as Error).message}). ${hint}`, 'llm');
   }
+  const meta = { fournisseur: host, modèle: model, statut: res.status, ms: since(start), images: images || undefined, octets: res.text.length };
   if (res.status < 200 || res.status >= 300) {
+    logError('ia', `${method} ${path} → HTTP ${res.status} : ${res.text.slice(0, 160)}`, meta);
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
+  logInfo('ia', `${method} ${path} OK`, meta);
   if (/^\s*(data:|event:|:)/.test(res.text)) return parseStream(res.text);
   try {
     return JSON.parse(res.text);

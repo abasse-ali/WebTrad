@@ -7,6 +7,7 @@ import { useSyncExternalStore } from 'react';
 import { translate, type MessageKey } from '../i18n';
 import { createChapter, guessTitle, ImportError, isImageUrl, urlsToImages, type UrlImportResult } from './importers';
 import { importFromBrowser, isNativeApp } from './native';
+import { logError, logInfo } from './log';
 import { startChapter } from './pipeline';
 import { getSettings } from './settings';
 import { warmUpTranslator } from './translate';
@@ -101,6 +102,7 @@ export async function quickImport(url: string): Promise<void> {
   controller = own;
   const progress = (done: number, total: number) => set({ url, message: t('new.fetching', { done, total }) });
   set({ url, message: t('new.readingPage') });
+  logInfo('import', `Lecture rapide demandée : ${url}`);
   try {
     let found: (UrlImportResult & { page?: string }) | null;
     const viaBrowser = () => importFromBrowser(url, browserLabels(t), progress, true);
@@ -151,6 +153,7 @@ export async function quickImport(url: string): Promise<void> {
           ? t('new.pageBlocked', { host })
           : t(err.code === 'PAGE_UNREACHABLE' ? 'new.pageUnreachable' : 'new.imageUnreachable', { url: err.url });
     } else message = (err as Error).message || String(err);
+    logError('import', `Lecture rapide impossible : ${message}`, { url });
     set({ url, message, error: message });
   } finally {
     if (controller === own) controller = null;
