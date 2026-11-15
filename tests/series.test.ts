@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parsePosition, serialisePosition } from '../src/lib/progress';
-import { guessNextUrl, neighbours, parseChapterTitle } from '../src/lib/series';
+import { groupBySeries, guessNextUrl, neighbours, parseChapterTitle, seriesOf } from '../src/lib/series';
 
 describe('parseChapterTitle', () => {
   it('splits a title into series and chapter number', () => {
@@ -82,5 +82,25 @@ describe('reading position', () => {
     expect(parsePosition('{"p":-1}')).toBeNull();
     expect(parsePosition('{oops')).toBeNull();
     expect(parsePosition('{"p":2,"o":7,"r":"x"}')).toEqual({ page: 2, offset: 1, ratio: 0, finished: false });
+  });
+});
+
+describe('groupBySeries', () => {
+  it('groups the chapters of one manga, in chapter order', () => {
+    const list = [
+      { id: 'b', title: 'Read Someone Stop Her! Chapter 103 Online' },
+      { id: 'x', title: 'Solo Leveling - Chapter 2' },
+      { id: 'a', title: 'Read Someone Stop Her! Chapter 102 Online' },
+      { id: 'c', title: 'Chapitre 3' },
+      { id: 'd', title: 'Chapitre 4' },
+    ];
+    const groups = groupBySeries(list);
+    expect(groups.map((g) => g.items.map((i) => i.id))).toEqual([['a', 'b'], ['x'], ['c'], ['d']]);
+    expect(groups[0].name).toBe('Someone Stop Her!');
+    expect(groups[1].name).toBe('Solo Leveling');
+  });
+  it('names the series without the site words', () => {
+    expect(seriesOf('Read Tower of God Chapter 12 Online')).toEqual({ key: 'tower of god', name: 'Tower of God', number: 12 });
+    expect(seriesOf('One Shot').name).toBe('One Shot');
   });
 });

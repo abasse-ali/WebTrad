@@ -87,3 +87,55 @@ export function guessNextUrl(url: string): string | null {
   u.searchParams.set(param[0], increment(param[1]));
   return u.href;
 }
+
+/** Words sites wrap chapter titles in ("Read … Online"): not part of the series name. */
+const SITE_WORDS = /^(?:read|lire|leer)\s+|\s+(?:online|en ligne|vf|vostfr|raw|scan|manga|manhwa|webtoon)$/giu;
+
+function stripSiteWords(name: string): string {
+  let out = name;
+  for (let i = 0; i < 3; i++) out = out.replace(SITE_WORDS, '').replace(EDGE_JUNK, '');
+  return out;
+}
+
+/** The series of a chapter title: a key to group by and a name to show. */
+export function seriesOf(title: string): { key: string; name: string; number: number | null } {
+  const ref = parseChapterTitle(title);
+  const key = stripSiteWords(ref.series);
+  const text = title.normalize('NFKC').replace(/[_\s]+/g, ' ').trim();
+  let cut = -1;
+  for (const m of text.matchAll(KEYWORD)) cut = m.index ?? cut;
+  if (cut < 0 && ref.number !== null) cut = LAST_NUMBER.exec(text)?.index ?? -1;
+  const name = stripSiteWords(cut >= 0 ? text.slice(0, cut) : text) || title;
+  return { key, name, number: ref.number };
+}
+
+export interface SeriesGroup<T> {
+  key: string;
+  name: string;
+  /** Chapters in reading order (by chapter number). */
+  items: T[];
+}
+
+/**
+ * Chapters of the same manga, grouped. Groups keep the order of their first
+ * chapter in `items` (most recent first, or by title); titles without a
+ * series name ("Chapter 3") stay on their own.
+ */
+export function groupBySeries<T extends { id: string; title: string }>(items: T[]): SeriesGroup<T>[] {
+  const groups = new Map<string, SeriesGroup<T> & { numbers: Map<string, number> }>();
+  for (const item of items) {
+    const s = seriesOf(item.title);
+    const key = s.key ? `s:${s.key}` : `c:${item.id}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, name: s.key ? s.name : item.title, items: [], numbers: new Map() };
+      groups.set(key, group);
+    }
+    group.items.push(item);
+    group.numbers.set(item.id, s.number ?? Number.POSITIVE_INFINITY);
+  }
+  return [...groups.values()].map(({ numbers, ...g }) => ({
+    ...g,
+    items: g.items.slice().sort((a, b) => (numbers.get(a.id) ?? 0) - (numbers.get(b.id) ?? 0)),
+  }));
+}

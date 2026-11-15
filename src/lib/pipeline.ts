@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { getChapter, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
+import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
 import { cleanBubble, detectAllBubbles, innerBox, maskedCrop, regionFill } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
@@ -192,10 +192,18 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
     while (next < slices.length) {
       const i = next++;
       const slice = slices[i];
-      results[i] = await withRetries(
-        () => visionTranslate(slice.image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }),
-        signal,
-      );
+      try {
+        results[i] = await withRetries(
+          () => visionTranslate(slice.image, chapter.sourceLang, chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }),
+          signal,
+        );
+      } catch (err) {
+        // A model that keeps answering gibberish for one slice: the rest of
+        // the page is still lettered instead of the whole page failing.
+        if (!/not valid JSON|Empty AI response/.test((err as Error).message)) throw err;
+        logWarn('ia', `Morceau ${i + 1}/${slices.length} de la page ignoré : réponse illisible de l’IA`);
+        results[i] = { bubbles: [] };
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(VISION_PARALLEL, slices.length) }, worker));
@@ -208,7 +216,11 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
     await patchChapter(chapter.id, { sourceLang: detected, autoSource: true });
   }
 
-  const bubbles: Bubble[] = [];
+  // Every text the model found, in page coordinates, matched to its bubble.
+  type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number] };
+  const found: Found[] = [];
+  const inRegion = (x: number, y: number) =>
+    regions.find((r) => x * scale >= r.x && x * scale <= r.x + r.w && y * scale >= r.y && y * scale <= r.y + r.h);
   for (const [i, { top, h }] of slices.entries()) {
     const ownTop = top === 0 ? 0 : top + overlap / 2;
     const ownBottom = top + h >= H ? H : top + h - overlap / 2;
@@ -219,74 +231,150 @@ async function visionPage(bitmap: DecodedImage, chapter: Chapter, signal: AbortS
       const box: Box = { x: (x0 / 1000) * W, y: top + (y0 / 1000) * h, w: ((x1 - x0) / 1000) * W, h: ((y1 - y0) / 1000) * h };
       const cy = box.y + box.h / 2;
       if (cy < ownTop || cy >= ownBottom) continue;
-      const cx = box.x + box.w / 2;
-      const region = regions.find((r) => cx * scale >= r.x && cx * scale <= r.x + r.w && cy * scale >= r.y && cy * scale <= r.y + r.h);
+      const region = inRegion(box.x + box.w / 2, cy);
       // Sound effects drawn on the artwork are not translated, even when the model sends them.
       if (!region && isSoundEffect(f.text)) continue;
-      const lines = Math.max(1, f.text.split('\n').length);
-      const vertical = box.h > box.w * 1.6;
-      const ink = region ? maskedCrop(px, region).ink : null;
-      if (region && ink && !vertical) {
-        // In a bubble: sized on the real letters, erased within the bubble's shape.
-        const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };
-        const fontSize = Math.max(8, Math.min(60, inkBox.h / (lines * 1.2)));
-        const fill = regionFill(px, region);
-        const look = lookOfText(px, inkBox, scale, fontSize, true);
-        const pad = Math.max(2, fontSize * 0.5) * scale;
-        let patch: string | undefined;
-        let patchBox: Box | undefined;
-        try {
-          const cleaned = cleanBubble(px, region, { x: ink.x - pad, y: ink.y - pad, w: ink.w + pad * 2, h: ink.h + pad * 2 }, fill);
-          patch = pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92);
-          patchBox = { x: cleaned.x / scale, y: cleaned.y / scale, w: cleaned.pixels.width / scale, h: cleaned.pixels.height / scale };
-        } catch {
-          /* flat fill instead */
-        }
-        let area: Box | undefined;
-        const inner = innerBox(region, (inkBox.x + inkBox.w / 2) * scale, (inkBox.y + inkBox.h / 2) * scale, inkBox.h * scale);
-        if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
-        if (area && area.w * area.h < inkBox.w * inkBox.h * 0.6) area = undefined;
-        bubbles.push({
-          id: uid(),
-          ...inkBox,
-          area,
-          original: f.text,
-          translation: f.translation,
-          vertical,
-          fontSize,
-          fill,
-          color: look.color,
-          patch,
-          patchBox,
-        });
-        continue;
-      }
-      let area: Box | undefined;
-      if (region) {
-        const inner = innerBox(region, cx * scale, cy * scale, box.h * scale);
-        if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
-        if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
-      }
-      // AI boxes include the line spacing: lines are ~1.2× the letters.
-      const fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
-      const look = lookOfText(px, box, scale, fontSize, Boolean(area));
-      bubbles.push({
-        id: uid(),
-        ...box,
-        area,
-        original: f.text,
-        translation: f.translation,
-        vertical,
-        fontSize,
-        fill: look.fill,
-        outline: look.outline || undefined,
-        color: look.color,
-        patch: look.patch,
-        patchBox: look.patchBox,
-      });
+      found.push({ f, box, region });
     }
   }
+  // A box a little off its bubble (the model misplaced it): moved into the
+  // nearest bubble that has no text of its own, instead of being lettered
+  // over the artwork while the bubble stays untranslated.
+  const claimed = new Set(found.map((t) => t.region).filter(Boolean));
+  for (const t of found) {
+    if (t.region) continue;
+    const reach = Math.max(t.box.h * 1.5, W * 0.08);
+    let best: (typeof regions)[number] | undefined;
+    let bestGap = Infinity;
+    for (const r of regions) {
+      if (claimed.has(r)) continue;
+      const rx = r.x / scale;
+      const ry = r.y / scale;
+      const rw = r.w / scale;
+      const rh = r.h / scale;
+      const overlapX = Math.min(rx + rw, t.box.x + t.box.w) - Math.max(rx, t.box.x);
+      if (overlapX < Math.min(rw, t.box.w) * 0.3) continue;
+      const gap = Math.max(0, ry - (t.box.y + t.box.h), t.box.y - (ry + rh));
+      if (gap < reach && gap < bestGap) {
+        best = r;
+        bestGap = gap;
+      }
+    }
+    // Only bubbles that really hold lettering.
+    if (best && maskedCrop(px, best).ink) {
+      t.region = best;
+      claimed.add(best);
+    }
+  }
+  // One bubble read twice (overlapping slices, or split by the model): the
+  // most complete reading is kept, never two translations on top of each other.
+  const byRegion = new Map<unknown, Found>();
+  const kept: Found[] = [];
+  for (const t of found) {
+    if (t.region) {
+      const prev = byRegion.get(t.region);
+      if (!prev) {
+        byRegion.set(t.region, t);
+        kept.push(t);
+      } else if (t.f.text.length > prev.f.text.length) {
+        kept[kept.indexOf(prev)] = t;
+        byRegion.set(t.region, t);
+      }
+      continue;
+    }
+    const clash = kept.find((k) => !k.region && overlapShare(k.box, t.box) > 0.5);
+    if (clash) {
+      if (t.f.text.length > clash.f.text.length) kept[kept.indexOf(clash)] = t;
+      continue;
+    }
+    kept.push(t);
+  }
+  // Models do not always keep the case: when most of the page is lettered in
+  // capitals, so are its short lines ("I'm…"), and they are lettered alike.
+  const cased = kept.filter((t) => /\p{Lu}|\p{Ll}/u.test(t.f.text));
+  const capitals = cased.filter((t) => t.f.text === t.f.text.toLocaleUpperCase()).length;
+  const pageInCaps = cased.length >= 3 && capitals / cased.length >= 0.6;
+  // Bubble lettering is never smaller than this, so short lines stay readable.
+  const minBubbleFont = W * 0.032;
+
+  const bubbles: Bubble[] = [];
+  for (const { f, box, region } of kept) {
+    const original = pageInCaps && region ? f.text.toLocaleUpperCase() : f.text;
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const lines = Math.max(1, f.text.split('\n').length);
+    const vertical = box.h > box.w * 1.6;
+    const ink = region ? maskedCrop(px, region).ink : null;
+    if (region && ink && !vertical) {
+      // In a bubble: sized on the real letters, erased within the bubble's shape.
+      const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };
+      const fontSize = Math.max(8, Math.min(60, inkBox.h / (lines * 1.2)));
+      const fill = regionFill(px, region);
+      const look = lookOfText(px, inkBox, scale, fontSize, true);
+      const pad = Math.max(2, fontSize * 0.5) * scale;
+      let patch: string | undefined;
+      let patchBox: Box | undefined;
+      try {
+        const cleaned = cleanBubble(px, region, { x: ink.x - pad, y: ink.y - pad, w: ink.w + pad * 2, h: ink.h + pad * 2 }, fill);
+        patch = pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92);
+        patchBox = { x: cleaned.x / scale, y: cleaned.y / scale, w: cleaned.pixels.width / scale, h: cleaned.pixels.height / scale };
+      } catch {
+        /* flat fill instead */
+      }
+      let area: Box | undefined;
+      const inner = innerBox(region, (inkBox.x + inkBox.w / 2) * scale, (inkBox.y + inkBox.h / 2) * scale, inkBox.h * scale);
+      if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
+      if (area && area.w * area.h < inkBox.w * inkBox.h * 0.6) area = undefined;
+      bubbles.push({
+        id: uid(),
+        ...inkBox,
+        area,
+        original,
+        translation: f.translation,
+        vertical,
+        // Tiny lettering in a roomy bubble grows to fill it (the layout still fits it).
+        fontSize: area ? Math.max(fontSize, minBubbleFont) : fontSize,
+        fill,
+        color: look.color,
+        patch,
+        patchBox,
+      });
+      continue;
+    }
+    let area: Box | undefined;
+    if (region) {
+      const inner = innerBox(region, cx * scale, cy * scale, box.h * scale);
+      if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
+      if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
+    }
+    // AI boxes include the line spacing: lines are ~1.2× the letters.
+    let fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
+    if (area) fontSize = Math.max(fontSize, minBubbleFont);
+    const look = lookOfText(px, box, scale, fontSize, Boolean(area));
+    bubbles.push({
+      id: uid(),
+      ...box,
+      area,
+      original,
+      translation: f.translation,
+      vertical,
+      fontSize,
+      fill: look.fill,
+      outline: look.outline || undefined,
+      color: look.color,
+      patch: look.patch,
+      patchBox: look.patchBox,
+    });
+  }
   return bubbles;
+}
+
+/** Share of the smaller box covered by the other one. */
+function overlapShare(a: Box, b: Box): number {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (w <= 0 || h <= 0) return 0;
+  return (w * h) / Math.max(1, Math.min(a.w * a.h, b.w * b.h));
 }
 
 function visionEnabled(): boolean {
@@ -329,7 +417,18 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   const useVision = visionEnabled();
   setJob(chapter.id, { pageIndex: page.index, phase: 'ocr' });
   await patchPage(page.id, { status: 'ocr', error: undefined });
-  const bitmap = await decodeImage(page.blob);
+  let bitmap: DecodedImage;
+  try {
+    bitmap = await decodeImage(page.blob);
+  } catch (err) {
+    // iOS sometimes loses the bytes of a blob held in memory ("Loading
+    // error."): the copy stored in the database still reads fine.
+    const fresh = await getPage(page.id);
+    if (!fresh) throw err;
+    logWarn('job', `Image de la page ${page.index + 1} relue depuis le stockage : ${(err as Error).message}`);
+    page.blob = fresh.blob;
+    bitmap = await decodeImage(fresh.blob);
+  }
   const start = performance.now();
   const where = { page: page.index + 1, taille: `${bitmap.width}×${bitmap.height}` };
   try {

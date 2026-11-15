@@ -648,6 +648,61 @@ textarea {
   margin: 0;
   padding-right: 26px;
 }
+/* A manga with several chapters: one card, stacked look, opens its chapters. */
+button.card-link {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.series-card {
+  box-shadow:
+    4px 4px 0 -1px var(--surface),
+    4px 4px 0 0 var(--border),
+    8px 8px 0 -1px var(--surface),
+    8px 8px 0 0 var(--border);
+  margin: 0 8px 8px 0;
+  overflow: visible;
+}
+.series-card .cover {
+  border-radius: var(--radius) var(--radius) 0 0;
+  overflow: hidden;
+}
+.series-card.open {
+  outline: 2px solid var(--accent);
+}
+.series-card .card-body p {
+  padding-right: 0;
+}
+.grid > .series-open {
+  grid-column: 1 / -1;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.series-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.series-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.series-open .grid {
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+}
 .card-delete {
   position: absolute;
   right: 4px;
