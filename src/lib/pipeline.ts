@@ -470,6 +470,45 @@ async function visionPage(
       claimed.add(best);
     }
   }
+  // Two bubbles drawn joined, read by the model as ONE item: their blocks of
+  // lettering lie apart in the shape, and the whole translation was lettered
+  // across both. The translation is cut at the sentence end closest to the
+  // share of letters of each block, one item per block.
+  for (const t of [...found]) {
+    if (!t.region || found.some((o) => o !== t && o.region === t.region)) continue;
+    const r = t.region;
+    const own = blocks
+      .filter((b) => {
+        const cx = (b.x + b.w / 2) * scale;
+        const cy = (b.y + b.h / 2) * scale;
+        return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+      })
+      .sort((a, b) => a.y - b.y);
+    if (own.length < 2) continue;
+    // Groups of blocks with a clear gap between them (more than two lines).
+    const groups: Box[] = [];
+    for (const b of own) {
+      const g = groups[groups.length - 1];
+      const line = Math.min(b.h, g?.h ?? b.h);
+      if (g && b.y - (g.y + g.h) < Math.max(line, 12) * 2) {
+        const x1 = Math.max(g.x + g.w, b.x + b.w);
+        const y1 = Math.max(g.y + g.h, b.y + b.h);
+        g.x = Math.min(g.x, b.x);
+        g.w = x1 - g.x;
+        g.h = y1 - g.y;
+      } else groups.push({ ...b });
+    }
+    if (groups.length !== 2) continue;
+    const parts = splitAtSentence(t.f.translation, (groups[0].w * groups[0].h) / (groups[0].w * groups[0].h + groups[1].w * groups[1].h));
+    const texts = splitAtSentence(t.f.text, (groups[0].w * groups[0].h) / (groups[0].w * groups[0].h + groups[1].w * groups[1].h));
+    if (!parts || !texts) continue;
+    found.splice(
+      found.indexOf(t),
+      1,
+      ...groups.map((g, k) => ({ ...t, f: { ...t.f, text: texts[k], translation: parts[k] }, box: { ...g }, block: { ...g } })),
+    );
+    logInfo('ocr', 'Bulles soudées lues d’un bloc par l’IA : traduction répartie entre les deux', { texte: t.f.text.slice(0, 40) });
+  }
   // One bubble read twice (overlapping slices, or split by the model): the
   // most complete reading is kept, never two translations on top of each other.
   const byRegion = new Map<unknown, Found>();
@@ -624,8 +663,15 @@ async function visionPage(
       if (inner.w > 0) area = { x: inner.x / scale, y: inner.y / scale, w: inner.w / scale, h: inner.h / scale };
       if (area && area.w * area.h < box.w * box.h * 0.6) area = undefined;
     }
-    // AI boxes include the line spacing: lines are ~1.2× the letters.
-    const fontSize = Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
+    // The size of the original letters, measured on the page when they can
+    // be (a model's box says nothing of the number of lines: a three-line
+    // text was lettered twice too big over the drawing); else from the box,
+    // whose lines are ~1.2× the letters.
+    const measured = vertical ? 0 : letterHeight(px, { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale }) / scale;
+    const fontSize =
+      measured > 0
+        ? Math.max(8, Math.min(60, measured / LETTERS_TO_FONT))
+        : Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
     const look = lookOfText(px, box, scale, fontSize, Boolean(area));
     // No lettering could be taken off the artwork there: the model placed
     // its box where there is no text. Nothing is lettered over the drawing.
@@ -649,6 +695,27 @@ async function visionPage(
     });
   }
   return bubbles;
+}
+
+/**
+ * Cuts a text in two at the sentence end ("…", ".", "!", "?") closest to
+ * `share` of its length. Null when there is no sentence end to cut at.
+ */
+export function splitAtSentence(text: string, share: number): [string, string] | null {
+  const t = text.replace(/\s+/g, ' ').trim();
+  const target = t.length * share;
+  let best = -1;
+  let bestD = Infinity;
+  for (const m of t.matchAll(/[.!?…»"]+\s+(?=\S)/g)) {
+    const at = (m.index ?? 0) + m[0].length;
+    const d = Math.abs(at - target);
+    if (d < bestD && at > t.length * 0.15 && at < t.length * 0.85) {
+      bestD = d;
+      best = at;
+    }
+  }
+  if (best < 0) return null;
+  return [t.slice(0, best).trim(), t.slice(best).trim()];
 }
 
 /** Two readings of one text: equal once letters are compared, or one contains the other. */

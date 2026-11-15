@@ -395,7 +395,7 @@ How to translate, like a professional scanlation team:
 - Use the typography of the target language (French: « » for quotes, a space before ? ! : ;).
 - Only text in the target language: no notes, no romanisation, no alternatives.
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
-Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|narration|sign","text":"...","translation":"..."}]} in reading order. List each piece of text once: never split one bubble into several items. Return {"bubbles":[]} if there is no text.`;
+Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|narration|sign","text":"...","translation":"..."}]} in reading order. List each piece of text once, one item per block of lettering: never split the lines of one block into several items, and never merge two separate blocks (two bubbles drawn touching or joined are two items). Return {"bubbles":[]} if there is no text.`;
 }
 
 /** Box order the configured provider is best at. */
