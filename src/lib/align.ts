@@ -22,9 +22,13 @@ export interface Mapping {
 const centre = (b: Box) => b.y + b.h / 2;
 const centreX = (b: Box) => b.x + b.w / 2;
 
-/** Boxes of `items` falling (once mapped) inside distinct `bubbles`, and how far from their middle. */
+/**
+ * Boxes of `items` falling (once mapped) inside `bubbles`, and how far from
+ * their middle. A bubble may hold several texts: two bubbles drawn joined
+ * are one white shape, and requiring one text per shape made a page of
+ * correct boxes look wrong, so every box of the page was stretched away.
+ */
 function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: number; error: number } {
-  const used = new Set<number>();
   let matched = 0;
   let error = 0;
   for (const it of items) {
@@ -33,7 +37,6 @@ function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: n
     let best = -1;
     let bestD = Infinity;
     for (const [j, r] of bubbles.entries()) {
-      if (used.has(j)) continue;
       if (x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) continue;
       const d = Math.abs(y - centre(r)) / r.h;
       if (d < bestD) {
@@ -42,7 +45,6 @@ function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: n
       }
     }
     if (best >= 0) {
-      used.add(best);
       matched++;
       error += bestD;
     }

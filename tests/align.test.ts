@@ -33,3 +33,11 @@ describe('splitAtSentence', () => {
     expect(splitAtSentence('UNE SEULE PHRASE SANS FIN', 0.5)).toBeNull();
   });
 });
+
+describe('alignToBubbles with two texts in one shape', () => {
+  it('keeps correct boxes of two bubbles drawn joined', () => {
+    const joined = [box(40, 0, 560, 520)];
+    const items = [box(150, 80, 220, 40), box(300, 290, 240, 60)];
+    expect(alignToBubbles(items, joined)).toMatchObject({ a: 1, b: 0, matched: 2 });
+  });
+});
