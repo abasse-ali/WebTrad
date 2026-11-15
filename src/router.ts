@@ -6,7 +6,8 @@ export type Route =
   | { name: 'new'; url?: string; handoff?: PageHandoff; key: string }
   | { name: 'settings' }
   | { name: 'log' }
-  | { name: 'reader'; id: string };
+  | { name: 'reader'; id: string }
+  | { name: 'series'; key: string };
 
 export function parseRoute(hash: string): Route {
   const full = hash.replace(/^#\/?/, '');
@@ -33,6 +34,7 @@ export function parseRoute(hash: string): Route {
   if (head === 'settings') return { name: 'settings' };
   if (head === 'log') return { name: 'log' };
   if (head === 'read' && arg) return { name: 'reader', id: decodeURIComponent(arg) };
+  if (head === 'series' && arg) return { name: 'series', key: decodeURIComponent(arg) };
   return { name: 'library' };
 }
 

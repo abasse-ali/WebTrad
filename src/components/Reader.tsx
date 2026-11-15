@@ -10,12 +10,11 @@ import { isImageUrl } from '../lib/importers';
 import { ocrRegion } from '../lib/ocr';
 import { cancelChapter, startChapter, stopChapter, translateBubbles, useJob } from '../lib/pipeline';
 import { clearPosition, loadPosition, savePosition, setLastRead, type ReadingPosition } from '../lib/progress';
-import { guessNextUrl, neighbours } from '../lib/series';
+import { guessNextUrl, neighbours, seriesOf } from '../lib/series';
 import { quickImport } from '../lib/quick';
 import { useSettings } from '../lib/settings';
 import type { Box } from '../lib/text';
 import type { Bubble, Chapter, Page, ReaderMode } from '../lib/types';
-import { displayName } from '../lib/languages';
 import { navigate } from '../router';
 import { BubbleSheet } from './BubbleSheet';
 import { UsageMeter } from './UsageMeter';
@@ -497,23 +496,22 @@ export function Reader({ id }: { id: string }) {
             <Icon name="back" />
           </button>
           <div className="reader-title">
-            <strong title={chapter?.title}>{chapter?.title ?? '…'}</strong>
-            {chapter && (
-              <button className="link small" onClick={() => setLangOpen(true)}>
-                {chapter.sourceLang === 'auto' ? t('lang.detecting') : displayName(chapter.sourceLang, settings.uiLang)}
-                {chapter.autoSource ? ` (${t('lang.autoShort')})` : ''} → {displayName(chapter.targetLang, settings.uiLang)}
-              </button>
-            )}
-          </div>
-          <div className="segmented" role="group">
-            {(['translated', 'original', 'compare'] as const).map((m) => (
-              <button key={m} className={mode === m ? 'active' : ''} aria-pressed={mode === m} onClick={() => setMode(m)}>
-                {t(`reader.mode.${m}`)}
-              </button>
-            ))}
+            {(() => {
+              const ref = chapter ? seriesOf(chapter.title) : null;
+              return ref && ref.key && ref.number !== null ? (
+                <>
+                  <small title={chapter?.title}>{ref.name}</small>
+                  <strong>{t('library.series.chapter', { number: ref.number })}</strong>
+                </>
+              ) : (
+                <strong title={chapter?.title}>{chapter?.title ?? '…'}</strong>
+              );
+            })()}
           </div>
           <button
-            className={`btn small ${editing ? 'primary' : 'ghost'}`}
+            className={`icon-btn ${editing ? 'on' : ''}`}
+            aria-label={editing ? t('reader.editDone') : t('reader.edit')}
+            aria-pressed={editing}
             title={editing ? t('reader.editDone') : t('reader.edit')}
             onClick={() => {
               setEditing((v) => !v);
@@ -521,8 +519,7 @@ export function Reader({ id }: { id: string }) {
               if (mode === 'original') setMode('translated');
             }}
           >
-            <Icon name={editing ? 'check' : 'edit'} size={16} />
-            <span className="hide-sm">{editing ? t('reader.editDone') : t('reader.edit')}</span>
+            <Icon name={editing ? 'check' : 'edit'} size={20} />
           </button>
           <div className="menu-wrap" ref={menuRef}>
             <button
@@ -561,6 +558,21 @@ export function Reader({ id }: { id: string }) {
             )}
           </div>
         </header>
+        <div className="reader-modes">
+          <div className="segmented" role="group">
+            {(['translated', 'original', 'compare'] as const).map((m) => (
+              <button key={m} className={mode === m ? 'active' : ''} aria-pressed={mode === m} onClick={() => setMode(m)}>
+                {t(`reader.mode.${m}`)}
+              </button>
+            ))}
+          </div>
+          {chapter && (
+            <button className="chip" onClick={() => setLangOpen(true)} title={t('reader.languages')}>
+              <Icon name="globe" size={14} />
+              {chapter.sourceLang === 'auto' ? '…' : chapter.sourceLang.toUpperCase().slice(0, 2)} → {chapter.targetLang.toUpperCase().slice(0, 2)}
+            </button>
+          )}
+        </div>
 
         {hasStatus && (
           <div className="reader-status" role="status">
