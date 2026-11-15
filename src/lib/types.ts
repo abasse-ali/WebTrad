@@ -58,6 +58,13 @@ export interface Bubble {
   hidden?: boolean;
   /** Set when the user typed the translation by hand. */
   edited?: boolean;
+  /**
+   * Bubble cut by the page break: the same text is lettered on both pages
+   * ("next": its top part here, the rest on the next page; "prev": the end
+   * of a bubble that starts on the previous page). Its area runs past the
+   * page edge and is clipped there.
+   */
+  seam?: 'next' | 'prev';
 }
 
 export interface Page {

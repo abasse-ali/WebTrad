@@ -587,3 +587,65 @@ export function regionFill(px: Pixels, region: BubbleRegion): string {
   if (rs.length === 0) return '#ffffff';
   return toHex([medianOf(rs), medianOf(gs), medianOf(bs)]);
 }
+
+/**
+ * Moves a text box onto the lettering it is meant to cover. Vision models
+ * often place boxes of signs, screens and game chats a line too high or
+ * too low: the translation then sat next to the original, which stayed
+ * visible. The box keeps its size and slides (by up to about its height)
+ * to where the most letter edges are; it stays put when nothing clearly
+ * better is found. `box` is in the pixels of `px`.
+ */
+export function snapToText(px: Pixels, box: Box): Box {
+  const { data, width: W, height: H } = px;
+  const bw = Math.max(2, Math.round(box.w));
+  const bh = Math.max(2, Math.round(box.h));
+  if (bw >= W || bh >= H) return box;
+  const reachY = Math.round(Math.max(4, box.h * 1.2));
+  const reachX = Math.round(box.w * 0.3);
+  // Strong horizontal steps of brightness: the strokes of letters.
+  const edge = (x: number, y: number) => {
+    const i = (y * W + x) * 4;
+    return Math.abs(luminance(data, i) - luminance(data, i + 4)) > 48 ? 1 : 0;
+  };
+  /** Best start of a window of `len` along one axis (`limit` long, `cross` wide). */
+  const slide = (from: number, to: number, len: number, start: number, limit: number, cross: number, count: (pos: number) => number): number => {
+    const lo = Math.max(0, from);
+    const hi = Math.min(to, limit - 1);
+    const n = hi - lo + 1;
+    if (n <= len) return start;
+    const sums = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) sums[i + 1] = sums[i] + count(lo + i);
+    const at = (pos: number) => sums[Math.min(n, pos - lo + len)] - sums[Math.max(0, pos - lo)];
+    const here = at(Math.min(Math.max(start, lo), hi - len + 1));
+    let best = start;
+    let bestScore = here;
+    for (let pos = lo; pos + len - 1 <= hi; pos++) {
+      // A small preference for staying close: two lines of a chat keep their own box.
+      const score = at(pos) * (1 - (0.12 * Math.abs(pos - start)) / len);
+      if (score > bestScore) {
+        bestScore = score;
+        best = pos;
+      }
+    }
+    // Only a clearly better place, with real lettering in it.
+    const density = at(best) / (len * cross);
+    return bestScore > here * 1.3 && density > 0.03 ? best : start;
+  };
+  const x0 = Math.max(0, Math.round(box.x));
+  const x1 = Math.min(W - 2, Math.round(box.x + box.w));
+  const top = slide(Math.round(box.y) - reachY, Math.round(box.y + box.h) + reachY, bh, Math.round(box.y), H, bw, (y) => {
+    let c = 0;
+    for (let x = x0; x <= x1; x++) c += edge(x, y);
+    return c;
+  });
+  const y0 = Math.max(0, top);
+  const y1 = Math.min(H - 1, top + bh - 1);
+  const left = slide(Math.round(box.x) - reachX, Math.round(box.x + box.w) + reachX, bw, Math.round(box.x), W, bh, (x) => {
+    if (x >= W - 1) return 0;
+    let c = 0;
+    for (let y = y0; y <= y1; y++) c += edge(x, y);
+    return c;
+  });
+  return { x: left, y: top, w: box.w, h: box.h };
+}
