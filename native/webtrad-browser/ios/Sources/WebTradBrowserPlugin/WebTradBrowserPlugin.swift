@@ -31,7 +31,8 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "download", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readClipboard", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "keepAlive", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "keepAlive", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "otherAudio", returnType: CAPPluginReturnPromise)
     ]
 
     // MARK: - Working in the background
@@ -43,6 +44,15 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var keepingAlive = false
     private var observers: [NSObjectProtocol] = []
+
+    /// Whether another app (Safari's video, YouTube, music…) is playing sound:
+    /// the page then must not start its own audio, which would cut it.
+    @objc func otherAudio(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            let session = AVAudioSession.sharedInstance()
+            call.resolve(["playing": session.isOtherAudioPlaying || session.secondaryAudioShouldBeSilencedHint])
+        }
+    }
 
     @objc func keepAlive(_ call: CAPPluginCall) {
         let on = call.getBool("on") ?? false

@@ -7,7 +7,7 @@
  */
 
 import { logInfo } from './log';
-import { isNativeApp, nativeKeepAlive } from './native';
+import { isNativeApp, nativeKeepAlive, otherAudioPlaying } from './native';
 import { getSettings } from './settings';
 
 const JOB_LOCK = 'webtrad-job';
@@ -16,8 +16,11 @@ const JOB_LOCK = 'webtrad-job';
 //
 // iOS suspends an app a few seconds after it leaves the screen, and the
 // translation stops with it. While a chapter is processed the app plays
-// silence: natively (keeps the app running) and in the page itself (keeps
-// the web view's JavaScript running), both mixed with the reader's music.
+// silence: natively (keeps the app running, mixed with other sounds) and in
+// the page itself (keeps the web view's JavaScript running). The page's
+// sound is not mixable: WebKit takes the audio for it and would stop a
+// video playing in Safari or YouTube. It is only played while nothing else
+// plays, and never started again over another app's sound.
 
 /** One second of silence, as a WAV data URL. */
 function silentWav(): string {
@@ -54,10 +57,20 @@ function silenceElement(): HTMLAudioElement {
     // Paused by another app's video or music: played again while a chapter
     // is being translated (the native side keeps the app itself alive).
     silence.addEventListener('pause', () => {
-      if (processing && getSettings().background !== false) setTimeout(() => void silence?.play().catch(() => undefined), 1500);
+      if (processing && getSettings().background !== false) setTimeout(() => void playPageSilence(), 1500);
     });
   }
   return silence;
+}
+
+/** Plays the page's silence, unless another app is playing sound (it would be cut). */
+async function playPageSilence(): Promise<void> {
+  if (!processing || getSettings().background === false) return;
+  if (await otherAudioPlaying()) {
+    logInfo('app', 'Son d’une autre appli en cours : la traduction ne le coupe pas');
+    return;
+  }
+  await silenceElement().play().catch(() => undefined);
 }
 
 // What happened while the app was out of sight, for the activity log.
@@ -71,7 +84,7 @@ if (typeof document !== 'undefined' && isNativeApp()) {
     } else if (hiddenSince) {
       logInfo('app', `Retour dans l’appli après ${Math.round((Date.now() - hiddenSince) / 1000)} s en arrière-plan`);
       hiddenSince = 0;
-      void silence?.play().catch(() => undefined);
+      void playPageSilence();
     }
   });
 }
@@ -81,12 +94,19 @@ if (typeof document !== 'undefined' && isNativeApp()) {
 if (typeof window !== 'undefined' && isNativeApp()) {
   const unlock = () => {
     const audio = silenceElement();
+    // Unlocked muted: a muted element takes no audio from other apps (a
+    // video playing in Safari is not interrupted by a tap in WebTrad).
+    audio.muted = true;
     void audio
       .play()
       .then(() => {
-        if (!processing) audio.pause();
+        audio.pause();
+        audio.muted = false;
+        if (processing) void playPageSilence();
       })
-      .catch(() => undefined);
+      .catch(() => {
+        audio.muted = false;
+      });
     window.removeEventListener('pointerdown', unlock, true);
   };
   window.addEventListener('pointerdown', unlock, true);
@@ -97,7 +117,7 @@ function backgroundWork(on: boolean): void {
   const wanted = on && getSettings().background !== false;
   void nativeKeepAlive(wanted);
   if (wanted) {
-    void silenceElement().play().catch(() => undefined);
+    void playPageSilence();
     logInfo('app', 'Traduction en arrière-plan activée (son silencieux)');
   } else silence?.pause();
 }
