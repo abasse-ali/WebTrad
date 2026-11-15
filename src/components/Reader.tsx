@@ -12,10 +12,11 @@ import { cancelChapter, startChapter, stopChapter, translateBubbles, useJob } fr
 import { clearPosition, loadPosition, savePosition, setLastRead, type ReadingPosition } from '../lib/progress';
 import { guessNextUrl, neighbours, seriesOf } from '../lib/series';
 import { quickImport } from '../lib/quick';
-import { updateSettings, useSettings } from '../lib/settings';
+import { getSettings, updateSettings, useSettings } from '../lib/settings';
 import type { Box } from '../lib/text';
 import type { Bubble, Chapter, Page, ReaderMode } from '../lib/types';
 import { navigate } from '../router';
+import { SPEED_LEVELS, clampSpeed, useAutoScroll } from '../lib/autoscroll';
 import { BubbleSheet } from './BubbleSheet';
 import { UsageMeter } from './UsageMeter';
 import { Icon } from './Icon';
@@ -44,6 +45,10 @@ export function Reader({ id }: { id: string }) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [barHidden, setBarHidden] = useState(false);
   const [current, setCurrent] = useState(0);
+  /** Automatic scrolling: off, moving, or paused with its controls still shown. */
+  const [auto, setAuto] = useState<'off' | 'play' | 'pause'>('off');
+  const autoRef = useRef(auto);
+  autoRef.current = auto;
   const [siblings, setSiblings] = useState<{ previous?: Chapter; next?: Chapter }>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [fontsOk, setFontsOk] = useState(false);
@@ -191,17 +196,30 @@ export function Reader({ id }: { id: string }) {
     };
   }, [id, title]);
 
-  // Keyboard: O toggles original, E toggles edit mode.
+  const changeSpeed = useCallback((by: number) => {
+    updateSettings({ scrollSpeed: clampSpeed(clampSpeed(getSettings().scrollSpeed) + by) });
+  }, []);
+
+  // Keyboard: O toggles original, E toggles edit mode, A the automatic
+  // scrolling (then Space pauses it, + and - change its speed).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
       if (e.key === 'o') setMode((m) => (m === 'original' ? 'translated' : 'original'));
       if (e.key === 'e') setEditing((v) => !v);
+      if (e.key === 'a') setAuto((a) => (a === 'off' ? 'play' : 'off'));
+      if (autoRef.current === 'off') return;
+      if (e.key === ' ' && !(e.target instanceof HTMLButtonElement)) {
+        e.preventDefault();
+        setAuto((a) => (a === 'play' ? 'pause' : 'play'));
+      }
+      if (e.key === '+' || e.key === '=') changeSpeed(1);
+      if (e.key === '-') changeSpeed(-1);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setMode]);
+  }, [setMode, changeSpeed]);
 
   // A new message brings the bar back for a moment; it must not pin it for good.
   const [attention, setAttention] = useState(false);
@@ -222,7 +240,10 @@ export function Reader({ id }: { id: string }) {
   });
   /** A tap on the artwork shows or hides the bar (not the tap that closes the menu). */
   const onTap = useCallback(() => {
-    if (Date.now() - lastDismiss.current > 400) setBarHidden((v) => !v);
+    if (Date.now() - lastDismiss.current <= 400) return;
+    // While the page scrolls on its own, a tap on the artwork pauses and resumes it.
+    if (autoRef.current !== 'off') setAuto((a) => (a === 'play' ? 'pause' : 'play'));
+    else setBarHidden((v) => !v);
   }, []);
 
   // --- bubble editing -------------------------------------------------------
@@ -457,6 +478,10 @@ export function Reader({ id }: { id: string }) {
   // Anything the reader must see or is interacting with keeps the bar in place.
   const pinned = editing || menuOpen || langOpen || renameOpen || exportOpen || draft !== null || exporting !== null || attention;
   const hidden = barHidden && !pinned;
+  // The page does not move under an open menu, dialog or bubble editor.
+  const busy = editing || menuOpen || langOpen || renameOpen || exportOpen || draft !== null;
+  useAutoScroll(auto === 'play' && !busy && Boolean(pages?.length), settings.scrollSpeed, () => setAuto('off'));
+  const speed = clampSpeed(settings.scrollSpeed);
 
   // Next chapter: already in the library, or to import from the source website.
   const nextImport =
@@ -545,6 +570,9 @@ export function Reader({ id }: { id: string }) {
                 </button>
                 <button role="menuitem" onClick={reanalyseAll}>
                   <Icon name="sparkles" size={16} /> {t('reader.reanalyse')}
+                </button>
+                <button role="menuitem" onClick={() => (setMenuOpen(false), setAuto(auto === 'off' ? 'play' : 'off'))} disabled={!pages?.length}>
+                  <Icon name="scroll" size={16} /> {auto === 'off' ? t('reader.auto.on') : t('reader.auto.off')}
                 </button>
                 <button role="menuitem" onClick={() => (setMenuOpen(false), updateSettings({ animated: !settings.animated }))}>
                   <Icon name="sparkles" size={16} /> {settings.animated ? t('reader.animated.off') : t('reader.animated.on')}
@@ -689,6 +717,31 @@ export function Reader({ id }: { id: string }) {
       {pages && pages.length > 1 && !editing && !draft && (
         <div className={`reader-pos ${hidden ? 'hidden' : ''}`} aria-hidden="true">
           {Math.min(current, pages.length - 1) + 1} / {pages.length}
+        </div>
+      )}
+
+      {auto !== 'off' && !editing && !draft && (
+        <div className={`auto-bar ${auto === 'play' ? 'playing' : ''}`} role="group" aria-label={t('reader.auto.on')}>
+          <button className="icon-btn" onClick={() => changeSpeed(-1)} disabled={speed <= 1} aria-label={t('reader.auto.slower')} title={t('reader.auto.slower')}>
+            <Icon name="minus" size={18} />
+          </button>
+          <span className="auto-speed" aria-live="polite" aria-label={t('reader.auto.speed', { level: speed })}>
+            {speed}
+          </span>
+          <button className="icon-btn" onClick={() => changeSpeed(1)} disabled={speed >= SPEED_LEVELS} aria-label={t('reader.auto.faster')} title={t('reader.auto.faster')}>
+            <Icon name="plus" size={18} />
+          </button>
+          <button
+            className="icon-btn main"
+            onClick={() => setAuto(auto === 'play' ? 'pause' : 'play')}
+            aria-label={auto === 'play' ? t('reader.auto.pause') : t('reader.auto.play')}
+            title={auto === 'play' ? t('reader.auto.pause') : t('reader.auto.play')}
+          >
+            <Icon name={auto === 'play' ? 'pause' : 'play'} size={18} />
+          </button>
+          <button className="icon-btn" onClick={() => setAuto('off')} aria-label={t('reader.auto.close')} title={t('reader.auto.close')}>
+            <Icon name="close" size={18} />
+          </button>
         </div>
       )}
 
