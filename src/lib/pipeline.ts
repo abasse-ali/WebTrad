@@ -32,6 +32,8 @@ export interface JobState {
   failed: number;
   pageIndex: number | null;
   phase: 'detect' | 'ocr' | 'translate' | 'download' | 'idle';
+  /** Waiting for another chapter to finish: chapters are processed one at a time. */
+  queued?: boolean;
   message?: string;
   engine?: string;
 }
@@ -1070,8 +1072,11 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
   if (isRunning(chapterId)) return Promise.resolve();
   const controller = new AbortController();
   controllers.set(chapterId, controller);
-  setJob(chapterId, { running: true, done: 0, failed: 0, total: 0, phase: 'idle', message: undefined, pageIndex: null });
+  // Chapters are processed one after the other (the AI's rate limits and the
+  // phone's memory are shared): a second one waits its turn, and says so.
+  setJob(chapterId, { running: true, queued: true, done: 0, failed: 0, total: 0, phase: 'idle', message: undefined, pageIndex: null });
   const run = ocrQueue.then(async () => {
+    setJob(chapterId, { queued: false });
     const chapter = await getChapter(chapterId);
     if (!chapter) return;
     const pages = await getPages(chapterId);
