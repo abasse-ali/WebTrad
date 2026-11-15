@@ -20,6 +20,16 @@ export interface BubbleRegion extends Box {
   /** Dark pixels enclosed by the bubble (≈ text). */
   inkBox: Box;
   ink: number;
+  /** The lettering is coloured (pink whispers, red shouts), not dark. */
+  tinted?: boolean;
+}
+
+/** Coloured lettering on paper: clearly not white, clearly a colour. */
+function isTint(data: Uint8ClampedArray, i: number): boolean {
+  const r = data[i];
+  const g = data[i + 1];
+  const b = data[i + 2];
+  return Math.max(r, g, b) - Math.min(r, g, b) >= 60 && (r * 299 + g * 587 + b * 114) / 1000 < 215;
 }
 
 export function luminance(data: Uint8ClampedArray, i: number): number {
@@ -77,14 +87,14 @@ export function looksLikeBubble(
  * arm cross a row once or twice. Counted on the rows that hold ink, per 100
  * pixels of width.
  */
-export function looksLikeLettering(lum: Uint8Array, W: number, box: Box): boolean {
+export function looksLikeLettering(lum: Uint8Array, W: number, box: Box, isInk?: (p: number) => boolean): boolean {
   let rows = 0;
   let switches = 0;
   for (let y = box.y; y < box.y + box.h; y++) {
     let prev = false;
     let n = 0;
     for (let x = box.x; x < box.x + box.w; x++) {
-      const dark = lum[y * W + x] < 128;
+      const dark = isInk ? isInk(y * W + x) : lum[y * W + x] < 128;
       if (dark !== prev) n++;
       prev = dark;
     }
@@ -151,6 +161,9 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
     const spans = new Int32Array(h * 2).fill(-1);
     let ink = 0;
     let ix0 = W, iy0 = H, ix1 = -1, iy1 = -1;
+    // Coloured lettering (pink, red…), counted apart: used when there is no dark ink.
+    let tint = 0;
+    let tx0 = W, ty0 = H, tx1 = -1, ty1 = -1;
     for (let r = 0; r < h; r++) {
       const y = c.y0 + r;
       let minX = -1, maxX = -1;
@@ -167,14 +180,30 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
       const rim = Math.max(3, Math.round((maxX - minX) * 0.04));
       for (let x = minX + rim; x <= maxX - rim; x++) {
         const p = y * W + x;
-        if (labels[p] !== c.id && lum[p] < 128) {
+        if (labels[p] === c.id) continue;
+        if (lum[p] < 128) {
           ink++;
           if (x < ix0) ix0 = x;
           if (x > ix1) ix1 = x;
           if (y < iy0) iy0 = y;
           if (y > iy1) iy1 = y;
+        } else if (isTint(data, p * 4)) {
+          tint++;
+          if (x < tx0) tx0 = x;
+          if (x > tx1) tx1 = x;
+          if (y < ty0) ty0 = y;
+          if (y > ty1) ty1 = y;
         }
       }
+    }
+    // Coloured marks and (almost) no dark ink: a bubble lettered in colour.
+    const tinted = tint >= 24 && tint > ink * 3;
+    if (tinted) {
+      ink = tint;
+      ix0 = tx0;
+      iy0 = ty0;
+      ix1 = tx1;
+      iy1 = ty1;
     }
     // A few dozen ink pixels already make a short word ("I...") at small sizes.
     if (ink < 6 || ink > c.area * 0.6) continue;
@@ -182,8 +211,8 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
     // Text should sit well inside the bubble, not be a line hugging its border.
     if (inkBox.w < 6 || inkBox.h < 6) continue;
     // Its ink must look like letters, not like the folds of a white shirt.
-    if (!looksLikeLettering(lum, W, inkBox)) continue;
-    regions.push({ x: c.x0, y: c.y0, w: c.x1 - c.x0 + 1, h, spans, area: c.area, inkBox, ink });
+    if (!looksLikeLettering(lum, W, inkBox, tinted ? (p) => lum[p] >= 128 && isTint(data, p * 4) : undefined)) continue;
+    regions.push({ x: c.x0, y: c.y0, w: c.x1 - c.x0 + 1, h, spans, area: c.area, inkBox, ink, ...(tinted ? { tinted } : {}) });
   }
   return regions;
 }
@@ -204,6 +233,110 @@ export function detectAllBubbles(px: Pixels): BubbleRegion[] {
     if (!regions.some((r) => overlap(r, strict) > 0.5)) regions.push(strict);
   }
   return regions;
+}
+
+/**
+ * The bubble around some lettering, found from the lettering itself: the
+ * light paper it sits on, flooded from `seed` (a box on the letters) until
+ * its outline. Finds the bubbles `detectBubbles` leaves out for their shape:
+ * spiky shouts, torn or jagged rims, bubbles as wide as the page, or holding
+ * only "…?". Null when the paper is not enclosed (the page background),
+ * is not plain (a white shirt, a lit wall) or holds no ink.
+ */
+export function enclosingBubble(px: Pixels, seed: Box, bright = 200): BubbleRegion | null {
+  const { data, width: W, height: H } = px;
+  // A bubble is never much taller than the page is wide: the search stays in a window.
+  const reach = Math.round(W * 0.9);
+  const wy0 = Math.max(0, Math.floor(seed.y) - reach);
+  const wy1 = Math.min(H, Math.ceil(seed.y + seed.h) + reach);
+  const wh = wy1 - wy0;
+  if (wh <= 0) return null;
+  const seen = new Uint8Array(W * wh);
+  const stack: number[] = [];
+  const isBright = (x: number, y: number) => luminance(data, (y * W + x) * 4) >= bright;
+  const sx0 = Math.max(0, Math.floor(seed.x) - 2);
+  const sx1 = Math.min(W - 1, Math.ceil(seed.x + seed.w) + 2);
+  const sy0 = Math.max(wy0, Math.floor(seed.y) - 2);
+  const sy1 = Math.min(wy1 - 1, Math.ceil(seed.y + seed.h) + 2);
+  for (let y = sy0; y <= sy1; y++) {
+    for (let x = sx0; x <= sx1; x++) {
+      const q = (y - wy0) * W + x;
+      if (!seen[q] && isBright(x, y)) {
+        seen[q] = 1;
+        stack.push(q);
+      }
+    }
+  }
+  if (stack.length === 0) return null;
+  let x0 = W, y0 = H, x1 = 0, y1 = 0, area = 0;
+  while (stack.length > 0) {
+    const q = stack.pop()!;
+    const x = q % W;
+    const wy = (q - x) / W;
+    const y = wy + wy0;
+    area++;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+    if (x > 0 && !seen[q - 1] && isBright(x - 1, y)) { seen[q - 1] = 1; stack.push(q - 1); }
+    if (x < W - 1 && !seen[q + 1] && isBright(x + 1, y)) { seen[q + 1] = 1; stack.push(q + 1); }
+    if (wy > 0 && !seen[q - W] && isBright(x, y - 1)) { seen[q - W] = 1; stack.push(q - W); }
+    if (wy < wh - 1 && !seen[q + W] && isBright(x, y + 1)) { seen[q + W] = 1; stack.push(q + W); }
+  }
+  // Paper running out of the window above or below is the page, not a bubble.
+  if ((y0 <= wy0 && wy0 > 0) || (y1 >= wy1 - 1 && wy1 < H)) return null;
+  const w = x1 - x0 + 1;
+  const h = y1 - y0 + 1;
+  if (h > reach || w < seed.w * 0.8 || h < seed.h * 0.8) return null;
+  const spans = new Int32Array(h * 2).fill(-1);
+  let n = 0, sum = 0, sumSq = 0, chroma = 0;
+  const step = Math.max(1, Math.round(Math.sqrt(area / 4000)));
+  for (let r = 0; r < h; r++) {
+    const row = (y0 + r - wy0) * W;
+    let minX = -1, maxX = -1;
+    for (let x = x0; x <= x1; x++) {
+      if (!seen[row + x]) continue;
+      if (minX < 0) minX = x;
+      maxX = x;
+      if (r % step === 0 && x % step === 0) {
+        const i = ((y0 + r) * W + x) * 4;
+        const l = luminance(data, i);
+        n++;
+        sum += l;
+        sumSq += l * l;
+        chroma += Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]);
+      }
+    }
+    spans[r * 2] = minX;
+    spans[r * 2 + 1] = maxX;
+  }
+  // Plain paper only, as for the other bubbles.
+  if (n >= 12) {
+    const mean = sum / n;
+    if (chroma / n >= 22 || Math.sqrt(Math.max(0, sumSq / n - mean * mean)) >= 9) return null;
+  }
+  // The ink it encloses, away from the rim.
+  let ink = 0;
+  let ix0 = W, iy0 = H, ix1 = -1, iy1 = -1;
+  for (let r = 0; r < h; r++) {
+    const minX = spans[r * 2];
+    const maxX = spans[r * 2 + 1];
+    if (minX < 0) continue;
+    const y = y0 + r;
+    const row = (y - wy0) * W;
+    const rim = Math.max(3, Math.round((maxX - minX) * 0.04));
+    for (let x = minX + rim; x <= maxX - rim; x++) {
+      if (seen[row + x] || luminance(data, (y * W + x) * 4) >= 128) continue;
+      ink++;
+      if (x < ix0) ix0 = x;
+      if (x > ix1) ix1 = x;
+      if (y < iy0) iy0 = y;
+      if (y > iy1) iy1 = y;
+    }
+  }
+  if (ink < 6 || ink > area * 0.6) return null;
+  return { x: x0, y: y0, w, h, spans, area, inkBox: { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 }, ink };
 }
 
 /** Copies a region to a new RGBA buffer, painting everything outside the bubble white. */
@@ -250,7 +383,7 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
     for (let x = from; x <= to; x++) {
       const c = x - region.x;
       if (r < top[c] + bandY || r > bottom[c] - bandY) continue;
-      if (luminance(px.data, (y * px.width + x) * 4) < 128) {
+      if (region.tinted ? isTint(px.data, (y * px.width + x) * 4) : luminance(px.data, (y * px.width + x) * 4) < 128) {
         if (x < ix0) ix0 = x;
         if (x > ix1) ix1 = x;
         if (y < iy0) iy0 = y;
@@ -271,7 +404,7 @@ export function maskedCrop(px: Pixels, region: BubbleRegion, pad = 6): { pixels:
       out[di + 2] = px.data[si + 2];
     }
   }
-  const usePlain = plainX.length >= inkX.length * 0.3;
+  const usePlain = !region.tinted && plainX.length >= inkX.length * 0.3;
   const ink = ix1 >= 0 ? (lettering(usePlain ? plainX : inkX, usePlain ? plainY : inkY, region) ?? { x: ix0, y: iy0, w: ix1 - ix0 + 1, h: iy1 - iy0 + 1 }) : null;
   return { pixels: { data: out, width: w, height: h }, x: x0, y: y0, ink };
 }
@@ -507,6 +640,50 @@ export function sampleInk(px: Pixels, box: Box, background: string): InkInfo | n
 }
 
 /**
+ * Clears from `mask` the connected marks that are not lettering: those that
+ * touch its border and are longer than a letter, and those far bigger than
+ * a line of letters.
+ */
+function keepLines(mask: Uint8Array, w: number, h: number, maxGlyph: number): void {
+  const seen = new Uint8Array(w * h);
+  const stack: number[] = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || seen[start]) continue;
+    const members: number[] = [];
+    let x0 = w, y0 = h, x1 = 0, y1 = 0;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      members.push(p);
+      const x = p % w;
+      const y = (p - x) / w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const q = yy * w + xx;
+          if (mask[q] && !seen[q]) {
+            seen[q] = 1;
+            stack.push(q);
+          }
+        }
+      }
+    }
+    const cw = x1 - x0 + 1;
+    const ch = y1 - y0 + 1;
+    const onBorder = x0 === 0 || y0 === 0 || x1 === w - 1 || y1 === h - 1;
+    // Lines crossing the box, and shapes far bigger than letters (hair, a shirt of the ink colour).
+    if ((onBorder && (cw > maxGlyph || ch > maxGlyph)) || (cw > maxGlyph * 3 && ch > maxGlyph * 3)) for (const p of members) mask[p] = 0;
+  }
+}
+
+/**
  * Removes lettering drawn over artwork: pixels close to the ink colours are
  * masked (plus a margin for anti-aliasing) and filled from their surroundings,
  * layer by layer from the edge of each letter inwards. Returns the repaired
@@ -519,6 +696,12 @@ export function inpaintText(
   margin: number,
   /** Limits what may be erased (page coordinates of `px`), e.g. to a tilted band. */
   within?: (x: number, y: number) => boolean,
+  /**
+   * Size of the biggest letter, in pixels. When given, marks of the ink
+   * colour that run out of the box and are longer than a letter (the outline
+   * of a bubble, the border of a panel, a strand of hair) are kept.
+   */
+  maxGlyph?: number,
 ): Pixels | null {
   const x0 = Math.max(0, Math.round(box.x));
   const y0 = Math.max(0, Math.round(box.y));
@@ -535,6 +718,7 @@ export function inpaintText(
     if (within && !within(x0 + (p % w), y0 + Math.floor(p / w))) continue;
     if (tones.some((c) => colorDistance(out, p * 4, c) < 120)) mask[p] = 1;
   }
+  if (maxGlyph) keepLines(mask, w, h, maxGlyph);
   // Grow the mask over the blurred rim of the letters.
   const grow = Math.max(1, Math.min(6, Math.round(margin)));
   for (let pass = 0; pass < grow; pass++) {

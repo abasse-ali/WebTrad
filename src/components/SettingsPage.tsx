@@ -387,13 +387,6 @@ export function SettingsPage() {
             ))}
           </select>
         </label>
-        <label className="check">
-          <input type="checkbox" checked={s.animated} onChange={(e) => updateSettings({ animated: e.target.checked })} />
-          <span>
-            {t('settings.animated')}
-            <small className="block muted">{t('settings.animated.hint')}</small>
-          </span>
-        </label>
         <label className="field">
           <span>{t('settings.letterCase')}</span>
           <select value={s.letterCase} onChange={(e) => updateSettings({ letterCase: e.target.value as LetterCase })}>
