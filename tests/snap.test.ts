@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fitShift, snapToText } from '../src/lib/imageproc';
+import { fitShift, lettering, snapToText } from '../src/lib/imageproc';
 
 /** White image with black vertical strokes (fake letters) in a band. */
 function page(w: number, h: number, band: { x: number; y: number; w: number; h: number }) {
@@ -55,5 +55,25 @@ describe('snapToText with a wider reach', () => {
     expect(Math.abs(s.y - 200)).toBeLessThanOrEqual(1);
     expect(Math.abs(s.x - 60)).toBeLessThanOrEqual(2);
     expect(snapToText(px, { x: 40, y: 20, w: 150, h: 14 }).found).toBe(false);
+  });
+});
+
+describe('lettering', () => {
+  it('keeps the text block, not the specks of a grainy rim', () => {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    // Two lines of letters in the middle of a 300×200 bubble at (100, 100).
+    for (const line of [180, 200])
+      for (let y = line; y < line + 12; y++)
+        for (let x = 190; x < 310; x += 2) {
+          xs.push(x);
+          ys.push(y);
+        }
+    // Specks near the rim, far from the text.
+    for (const [x, y] of [[115, 112], [380, 285], [384, 290], [120, 280], [370, 110]]) {
+      xs.push(x);
+      ys.push(y);
+    }
+    expect(lettering(xs, ys, { x: 100, y: 100, w: 300, h: 200 })).toEqual({ x: 190, y: 180, w: 119, h: 32 });
   });
 });
