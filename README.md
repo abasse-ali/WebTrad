@@ -89,8 +89,13 @@ avec un identifiant Apple gratuit.
 3. Sur l’iPhone : *Réglages → Confidentialité et sécurité → Mode développeur* (activer, redémarrer), puis
    *Réglages → Général → VPN et gestion de l’appareil* → faire confiance à votre identifiant.
 
+**Mises à jour sans ordinateur.** Une fois installée, l’appli télécharge seule les nouvelles versions publiées
+sur GitHub et les prend au démarrage suivant (ou en arrière-plan, hors traduction). Le journal l’indique
+(« Nouvelle version … téléchargée », puis « Version … installée »). Seules les versions qui changent la partie
+native (Swift) demandent de repasser par Sideloadly ; le journal le signale aussi.
+
 Limite d’Apple pour un identifiant gratuit : l’appli doit être réinstallée **tous les 7 jours** (Sideloadly peut le
-faire automatiquement en Wi-Fi quand le PC est allumé ; AltStore est une alternative). La bibliothèque est conservée
+faire automatiquement en Wi-Fi quand le PC est allumé ; [SideStore](https://sidestore.io) le fait depuis l’iPhone seul, sans ordinateur après la première installation). La bibliothèque est conservée
 lors d’une réinstallation par-dessus.
 
 Pour compiler soi-même : `npm run ios:sync` puis ouvrir `ios/App/App.xcodeproj` dans Xcode (Mac).

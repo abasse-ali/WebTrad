@@ -9,6 +9,8 @@ export default defineConfig({
   define: {
     // Shown in the activity log, to know which version produced it.
     __APP_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ')),
+    // Number of the iPhone build (GitHub run), to compare with the latest release (see update.ts).
+    __WEB_BUILD__: JSON.stringify(Number(process.env.WEB_BUILD ?? 0)),
   },
   build: {
     target: 'es2022',

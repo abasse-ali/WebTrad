@@ -19,3 +19,12 @@ describe('request counter', () => {
     expect(usageOf('openrouter.ai', Date.parse('2026-11-16T00:00:05Z')).today).toBe(0);
   });
 });
+
+describe('newer', () => {
+  it('compares build numbers as numbers', async () => {
+    const { newer } = await import('../src/lib/update');
+    expect(newer(10, 9)).toBe(true);
+    expect(newer(9, 10)).toBe(false);
+    expect(newer(Number('x'), 3)).toBe(false);
+  });
+});

@@ -168,6 +168,11 @@ function holdJobLock(): void {
   navigator.locks.request(JOB_LOCK, { mode: 'shared' }, () => held).catch(() => undefined);
 }
 
+/** Is a chapter being processed right now? */
+export function isProcessing(): boolean {
+  return processing;
+}
+
 /** Call whenever "is any chapter being processed?" changes. */
 export function setProcessing(active: boolean): void {
   if (active === processing) return;
