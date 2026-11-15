@@ -370,7 +370,7 @@ function visionPrompt(order: 'yxyx' | 'xyxy'): string {
   const key = order === 'xyxy' ? 'bbox_2d' : 'box_2d';
   return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
 Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers, credits, the series logo or title artwork, and "to be continued" banners.
-Do NOT include sound effects or onomatopoeia: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
+Do NOT include sound effects, onomatopoeia or cries drawn as artwork outside the speech bubbles (stylised, coloured or outlined letters on the drawing: HUFF, HAAA, HNNG, UGH, SHLICK…). Do NOT include website watermarks (TOOMICS.com…), even when they lie on a bubble. Sound effects: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
 For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a translation in the requested language.
 How to translate, like a professional scanlation team:
 - Read the whole image first: a sentence often runs over several bubbles; translate each bubble so that, read in order, they form natural sentences.
