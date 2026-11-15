@@ -27,6 +27,51 @@ export function luminance(data: Uint8ClampedArray, i: number): number {
 }
 
 /**
+ * A bright area is a bubble when its inside is plain paper: no colour
+ * (lit skin is pink, a lamp is yellow) and flat (a white shirt, a fist or
+ * a highlight has shading). Measured on the middle of the area, where the
+ * lettering and a grainy rim weigh least; dark pixels (the letters) and the
+ * grey of anti-aliasing around them are left out.
+ */
+export function looksLikeBubble(
+  data: Uint8ClampedArray,
+  labels: Int32Array,
+  id: number,
+  W: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): boolean {
+  const mx = Math.round((x1 - x0) * 0.2);
+  const my = Math.round((y1 - y0) * 0.2);
+  const step = Math.max(1, Math.round(Math.sqrt(((x1 - x0) * (y1 - y0)) / 4000)));
+  let n = 0;
+  let sum = 0;
+  let sumSq = 0;
+  let chroma = 0;
+  for (let y = y0 + my; y <= y1 - my; y += step) {
+    for (let x = x0 + mx; x <= x1 - mx; x += step) {
+      const p = y * W + x;
+      if (labels[p] !== id) continue;
+      const i = p * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const l = (r * 299 + g * 587 + b * 114) / 1000;
+      n++;
+      sum += l;
+      sumSq += l * l;
+      chroma += Math.max(r, g, b) - Math.min(r, g, b);
+    }
+  }
+  if (n < 12) return true; // too small to judge: the other checks decide
+  const mean = sum / n;
+  const spread = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
+  return chroma / n < 22 && spread < 9;
+}
+
+/**
  * Finds speech bubbles: connected regions of bright pixels, large enough,
  * not spanning the whole page, and containing enclosed dark "ink".
  */
@@ -66,7 +111,10 @@ export function detectBubbles(px: Pixels, opts: { bright?: number; minSide?: num
     const h = y1 - y0 + 1;
     if (w < minSide || h < minSide) continue;
     if (w > W * 0.92) continue; // page background / gutter, not a bubble
-    if (area < w * h * 0.45) continue; // thin or ragged shape
+    // Bubbles are ellipses or rounded boxes (≥ 0.78 of their box); clothes and
+    // highlights are ragged. A little margin for grainy rims and letters.
+    if (area < w * h * 0.6) continue;
+    if (!looksLikeBubble(data, labels, id, W, x0, y0, x1, y1)) continue;
     comps.push({ id, x0, y0, x1, y1, area });
   }
 
