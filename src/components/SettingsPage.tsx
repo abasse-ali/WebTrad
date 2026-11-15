@@ -12,6 +12,7 @@ import { checkVisionModel, listModels, testLlm, type ModelCheck, type ModelInfo 
 import { clearLayoutCache } from '../lib/layout';
 import type { FontId, LetterCase, OcrEngine, ProviderId, ThemeId } from '../lib/types';
 import { Icon } from './Icon';
+import { checkNow, installNow, type UpdateStatus } from '../lib/update';
 import { LangSelect } from './LangSelect';
 
 const PROVIDERS: ProviderId[] = ['auto', 'chrome', 'google', 'mymemory', 'llm'];
@@ -464,7 +465,39 @@ export function SettingsPage() {
       <section className="panel">
         <h2>{t('settings.about')}</h2>
         <p className="muted">{t('settings.about.text')}</p>
+        <AppVersion />
       </section>
+    </div>
+  );
+}
+
+/** Version of the app, and (iPhone app) looking for a new one without a computer. */
+function AppVersion() {
+  const t = useT();
+  const [state, setState] = useState<UpdateStatus | 'checking' | 'error' | 'busy'>();
+  const check = () => {
+    setState('checking');
+    checkNow().then(setState, () => setState('error'));
+  };
+  return (
+    <div className="stack">
+      <p className="muted small">
+        {t('update.version')} {__WEB_BUILD__ ? `n°${__WEB_BUILD__}` : ''} ({__APP_BUILD__})
+      </p>
+      {isNativeApp() && (
+        <div className="row">
+          {state === 'ready' ? (
+            <button className="btn primary" onClick={() => void installNow().then((ok) => !ok && setState('busy'))}>
+              {t('update.install')}
+            </button>
+          ) : (
+            <button className="btn" disabled={state === 'checking'} onClick={check}>
+              {t('update.check')}
+            </button>
+          )}
+          {state && state !== 'checking' && <span className="muted small">{t(`update.${state}` as MessageKey)}</span>}
+        </div>
+      )}
     </div>
   );
 }

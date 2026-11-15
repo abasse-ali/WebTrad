@@ -65,17 +65,20 @@ export function newer(remote: number, current: number): boolean {
   return Number.isFinite(remote) && remote > current;
 }
 
-async function check(): Promise<void> {
-  const current = Math.max(__WEB_BUILD__, read<Ready>(READY_KEY)?.build ?? 0);
+export type UpdateStatus = 'none' | 'ready' | 'reinstall';
+
+async function check(): Promise<UpdateStatus> {
+  const already = read<Ready>(READY_KEY);
+  const current = Math.max(__WEB_BUILD__, already?.build ?? 0);
   const res = await CapacitorHttp.get({ url: `${RELEASE}/web.json`, responseType: 'json', connectTimeout: 20_000, readTimeout: 30_000 });
-  if (res.status !== 200) return;
+  if (res.status !== 200) throw new Error(`web.json HTTP ${res.status}`);
   const info = (typeof res.data === 'string' ? JSON.parse(res.data) : res.data) as { build?: number; native?: number };
   const build = Number(info.build);
-  if (!newer(build, current)) return;
+  if (!newer(build, current)) return already && newer(already.build, __WEB_BUILD__) ? 'ready' : 'none';
   const binary = read<number>(BINARY_KEY) ?? 1;
   if ((info.native ?? 1) > binary) {
     logInfo('app', `Version ${build} disponible : elle demande de réinstaller l’appli (Sideloadly), elle ne peut pas se mettre à jour seule`);
-    return;
+    return 'reinstall';
   }
   const zipRes = await CapacitorHttp.get({ url: `${RELEASE}/web.zip`, responseType: 'arraybuffer', connectTimeout: 20_000, readTimeout: 120_000 });
   if (zipRes.status !== 200 || typeof zipRes.data !== 'string') throw new Error(`web.zip HTTP ${zipRes.status}`);
@@ -91,6 +94,19 @@ async function check(): Promise<void> {
   const path = decodeURIComponent(uri.replace(/^file:\/\//, ''));
   write(READY_KEY, { build, path } satisfies Ready);
   logInfo('app', `Nouvelle version ${build} téléchargée : elle s’installera au prochain démarrage`);
+  return 'ready';
+}
+
+/** For the settings page: looks for a new version now (iPhone app only). */
+export function checkNow(): Promise<UpdateStatus> {
+  return check();
+}
+
+/** For the settings page: switches to the downloaded version now. False while a chapter is being translated. */
+export async function installNow(): Promise<boolean> {
+  if (isProcessing()) return false;
+  await applyIfIdle();
+  return true;
 }
 
 /** Starts the downloaded version, unless a chapter is being translated. */

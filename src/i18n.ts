@@ -330,6 +330,14 @@ const fr = {
   'log.count': '{n} entrée(s) affichée(s) sur {total}',
   'log.empty': 'Rien dans le journal pour l’instant.',
   'settings.about': 'À propos',
+  'update.version': 'Version',
+  'update.check': 'Rechercher une mise à jour',
+  'update.install': 'Installer maintenant',
+  'update.none': 'L’appli est à jour.',
+  'update.ready': 'Nouvelle version téléchargée.',
+  'update.reinstall': 'Nouvelle version : elle demande de réinstaller l’appli avec Sideloadly.',
+  'update.error': 'Recherche impossible (réseau ?).',
+  'update.busy': 'Une traduction est en cours : la mise à jour se fera quand elle sera finie.',
   'settings.about.text':
     'WebTrad est open source et gratuit. OCR : Tesseract.js. Aucun serveur : vos chapitres restent dans votre navigateur.',
 
@@ -666,6 +674,14 @@ const en: Record<MessageKey, string> = {
   'log.count': '{n} entr(ies) shown of {total}',
   'log.empty': 'Nothing in the log yet.',
   'settings.about': 'About',
+  'update.version': 'Version',
+  'update.check': 'Check for updates',
+  'update.install': 'Install now',
+  'update.none': 'The app is up to date.',
+  'update.ready': 'New version downloaded.',
+  'update.reinstall': 'New version: it needs the app to be reinstalled with Sideloadly.',
+  'update.error': 'Could not check (network?).',
+  'update.busy': 'A translation is running: the update will happen once it is done.',
   'settings.about.text':
     'WebTrad is free and open source. OCR: Tesseract.js. No server: your chapters stay in your browser.',
 
