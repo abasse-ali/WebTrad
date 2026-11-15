@@ -240,6 +240,8 @@ async function visionPage(
   const found: Found[] = [];
   const inRegion = (x: number, y: number) =>
     regions.find((r) => x * scale >= r.x && x * scale <= r.x + r.w && y * scale >= r.y && y * scale <= r.y + r.h);
+  // Blocks of lettering found on the page itself (page pixels).
+  const pageBlocks = findTextBlocks(px).map((b) => ({ x: b.x / scale, y: b.y / scale, w: b.w / scale, h: b.h / scale }));
   const inkOf = new Map<(typeof regions)[number], boolean>();
   const withInk = (r: (typeof regions)[number]) => {
     if (!inkOf.has(r)) inkOf.set(r, maskedCrop(px, r).ink !== null);
@@ -287,7 +289,14 @@ async function visionPage(
     const dialogue = results[i].bubbles
       .filter((f) => f.translation.trim() && !isDrawnEffect(f.text) && !isWatermark(f.text))
       .map((f) => rawBox(f.box));
-    const mapping = alignToBubbles(dialogue, sliceBubbles);
+    // The places where texts really are: the bubbles, and the blocks of
+    // lettering (a little enlarged: a model's box is never tight). A box
+    // already on letters counts as well placed, so a page of correct boxes
+    // is never stretched away.
+    const sliceBlocks = pageBlocks
+      .filter((b) => b.y + b.h / 2 >= top && b.y + b.h / 2 < top + h)
+      .map((b) => ({ x: b.x - b.w * 0.3, y: b.y - b.h * 0.6, w: b.w * 1.6, h: b.h * 2.2 }));
+    const mapping = alignToBubbles(dialogue, [...sliceBubbles, ...sliceBlocks]);
     if (mapping.a !== 1 || mapping.b !== 0) {
       logInfo('ocr', `Cadres de l’IA replacés sur les bulles (échelle ${mapping.a.toFixed(2)}, décalage ${Math.round(mapping.b)} px)`, {
         morceau: i + 1,
@@ -334,6 +343,12 @@ async function visionPage(
       const dx = shiftX(box.x + box.w / 2);
       box.y = Math.min(H - box.h, Math.max(0, box.y + dy));
       box.x = Math.min(W - box.w, Math.max(0, box.x + dx));
+      // A box wider than the page (it happens) is kept within it.
+      if (box.x < 0 || box.x + box.w > W) {
+        const x0 = Math.max(0, box.x);
+        box.w = Math.min(W, box.x + box.w) - x0;
+        box.x = x0;
+      }
       const cy = box.y + box.h / 2;
       if (cy < ownTop || cy >= ownBottom) continue;
       let region = inRegion(box.x + box.w / 2, cy);
@@ -353,7 +368,7 @@ async function visionPage(
   // Lettering found on the page itself. A box that lies on no lettering
   // (the model placed it wrong, sometimes a bubble's height away) takes the
   // nearest block of lettering that no other box has, in reading order.
-  const blocks = findTextBlocks(px).map((b) => ({ x: b.x / scale, y: b.y / scale, w: b.w / scale, h: b.h / scale }));
+  const blocks = pageBlocks;
   const grow = (b: Box, k: number): Box => ({ x: b.x - b.w * k, y: b.y - b.h * k, w: b.w * (1 + 2 * k), h: b.h * (1 + 2 * k) });
   const inside = (b: Box, x: number, y: number) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
   const taken = new Set<number>();
@@ -361,10 +376,21 @@ async function visionPage(
   for (const t of found) {
     const cx = t.box.x + t.box.w / 2;
     const cy = t.box.y + t.box.h / 2;
-    const hit = blocks.findIndex((b, j) => !taken.has(j) && inside(grow(b, 0.4), cx, cy));
+    let hit = blocks.findIndex((b, j) => !taken.has(j) && inside(grow(b, 0.4), cx, cy));
+    // A box much bigger than its letters (the model often frames a whole
+    // bubble, or more): the block of lettering lying mostly inside it.
+    if (hit < 0) hit = blocks.findIndex((b, j) => !taken.has(j) && overlapShare(b, t.box) > 0.6);
     if (hit >= 0) {
       taken.add(hit);
       t.block = blocks[hit];
+      // Outside any recognised bubble the box itself was used to erase and
+      // to letter: the translation landed where the model drew its box
+      // (above the bubble, over the drawing), not on the letters. It now
+      // takes the place of the letters found.
+      if (!t.region) {
+        t.box = { ...blocks[hit] };
+        t.region = inRegion(t.box.x + t.box.w / 2, t.box.y + t.box.h / 2);
+      }
     }
     // In a bubble that holds lettering: in place, even if its letters are too small to be found as a block.
     else if (!t.region) {
@@ -384,7 +410,7 @@ async function visionPage(
       const d = Math.abs(by - cy);
       const overlapX = Math.min(b.x + b.w, t.box.x + t.box.w + W * 0.15) - Math.max(b.x, t.box.x - W * 0.15);
       // Reading order kept; within about half a page width; side by side; a block about as wide as the text read.
-      if (by < lastY || d > W * 0.6 || overlapX <= 0 || b.w < t.box.w * 0.45 || b.w > t.box.w * 2.2) continue;
+      if (by < lastY || d > W * 0.6 || overlapX <= 0 || b.w < t.box.w * 0.3 || b.w > t.box.w * 2.2) continue;
       if (d < bestD) {
         bestD = d;
         best = j;
