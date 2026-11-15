@@ -195,7 +195,8 @@ export function NewChapter({ initialUrl, handoff }: { initialUrl?: string; hando
     setBusy(t('common.loading'));
     setError(null);
     try {
-      updateSettings({ sourceLang: source, targetLang: target });
+      // Only the target is remembered: the source stays on automatic detection.
+      updateSettings({ targetLang: target });
       const chapter = await createChapter({
         title: title || guessTitle(images[0].name),
         images,

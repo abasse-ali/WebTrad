@@ -120,6 +120,33 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
         return data
     }
 
+    /// Private browsing: cookies, cache and site storage of the in-app browser
+    /// live in memory only, for as long as the app runs (an anti-bot check is
+    /// passed once per session), and nothing is written to the phone.
+    static let privateStore: WKWebsiteDataStore = WKWebsiteDataStore.nonPersistent()
+    private static var cleanedOldData = false
+
+    override public func load() {
+        super.load()
+        Self.forgetOldBrowsing()
+    }
+
+    /// Earlier versions browsed with the persistent store: what websites left
+    /// there (cookies, cache, storage) is deleted. The app's own data (its
+    /// library, served from "localhost") is kept.
+    private static func forgetOldBrowsing() {
+        guard !cleanedOldData else { return }
+        cleanedOldData = true
+        DispatchQueue.main.async {
+            let store = WKWebsiteDataStore.default()
+            let types = WKWebsiteDataStore.allWebsiteDataTypes()
+            store.fetchDataRecords(ofTypes: types) { records in
+                let sites = records.filter { !["localhost", "127.0.0.1", ""].contains($0.displayName) }
+                if !sites.isEmpty { store.removeData(ofTypes: types, for: sites) {} }
+            }
+        }
+    }
+
     /// User agent of the in-app browser, sent with the image downloads.
     private var userAgent: String?
 
@@ -167,7 +194,7 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         // The cookies of the in-app browser (Cloudflare clearance included) go with the requests.
         DispatchQueue.main.async {
-            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+            Self.privateStore.httpCookieStore.getAllCookies { cookies in
                 Task {
                     let result = await self.fetchAll(urls: urls, referer: referer, cookies: cookies)
                     call.resolve(result)
@@ -175,6 +202,9 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
             }
         }
     }
+
+    /// Downloads keep nothing either: no shared cookie jar, no disk cache.
+    private static let downloads = URLSession(configuration: .ephemeral)
 
     private func fetchAll(urls: [URL], referer: String?, cookies: [HTTPCookie]) async -> [String: Any] {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("webtrad-import", isDirectory: true)
@@ -226,7 +256,7 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
             request.setValue(value, forHTTPHeaderField: name)
         }
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await Self.downloads.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else { return nil }
             let mime = http.mimeType ?? ""
             if !mime.hasPrefix("image/") && mime != "application/octet-stream" && mime != "binary/octet-stream" { return nil }
@@ -292,8 +322,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         view.backgroundColor = .systemBackground
 
         let configuration = WKWebViewConfiguration()
-        // Persistent: a website's anti-bot check is passed once, not on every visit.
-        configuration.websiteDataStore = .default()
+        // Private browsing: nothing kept on the phone once the app is closed.
+        configuration.websiteDataStore = WebTradBrowserPlugin.privateStore
         configuration.allowsInlineMediaPlayback = true
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
