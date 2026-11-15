@@ -722,7 +722,29 @@ async function visionPage(
       patchBox: look.patchBox,
     });
   }
-  return bubbles;
+  return evenCutText(bubbles, H);
+}
+
+/** Median lettering size of the texts not cut by the page edge (undefined if none). */
+function usualFontSize(bubbles: Bubble[], H: number): number | undefined {
+  const sizes = bubbles
+    .filter((b) => b.y > H * 0.01 && b.y + b.h < H * 0.99 && b.fontSize)
+    .map((b) => b.fontSize!)
+    .sort((a, b) => a - b);
+  return sizes.length ? sizes[Math.floor(sizes.length / 2)] : undefined;
+}
+
+/**
+ * A line cut by the page edge measures half its height: its translation
+ * came out in tiny letters. Such texts take the usual size of the page.
+ */
+export function evenCutText(bubbles: Bubble[], H: number): Bubble[] {
+  const usual = usualFontSize(bubbles, H);
+  if (!usual) return bubbles;
+  return bubbles.map((b) => {
+    const cut = b.y <= H * 0.01 || b.y + b.h >= H * 0.99;
+    return cut && b.fontSize && b.fontSize < usual * 0.75 ? { ...b, fontSize: usual } : b;
+  });
 }
 
 /**
@@ -842,9 +864,15 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
       const padY = (bottom - top) * 0.1;
       const area: Box = { x: left + padX, y: top + padY, w: right - left - padX * 2, h: bottom - top - padY * 2 };
       const fill = regionFill(bottomPx, a);
+      // Letters measured on both halves; a line cut by the break measures
+      // only its top or bottom: then the usual size of the page is taken.
       const upperInk = maskedCrop(bottomPx, a).ink;
-      const letters = upperInk ? letterHeight(bottomPx, upperInk, a.tinted) : 0;
-      const fontSize = letters > 0 ? Math.max(8, Math.min(60, letters / LETTERS_TO_FONT)) : W * 0.026;
+      const lowerInk = maskedCrop(topPx, b).ink;
+      const letters = Math.max(upperInk ? letterHeight(bottomPx, upperInk, a.tinted) : 0, lowerInk ? letterHeight(topPx, lowerInk, b.tinted) : 0);
+      const lineCut = (upperInk && upperInk.y + upperInk.h >= stripH - 3) || (lowerInk && lowerInk.y <= 2);
+      const usual = usualFontSize(bubbles, H);
+      let fontSize = letters > 0 ? Math.max(8, Math.min(60, letters / LETTERS_TO_FONT)) : (usual ?? W * 0.026);
+      if (usual && (lineCut || fontSize < usual * 0.6)) fontSize = Math.max(fontSize, usual);
       const half = (px: typeof bottomPx, r: typeof a, dy: number): Pick<Bubble, 'x' | 'y' | 'w' | 'h' | 'patch' | 'patchBox'> => {
         const ink = maskedCrop(px, r).ink;
         if (!ink) return { x: r.x + r.w / 2, y: dy + r.y + r.h / 2, w: 1, h: 1 };
