@@ -484,9 +484,14 @@ export async function visionPage(
     if (b.h > W * 0.25 || b.w < W * 0.05) return false;
     const cx = b.x + b.w / 2;
     const cy = b.y + b.h / 2;
-    // Close to a text read is that text (a box drawn a little off); a bubble
-    // beside it, touching it, is not (its text was left untranslated).
-    if (seen.some((t) => overlapShare(b, t) > 0.35 || (cx >= t.x - t.w * 0.15 && cx <= t.x + t.w * 1.15 && cy >= t.y - t.h * 0.25 && cy <= t.y + t.h * 1.25))) return false;
+    // Close to a text read is that text (a box drawn a little off): read
+    // again, a page took a minute more for nothing. Unless the lettering
+    // lies in another bubble than the text read, touching it: that one was
+    // left untranslated.
+    const own = inRegion(cx, cy);
+    const near = (t: Box) => cx >= t.x - t.w * 0.3 && cx <= t.x + t.w * 1.3 && cy >= t.y - t.h * 0.5 && cy <= t.y + t.h * 1.5;
+    const otherBubble = (t: Box) => own !== undefined && inRegion(t.x + t.w / 2, t.y + t.h / 2) !== own;
+    if (seen.some((t) => overlapShare(b, t) > 0.2 || (near(t) && !otherBubble(t)))) return false;
     const seed = { x: b.x * scale, y: b.y * scale, w: b.w * scale, h: b.h * scale };
     if (!printedInk(seed)) return false;
     const r = inRegion(cx, cy);
