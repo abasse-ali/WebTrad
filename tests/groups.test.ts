@@ -17,3 +17,21 @@ describe('pageGroups', () => {
     expect(pageGroups([page(0, 800, 900), page(2, 800, 900)]).length).toBe(2);
   });
 });
+
+describe('withRetries and requests left unanswered', () => {
+  it('sends an unanswered image once more at most, and not at all for pages read together', async () => {
+    const { withRetries } = await import('../src/lib/pipeline');
+    const { TranslateError } = await import('../src/lib/translate/types');
+    let calls = 0;
+    const hang = async () => {
+      calls++;
+      throw new TranslateError('AI endpoint unreachable (no complete answer after 90 s).', 'llm', true);
+    };
+    const signal = new AbortController().signal;
+    await expect(withRetries(hang, signal, [0, 0], 0)).rejects.toThrow(/no complete answer/);
+    expect(calls).toBe(1);
+    calls = 0;
+    await expect(withRetries(hang, signal, [0, 0], 1)).rejects.toThrow(/no complete answer/);
+    expect(calls).toBe(2);
+  });
+});

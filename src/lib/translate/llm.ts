@@ -187,7 +187,16 @@ export function learnLimit(host: string, said?: number): void {
   // provider is still holding the earlier excess against us, not counting
   // these few requests. The limit stays (it sank to 8 a minute and stayed there).
   const learnt = learntLimit.get(host);
-  if (!said && learnt && seen < limitFor(host, now)!) return;
+  if (!said && learnt && seen < limitFor(host, now)!) {
+    // Refused though spaced under the limit learnt: the provider allows
+    // less (about 6 a minute for some keys, refused every minute at 8).
+    // One less each time, not down to the few requests seen right after a
+    // pause (the provider may still count the earlier ones).
+    const current = limitFor(host, now)!;
+    const lower = Math.max(5, current - 1);
+    learntLimit.set(host, { limit: lower, at: now, refusedAt: current });
+    return;
+  }
   const current = limitFor(host, now) ?? Infinity;
   const limit = said && said < 1000 ? said : Math.max(8, Math.min(Math.floor(seen * 0.8), current - 2));
   learntLimit.set(host, { limit: Math.min(current, limit), at: now, refusedAt: current });
@@ -207,8 +216,12 @@ async function waitForCooldown(host: string, signal?: AbortSignal): Promise<void
   });
 }
 
-/** Longest wait for one complete answer of the provider. */
-const REQUEST_DEADLINE_MS = 180_000;
+/**
+ * Longest wait for one complete answer of the provider. Answers take 2 to
+ * 30 s (a page, a chapter's proofreading); one not there after 90 s does
+ * not come (NVIDIA once held two requests 3 minutes each, three times over).
+ */
+const REQUEST_DEADLINE_MS = 90_000;
 
 async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
   let res: RawResponse;
@@ -619,14 +632,17 @@ export async function proofreadTexts(
 /** A proofread line, kept only when it is a correction, not a new line. */
 export function acceptedFix(before: string, after: string): string | undefined {
   let text = after.replace(/\s+/g, ' ').trim();
-  if (!text || text === before.trim()) return undefined;
+  // The same words with the line breaks taken out is no correction (it was
+  // logged as one, and the lines of the lettering were lost).
+  const flat = before.replace(/\s+/g, ' ').trim();
+  if (!text || text === flat) return undefined;
   // About the same length: a fix, not a rewrite (nor a line run into the next one).
   const ratio = text.length / Math.max(1, before.trim().length);
   if (ratio < 0.6 || ratio > 1.6) return undefined;
   // Lettering in capitals stays in capitals.
   const letters = before.replace(/[^\p{L}]/gu, '');
   if (letters.length > 1 && letters === letters.toLocaleUpperCase()) text = text.toLocaleUpperCase();
-  return text === before.trim() ? undefined : text;
+  return text === flat ? undefined : text;
 }
 
 // --- AI vision: read + translate a page image in a single request -----------

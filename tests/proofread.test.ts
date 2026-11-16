@@ -10,5 +10,7 @@ describe('acceptedFix', () => {
     expect(acceptedFix('Arrête !', 'Arrête tout de suite, je ne le répéterai pas !')).toBeUndefined();
     expect(acceptedFix('Arrête !', '')).toBeUndefined();
     expect(acceptedFix('ARRÊTE !', 'Arrête !')).toBeUndefined();
+    expect(acceptedFix('BON\nTIMING.', 'BON TIMING.')).toBeUndefined();
+    expect(acceptedFix('ARGUE ! ELLE\nVEUT PAS', 'ARGH ! ELLE VEUT PAS')).toBe('ARGH ! ELLE VEUT PAS');
   });
 });
