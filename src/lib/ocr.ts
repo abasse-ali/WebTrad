@@ -338,12 +338,6 @@ export function lettersLeft(px: Pixels, repaired: Pixels, area: Box, box: Box, b
   return worst;
 }
 
-/** How far a colour is from a #rrggbb one (sum of the channels). */
-function colorDistanceOf(c: readonly number[], hex: string): number {
-  const [r, g, b] = parseHex(hex);
-  return Math.abs(c[0] - r) + Math.abs(c[1] - g) + Math.abs(c[2] - b);
-}
-
 /** Share of the pixels of two crops of the same size that clearly differ. */
 function differs(a: Pixels, b: Pixels): number {
   let n = 0;
@@ -424,8 +418,7 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
    * of hair.
    */
   const onLetters = (smooth: Pixels): Pixels | null => {
-    const inkTone = [...ink.tones].sort((a, b) => colorDistanceOf(b, bg.fill) - colorDistanceOf(a, bg.fill))[0];
-    const mask = toneMask(px, area, inkTone, Math.max(2, Math.round(fontSize * scale * 0.22)), within);
+    const mask = toneMask(px, area, ink.tones, Math.max(2, Math.round(fontSize * scale * 0.15)), within);
     if (!mask) return null;
     const blended = new Uint8ClampedArray(smooth.data);
     for (let p = 0; p < mask.length; p++) {
@@ -463,7 +456,7 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     // rebuilt from around is then cleaner.
     if (repaired && left <= 0.2) {
       const smooth = smoothFill(px, area, within);
-      if (smooth && smooth.grain < 6 && differs(repaired, smooth) > 0.06) repaired = onLetters(smooth) ?? smooth;
+      if (smooth && smooth.texture < 6 && differs(repaired, smooth) > 0.06) repaired = onLetters(smooth) ?? smooth;
     }
     if (left > 0.2) {
       const lines = scaled.h / Math.max(1, fontSize * scale * 1.2);

@@ -603,7 +603,10 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     // longer than English): the bubble is drawn again a little bigger, up to
     // a quarter, with its outline, and the text takes the room gained.
     let outline: number[] | undefined;
-    const wanted = maxSize * 0.8;
+    // Only when the French would be clearly smaller than the original
+    // letters (a bubble drawn again for a few per cent hid its tail and
+    // looked redrawn for nothing).
+    const wanted = Math.min(maxSize * 0.8, original * scale * 0.85);
     if (best && bestSize < wanted && b.seam === undefined && b.shape.whole && b.shape.inset !== undefined && growable(b.shape, b)) {
       for (const k of [1.08, 1.16, 1.25]) {
         const g = grownShape(b.shape, k, page);
