@@ -2,10 +2,13 @@ name: iPhone app
 
 # Builds the iPhone app on a GitHub Mac. The .ipa is not signed: it is signed
 # on install with the owner's free Apple ID (Sideloadly / AltStore, see README).
+# Built only where it is published (the default branch): builds of the
+# working branches and of pull requests were cancelled by the next push and
+# mailed the owner a "Run failed" for nothing.
 on:
   push:
+    branches: [claude/opentoon-web-app-free-55k898]
     paths-ignore: ['**.md']
-  pull_request:
   workflow_dispatch:
 
 permissions:
