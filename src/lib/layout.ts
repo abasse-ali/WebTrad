@@ -382,14 +382,16 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   if (!text || b.hidden) return null;
   // Only OCR measures the line box itself; AI boxes include the line spacing.
   const capsSource = b.confidence !== undefined && isAllCaps(b.original);
-  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, b.outlineColor, b.slant, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length, b.shape?.y, b.shape?.x.length, b.roomy]);
+  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, b.outlineColor, b.slant, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length, b.shape?.y, b.shape?.x.length, b.roomy, b.caps]);
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
   const target = targetLanguage(opts.target);
   const font = FONTS[opts.font] ?? FONTS.comic;
   // Same case as the source: scanlations lettered in capitals stay in capitals.
-  const upper = opts.letterCase === 'upper' || (opts.letterCase === 'original' && isAllCaps(b.original));
+  // A short cry ("I…", "UM…") on a page lettered in capitals is in capitals
+  // too (it came out "Je…", "Euh…" beside the capitals of the page).
+  const upper = opts.letterCase === 'upper' || (opts.letterCase === 'original' && (b.caps || isAllCaps(b.original)));
   const display = upper && !target.noSpaces ? text.toLocaleUpperCase(opts.target) : text;
   const fill = b.fill ?? '#ffffff';
   const original = Math.max(8, b.fontSize ?? 22);

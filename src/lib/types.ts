@@ -55,6 +55,8 @@ export interface Bubble {
   slant?: number;
   /** Lettering on the artwork with plain paper around: its translation may take more room. */
   roomy?: boolean;
+  /** In a bubble of a page lettered in capitals: its translation is too, however short its original. */
+  caps?: boolean;
   /** Colour of the outline around the letters, when the original has one of its own. */
   outlineColor?: string;
   /**
@@ -129,6 +131,12 @@ export interface LlmSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /**
+   * Model that proofreads the translations (text only). Empty: the
+   * provider's recommended model, stronger in French than a small vision
+   * model chosen for speed.
+   */
+  proofModel?: string;
   /**
    * What was set for each provider (key, model, address), remembered when
    * switching to another one: going back to NVIDIA or OpenRouter restores
