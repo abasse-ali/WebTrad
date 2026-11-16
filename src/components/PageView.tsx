@@ -79,7 +79,7 @@ function TranslatedLayer({
                 background: l.patch ? `center / 100% 100% no-repeat url("${l.patch}")` : l.fill,
                 borderRadius: cq(l.radius),
                 transform: l.eraseRotation ? `rotate(${l.eraseRotation}deg)` : undefined,
-                boxShadow: l.eraseRotation ? `0 0 ${cq(l.fontSize * 0.5)} ${cq(l.fontSize * 0.2)} ${l.fill}` : undefined,
+                boxShadow: l.eraseRotation || l.softErase ? `0 0 ${cq(l.fontSize * 0.5)} ${cq(l.fontSize * 0.2)} ${l.fill}` : undefined,
               }}
             />
             <div className="tb-text" dir={l.rtl ? 'rtl' : 'ltr'} style={textStyle}>
