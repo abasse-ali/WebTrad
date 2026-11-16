@@ -2,7 +2,7 @@ import { memo, useRef, useState, type CSSProperties, type PointerEvent as ReactP
 import type { MessageKey, Translate } from '../i18n';
 import { useNearViewport } from '../hooks';
 import { INTERRUPTED } from '../lib/db';
-import { LINE_HEIGHT, layoutBubble, outlineColor, type BubbleLayout, type LayoutOptions } from '../lib/layout';
+import { LINE_HEIGHT, layoutBubble, type BubbleLayout, type LayoutOptions } from '../lib/layout';
 import type { Box } from '../lib/text';
 import type { Bubble, Page } from '../lib/types';
 import { Icon } from './Icon';
@@ -10,7 +10,7 @@ import { Icon } from './Icon';
 const pct = (v: number, total: number) => `${(v / total) * 100}%`;
 
 function outlineShadow(l: BubbleLayout, width: number): string {
-  const c = outlineColor(l.color);
+  const c = l.outlineColor;
   const d = `${((l.fontSize * 0.08) / width) * 100}cqw`;
   const n = `calc(-1 * ${d})`;
   return [`${d} 0`, `${n} 0`, `0 ${d}`, `0 ${n}`, `${d} ${d}`, `${n} ${n}`, `${d} ${n}`, `${n} ${d}`]
@@ -53,7 +53,9 @@ function TranslatedLayer({
           textShadow: l.outline ? outlineShadow(l, W) : undefined,
           alignItems: l.align === 'left' ? 'flex-start' : l.align === 'right' ? 'flex-end' : 'center',
           textAlign: l.align,
-          transform: l.rotation ? `rotate(${l.rotation}deg)` : undefined,
+          transform:
+            [l.rotation ? `rotate(${l.rotation}deg)` : '', l.slant ? `skewX(${(-Math.atan(l.slant) * 180) / Math.PI}deg)` : ''].filter(Boolean).join(' ') ||
+            undefined,
         };
         return (
           <div
@@ -76,6 +78,8 @@ function TranslatedLayer({
                 height: pct(l.erase.h, H),
                 background: l.patch ? `center / 100% 100% no-repeat url("${l.patch}")` : l.fill,
                 borderRadius: cq(l.radius),
+                transform: l.eraseRotation ? `rotate(${l.eraseRotation}deg)` : undefined,
+                boxShadow: l.eraseRotation ? `0 0 ${cq(l.fontSize * 0.5)} ${cq(l.fontSize * 0.2)} ${l.fill}` : undefined,
               }}
             />
             <div className="tb-text" dir={l.rtl ? 'rtl' : 'ltr'} style={textStyle}>

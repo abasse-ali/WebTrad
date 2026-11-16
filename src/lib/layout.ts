@@ -34,6 +34,12 @@ export interface BubbleLayout {
   rtl: boolean;
   /** Tilt in degrees, clockwise, around the centre of `area`. */
   rotation: number;
+  /** Lean of italic letters (rightward shift per unit of height). */
+  slant: number;
+  /** Colour of the stroke around outlined letters. */
+  outlineColor: string;
+  /** Turn of the plain band hiding tilted lettering on the artwork (degrees), drawn with soft edges. */
+  eraseRotation?: number;
   align: 'left' | 'center' | 'right';
   /** Repaired artwork drawn over `erase` instead of a flat colour. */
   patch?: string;
@@ -197,7 +203,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   if (!text || b.hidden) return null;
   // Only OCR measures the line box itself; AI boxes include the line spacing.
   const capsSource = b.confidence !== undefined && isAllCaps(b.original);
-  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length]);
+  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, b.outlineColor, b.slant, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length]);
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
@@ -230,6 +236,25 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     erase = b.patchBox;
     radius = 0;
   }
+  // Tilted lettering on the artwork: the box holds the tilted lines; the
+  // translation is set in the lines' own frame, as long and as tall as they
+  // are, then turned like them.
+  if (!b.area && b.rotation && Math.abs(b.rotation) <= 35) {
+    const t = (Math.abs(b.rotation) * Math.PI) / 180;
+    const cos = Math.cos(t);
+    const sin = Math.sin(t);
+    const d = cos * cos - sin * sin;
+    const w = Math.max(area.w * 0.5, (area.w * cos - area.h * sin) / d);
+    const h = Math.max(original * 1.6, (area.h * cos - area.w * sin) / d);
+    area = { x: area.x + area.w / 2 - w / 2, y: area.y + area.h / 2 - h / 2, w, h };
+    // Without repaired artwork, the plain band follows the lines instead of
+    // covering the whole upright box (and the drawing around it).
+    if (!b.patch) {
+      const pad = original * 0.35;
+      erase = { x: area.x - pad, y: area.y - pad, w: area.w + pad * 2, h: area.h + pad * 2 };
+      radius = original * 0.6;
+    }
+  }
   // Vertical source text (manga) leaves a tall, narrow box: widen it a bit.
   if (!b.area && b.vertical && area.w < area.h * 0.6) {
     const w = Math.min(area.h * 0.6, page.width);
@@ -245,7 +270,10 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   };
   const scale = b.fontScale ?? 1;
   // Latin letters look smaller than CJK ones at the same pixel size.
-  const maxSize = Math.max(8, original * (capsSource ? SIZE_RATIO_CAPS : SIZE_RATIO) * scale);
+  // Lettering on the artwork keeps its size: a short translation of a
+  // small handwritten line grew to fill its box and looked shouted.
+  const ratio = b.area ? (capsSource ? SIZE_RATIO_CAPS : SIZE_RATIO) : 1.05;
+  const maxSize = Math.max(8, original * ratio * scale);
   const minSize = Math.max(6, Math.min(original * 0.4, 12));
   let size = minSize;
   let lines = wrapText(display, inner.w, measureAt(minSize), opts.target, Boolean(target.noSpaces));
@@ -274,6 +302,9 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     fill,
     color: b.color ?? contrastColor(fill),
     rotation: b.rotation ?? 0,
+    slant: b.slant ?? 0,
+    outlineColor: b.outlineColor ?? outlineColor(b.color ?? contrastColor(fill)),
+    eraseRotation: !b.area && !b.patch && b.rotation && Math.abs(b.rotation) <= 35 ? b.rotation : undefined,
     align: b.align ?? 'center',
     patch: b.patch && b.patchBox ? b.patch : undefined,
     outline: Boolean(b.outline),
@@ -319,9 +350,20 @@ export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]
       c.drawImage(patch, l.erase.x, l.erase.y, l.erase.w, l.erase.h);
       continue;
     }
+    c.save();
     c.fillStyle = l.fill;
+    if (l.eraseRotation) {
+      const cx = l.erase.x + l.erase.w / 2;
+      const cy = l.erase.y + l.erase.h / 2;
+      c.translate(cx, cy);
+      c.rotate((l.eraseRotation * Math.PI) / 180);
+      c.translate(-cx, -cy);
+      c.shadowColor = l.fill;
+      c.shadowBlur = l.fontSize * 0.6;
+    }
     roundRect(c, l.erase, l.radius);
     c.fill();
+    c.restore();
   }
   for (const l of layouts) {
     c.save();
@@ -335,13 +377,15 @@ export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]
     const cy = l.area.y + l.area.h / 2;
     c.translate(cx, cy);
     if (l.rotation) c.rotate((l.rotation * Math.PI) / 180);
+    // Italic lean: the top of the letters goes right.
+    if (l.slant) c.transform(1, 0, -l.slant, 1, 0, 0);
     const x = l.align === 'left' ? -l.area.w / 2 + l.padding : l.align === 'right' ? l.area.w / 2 - l.padding : 0;
     let y = -total / 2 + lh / 2;
     for (const line of l.lines) {
       if (l.outline) {
         c.lineJoin = 'round';
         c.lineWidth = Math.max(2, l.fontSize * 0.18);
-        c.strokeStyle = outlineColor(l.color);
+        c.strokeStyle = l.outlineColor;
         c.strokeText(line, x, y);
       }
       c.fillStyle = l.color;

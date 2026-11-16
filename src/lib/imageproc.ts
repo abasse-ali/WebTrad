@@ -922,6 +922,112 @@ export function textSkew(px: Pixels, region: BubbleRegion, maxAngle = 25): numbe
 }
 
 /**
+ * Letter edges of a box (strong horizontal steps of brightness), whatever
+ * the colours of the letters: points of the strokes of dark, light or
+ * outlined lettering drawn on the artwork.
+ */
+function strokePoints(px: Pixels, box: Box, across = false): { xs: number[]; ys: number[] } {
+  const { data, width: W, height: H } = px;
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const x1 = Math.min(W - 1, Math.round(box.x + box.w));
+  const y1 = Math.min(H, Math.round(box.y + box.h));
+  const step = Math.max(1, Math.round(Math.sqrt(((x1 - x0) * (y1 - y0)) / 30000)));
+  const xs: number[] = [];
+  const ys: number[] = [];
+  // `across`: steps between a pixel and the one below (the tops and feet of
+  // letters, which line up along the lines), else the one beside (the sides
+  // of strokes, which lean with italic letters).
+  const next = across ? W * 4 : 4;
+  for (let y = y0; y < y1 - (across ? 1 : 0); y += step) {
+    const row: number[] = [];
+    for (let x = x0; x < x1 - 1; x += step) {
+      const i = (y * W + x) * 4;
+      if (Math.abs(luminance(data, i) - luminance(data, i + next)) > 60) row.push(x - x0);
+    }
+    // A straight line across the box (the border of a panel) is no letter.
+    if (across && row.length * step > (x1 - x0) * 0.5) continue;
+    for (const x of row) {
+      xs.push(x);
+      ys.push(y - y0);
+    }
+  }
+  return { xs, ys };
+}
+
+/**
+ * Tilt of lettering drawn on the artwork (degrees, clockwise), from the
+ * angle at which its strokes line up best in rows. 0 when unsure.
+ */
+export function boxSkew(px: Pixels, box: Box, maxAngle = 20): number {
+  const { xs, ys } = strokePoints(px, box, true);
+  if (xs.length < 60) return 0;
+  const diag = Math.ceil(Math.hypot(box.w, box.h)) + 2;
+  const bins = new Float64Array(diag * 2);
+  const scoreAt = (a: number) => {
+    const t = (a * Math.PI) / 180;
+    const sin = Math.sin(t);
+    const cos = Math.cos(t);
+    bins.fill(0);
+    for (let i = 0; i < xs.length; i++) bins[Math.round(-xs[i] * sin + ys[i] * cos) + diag]++;
+    let score = 0;
+    for (let i = 0; i < bins.length; i++) score += bins[i] * bins[i];
+    return score;
+  };
+  const flat = scoreAt(0);
+  let best = 0;
+  let bestScore = flat;
+  for (let a = -maxAngle; a <= maxAngle; a += 1) {
+    const sc = scoreAt(a);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = a;
+    }
+  }
+  // Only a clear tilt: lettering set level stays level.
+  return Math.abs(best) >= 3 && bestScore > flat * 1.12 ? best : 0;
+}
+
+/**
+ * Slant of lettering drawn on the artwork (italic, handwriting): how far a
+ * stroke leans right per pixel of height, from the shear that stands its
+ * strokes up straightest. 0 when the letters stand upright.
+ */
+export function boxSlant(px: Pixels, box: Box, rotation = 0): number {
+  const { xs, ys } = strokePoints(px, box);
+  if (xs.length < 60) return 0;
+  // In the frame of the tilted lines.
+  const t = (-rotation * Math.PI) / 180;
+  const cos = Math.cos(t);
+  const sin = Math.sin(t);
+  const cx = box.w / 2;
+  const cy = box.h / 2;
+  const u = xs.map((x, i) => (x - cx) * cos - (ys[i] - cy) * sin);
+  const v = xs.map((x, i) => (x - cx) * sin + (ys[i] - cy) * cos);
+  const span = Math.ceil(Math.hypot(box.w, box.h)) + 2;
+  const bins = new Float64Array(span * 2);
+  const scoreAt = (k: number) => {
+    bins.fill(0);
+    // Leaning right: the top of a stroke sits further right; undone by x + k·y.
+    for (let i = 0; i < u.length; i++) bins[Math.round(u[i] + k * v[i]) + span]++;
+    let score = 0;
+    for (let i = 0; i < bins.length; i++) score += bins[i] * bins[i];
+    return score;
+  };
+  const upright = scoreAt(0);
+  let best = 0;
+  let bestScore = upright;
+  for (let k = -0.2; k <= 0.5001; k += 0.025) {
+    const sc = scoreAt(k);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = k;
+    }
+  }
+  return Math.abs(best) >= 0.12 && bestScore > upright * 1.03 ? Math.round(best * 100) / 100 : 0;
+}
+
+/**
  * Colour inside a bubble, away from its rim and its text: the median of the
  * region's own pixels. Sampling around the text box instead picked the grey
  * of a grainy rim whenever the text came close to it.

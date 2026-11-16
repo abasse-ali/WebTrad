@@ -147,3 +147,37 @@ describe('lettersLeft', () => {
     expect(lettersLeft(px, { width: W, height: H, data: new Uint8ClampedArray(W * H * 4).fill(128) }, area, area, 20)).toBe(0);
   });
 });
+
+describe('style of lettering on the artwork', () => {
+  // Fake letters: bars 14 px tall, 3 px wide, 8 px apart, on three lines.
+  const draw = (angle: number, lean: number) => {
+    const W = 400;
+    const H = 300;
+    const data = new Uint8ClampedArray(W * H * 4).fill(150);
+    const t = (angle * Math.PI) / 180;
+    for (let line = 0; line < 3; line++)
+      for (let k = 0; k < 24; k++)
+        for (let dy = 0; dy < 14; dy++)
+          for (let dx = 0; dx < 3; dx++) {
+            // In the lines' frame: u along the line, v down; leaning letters shift right going up.
+            const u = -96 + k * 8 + dx + lean * (14 - dy);
+            const v = -40 + line * 30 + dy;
+            const x = Math.round(200 + u * Math.cos(t) - v * Math.sin(t));
+            const y = Math.round(150 + u * Math.sin(t) + v * Math.cos(t));
+            data.fill(20, (y * W + x) * 4, (y * W + x) * 4 + 3);
+          }
+    return { width: W, height: H, data };
+  };
+  it('finds the tilt of slanted lines, and none for level ones', async () => {
+    const { boxSkew } = await import('../src/lib/imageproc');
+    const box = { x: 60, y: 40, w: 280, h: 220 };
+    expect(Math.abs(boxSkew(draw(-15, 0), box) + 15)).toBeLessThanOrEqual(2);
+    expect(boxSkew(draw(0, 0), box)).toBe(0);
+  });
+  it('finds italic letters, and none for upright ones', async () => {
+    const { boxSlant } = await import('../src/lib/imageproc');
+    const box = { x: 60, y: 40, w: 280, h: 220 };
+    expect(boxSlant(draw(0, 0.3), box)).toBeGreaterThan(0.2);
+    expect(boxSlant(draw(0, 0), box)).toBe(0);
+  });
+});

@@ -56,6 +56,8 @@ export interface DetectedText {
   patchBox?: Box;
   /** Lettering that could not be taken off the drawing: hidden under a plain band. */
   covered?: boolean;
+  /** Colour of the outline of outlined letters (white letters in black, black in white…). */
+  outlineColor?: string;
 }
 
 type StatusFn = (message: string, progress?: number) => void;
@@ -342,6 +344,8 @@ export interface TextLook {
   patchBox?: Box;
   /** Lettering that could not be taken off the drawing: hidden under a plain band. */
   covered?: boolean;
+  /** Colour of the outline of outlined letters (white letters in black, black in white…). */
+  outlineColor?: string;
 }
 
 /**
@@ -358,6 +362,7 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
   const ink = sampleInk(px, scaled, bg.fill);
   const outlined = !flat && (ink?.tones.length ?? 0) > 1;
   const look: TextLook = { fill: bg.fill, outline: !flat && (outlined || bg.uniformity < 0.6), color: ink?.color };
+  if (outlined && ink) look.outlineColor = '#' + ink.tones[1].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
   if (flat && look.color) {
     // Letters barely different from their background were misjudged: let the
     // renderer pick black or white for the fill instead.
@@ -403,6 +408,11 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     // letters' colours, then hidden under a plain band of the background.
     if (repaired && lettersLeft(px, repaired, area, scaled, line) > 0.35) {
       repaired = inpaintText(px, area, ink.tones, margin, within) ?? repaired;
+    }
+    // Tilted, leaning letters stick out of the band of their lines: the
+    // whole box then.
+    if (repaired && within && lettersLeft(px, repaired, area, scaled, line) > 0.35) {
+      repaired = inpaintText(px, area, ink.tones, margin) ?? repaired;
     }
     if (repaired && lettersLeft(px, repaired, area, scaled, line) > 0.45) {
       look.outline = true;
