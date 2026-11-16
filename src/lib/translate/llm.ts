@@ -117,14 +117,25 @@ const learntLimit = new Map<string, { limit: number; at: number }>();
  * without a new refusal allows two more requests, and past 60 the limit goes.
  */
 function limitFor(host: string, now = Date.now()): number | undefined {
+  const known = knownLimit(host);
   const learnt = learntLimit.get(host);
-  if (!learnt) return undefined;
+  if (!learnt) return known;
   const limit = learnt.limit + 2 * Math.floor((now - learnt.at) / 60_000);
-  if (limit > 60) {
+  if (limit > Math.min(60, known ?? Infinity)) {
     learntLimit.delete(host);
-    return undefined;
+    return known;
   }
   return limit;
+}
+
+/**
+ * Providers whose free limit is known: requests are spaced under it from the
+ * start. NVIDIA allows 40 a minute; going over it once (two pages at a time
+ * answered in 3 s) brought refusals every 20 s for the rest of the chapter.
+ */
+export function knownLimit(host: string): number | undefined {
+  if (/(^|\.)nvidia\.com$/i.test(host)) return 30;
+  return undefined;
 }
 const recentStarts = new Map<string, number[]>();
 
@@ -154,8 +165,13 @@ export async function paceRequest(host: string, signal?: AbortSignal): Promise<v
 /** Remembers the rate a provider refused at (a little under it, never below 8 per minute). */
 export function learnLimit(host: string, said?: number): void {
   const seen = startsInLastMinute(host).length;
-  const limit = said && said < 1000 ? said : Math.max(8, Math.floor(seen * 0.8));
   const now = Date.now();
+  // Refused again right after the pause, well under the limit learnt: the
+  // provider is still holding the earlier excess against us, not counting
+  // these few requests. The limit stays (it sank to 8 a minute and stayed there).
+  const learnt = learntLimit.get(host);
+  if (!said && learnt && seen < limitFor(host, now)!) return;
+  const limit = said && said < 1000 ? said : Math.max(8, Math.floor(seen * 0.8));
   learntLimit.set(host, { limit: Math.min(limitFor(host, now) ?? Infinity, limit), at: now });
 }
 
@@ -426,11 +442,29 @@ export function parseJsonAnswer<T>(answer: string): T {
         }
       }
     }
+    // Quotes left unescaped inside a text ("text":"Dis "salut" !"): the most
+    // common damage; once escaped the whole answer usually reads.
+    const repaired = escapeInnerQuotes(body);
+    if (repaired !== body) {
+      try {
+        return parseJsonAnswer<T>(repaired);
+      } catch {
+        /* salvaged below */
+      }
+    }
     // Cut or damaged answers (free models stop mid-way): keep the complete items.
     const items = salvageItems(body);
-    if (items.length > 0) return { bubbles: items } as T;
+    // Under the name each caller reads (vision: "bubbles", translation: "translations").
+    if (items.length > 0) return { bubbles: items, translations: items } as T;
     throw new TranslateError('AI answer is not valid JSON', 'llm');
   }
+}
+
+/** Escapes the bare quotes inside the "text" and "translation" values of a model's JSON. */
+export function escapeInnerQuotes(body: string): string {
+  return body.replace(/("(?:text|translation)"\s*:\s*")([\s\S]*?)("\s*(?:,\s*"[A-Za-z_]+"\s*:|\}))/g, (_, open: string, value: string, close: string) =>
+    open + value.replace(/\\?"/g, '\\"') + close,
+  );
 }
 
 /** The well-formed objects that carry a "translation" in a damaged JSON answer. */
@@ -450,7 +484,7 @@ export function salvageItems(body: string): unknown[] {
     else if (ch === '}' && stack.length > 0) {
       const from = stack.pop()!;
       const chunk = body.slice(from, i + 1);
-      if (!/"translation"\s*:/.test(chunk)) continue;
+      if (!/"(translation|text)"\s*:/.test(chunk)) continue;
       try {
         const item = JSON.parse(chunk) as { bubbles?: unknown };
         // An item, not the whole answer (which would have been parsed already).
