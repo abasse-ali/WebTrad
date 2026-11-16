@@ -741,6 +741,29 @@ export function Reader({ id }: { id: string }) {
         </div>
       )}
 
+      {pages && pages.length > 0 && !editing && !draft && !voiceOn && auto === 'off' && (
+        <div className={`reader-jump ${hidden ? 'hidden' : ''}`} role="group">
+          <button
+            className="icon-btn"
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            aria-label={t('reader.toTop')}
+            title={t('reader.toTop')}
+            tabIndex={hidden ? -1 : 0}
+          >
+            <Icon name="toTop" size={20} />
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' })}
+            aria-label={t('reader.toBottom')}
+            title={t('reader.toBottom')}
+            tabIndex={hidden ? -1 : 0}
+          >
+            <Icon name="toBottom" size={20} />
+          </button>
+        </div>
+      )}
+
       {auto !== 'off' && !editing && !draft && (
         <div className={`auto-bar ${auto === 'play' ? 'playing' : ''}`} role="group" aria-label={t('reader.auto.on')}>
           <button className="icon-btn" onClick={() => changeSpeed(-1)} disabled={speed <= 1} aria-label={t('reader.auto.slower')} title={t('reader.auto.slower')}>
