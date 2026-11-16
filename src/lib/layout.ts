@@ -40,6 +40,8 @@ export interface BubbleLayout {
   outlineColor: string;
   /** Turn of the plain band hiding tilted lettering on the artwork (degrees), drawn with soft edges. */
   eraseRotation?: number;
+  /** Plain band over lettering on the artwork (no repaired artwork): drawn with soft edges. */
+  softErase?: boolean;
   /** Shift of each line's centre from the centre of `area` (lines fitted to the bubble's shape). */
   lineX?: number[];
   align: 'left' | 'center' | 'right';
@@ -425,6 +427,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     slant: b.slant ?? 0,
     outlineColor: b.outlineColor ?? outlineColor(b.color ?? contrastColor(fill)),
     lineX,
+    softErase: !b.area && !b.patch && !b.shape ? true : undefined,
     eraseRotation: !b.area && !b.patch && b.rotation && Math.abs(b.rotation) <= 35 ? b.rotation : undefined,
     align: b.align ?? 'center',
     patch: b.patch && b.patchBox ? b.patch : undefined,
@@ -479,6 +482,8 @@ export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]
       c.translate(cx, cy);
       c.rotate((l.eraseRotation * Math.PI) / 180);
       c.translate(-cx, -cy);
+    }
+    if (l.eraseRotation || l.softErase) {
       c.shadowColor = l.fill;
       c.shadowBlur = l.fontSize * 0.6;
     }

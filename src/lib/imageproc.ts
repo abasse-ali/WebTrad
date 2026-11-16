@@ -1119,10 +1119,44 @@ export function growToText(px: Pixels, box: Box): Box {
   };
   const bottom = extend(y1, 1, reach) + 1;
   const top = extend(y0 - 1, -1, reach);
-  if (bottom <= y1 && top >= y0 - 1) return box;
   const ny0 = Math.min(y0, top);
   const ny1 = Math.max(y1, bottom);
-  return { x: box.x, y: ny0, w: box.w, h: ny1 - ny0 };
+  // Then sideways: the ends of lines longer than the box ("US… ALL" left
+  // visible on both sides of the translation). A column belongs to the text
+  // while it holds letter edges; a gap wider than about a letter ends it.
+  const colEdges = (x: number) => {
+    let n = 0;
+    for (let y = ny0; y < ny1; y++) {
+      const i = (y * W + x) * 4;
+      if (Math.abs(luminance(data, i) - luminance(data, i + 4)) > 70) n++;
+    }
+    return n;
+  };
+  const cols: number[] = [];
+  for (let x = x0; x < x1; x++) cols.push(colEdges(x));
+  const litCols = cols.filter((n) => n > 0).sort((a, b) => a - b);
+  let nx0 = x0;
+  let nx1 = x1;
+  if (litCols.length > 3) {
+    const colMin = Math.max(2, litCols[Math.floor(litCols.length * 0.5)] * 0.3);
+    const gapX = Math.max(4, Math.round(lineH * 1.1));
+    const reachX = Math.round(Math.max(box.w * 0.5, lineH * 6));
+    const side = (from: number, step: number) => {
+      let last = from - step;
+      let gap = 0;
+      for (let x = from, k = 0; x >= 0 && x < W - 1 && k < reachX; x += step, k++) {
+        if (colEdges(x) >= colMin) {
+          last = x;
+          gap = 0;
+        } else if (++gap > gapX) break;
+      }
+      return last;
+    };
+    nx0 = Math.min(x0, side(x0 - 1, -1));
+    nx1 = Math.max(x1, side(x1, 1) + 1);
+  }
+  if (ny0 === y0 && ny1 === y1 && nx0 === x0 && nx1 === x1) return box;
+  return { x: nx0, y: ny0, w: nx1 - nx0, h: ny1 - ny0 };
 }
 
 /**

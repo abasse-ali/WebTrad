@@ -181,3 +181,19 @@ describe('style of lettering on the artwork', () => {
     expect(boxSlant(draw(0, 0), box)).toBe(0);
   });
 });
+
+describe('growToText sideways', () => {
+  it('takes in the ends of lines longer than the box, not the plain background past them', async () => {
+    const { growToText } = await import('../src/lib/imageproc');
+    const W = 400;
+    const H = 200;
+    const data = new Uint8ClampedArray(W * H * 4).fill(120);
+    for (let y = 80; y < 96; y++)
+      for (let x = 60; x < 340; x++) if (x % 6 < 2) data.fill(250, (y * W + x) * 4, (y * W + x) * 4 + 3);
+    const out = growToText({ width: W, height: H, data }, { x: 150, y: 78, w: 100, h: 20 });
+    expect(out.x).toBeLessThanOrEqual(62);
+    expect(out.x + out.w).toBeGreaterThanOrEqual(336);
+    expect(out.x).toBeGreaterThan(30);
+    expect(out.x + out.w).toBeLessThan(370);
+  });
+});
