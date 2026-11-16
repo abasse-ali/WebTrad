@@ -206,23 +206,25 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
     expect(knownLimit('openrouter.ai')).toBeUndefined();
   });
 
-  it('lowers the limit by one only on a refusal right after the pause', async () => {
+  it('falls at once to what the provider answered in the last minute', async () => {
     vi.useFakeTimers();
     const host = 'pace-sink.test';
     for (let i = 0; i < 25; i++) await paceRequest(host);
     learnLimit(host); // 25 seen: 20 a minute
     await vi.advanceTimersByTimeAsync(61_000);
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 8; i++) {
       const p = paceRequest(host);
       await vi.advanceTimersByTimeAsync(3_000);
       await p;
     }
-    learnLimit(host); // 2 seen: 19, not 8 (a request every 3.2 s)
-    const t0 = Date.now();
-    const p = paceRequest(host);
-    await vi.advanceTimersByTimeAsync(3_300);
-    await p;
-    expect(Date.now() - t0).toBeLessThanOrEqual(3_300);
+    learnLimit(host); // refused at 8 in the minute, under 20: now 7 a minute
+    // 8 already in the minute: the next waits for the first to leave it.
+    let started = false;
+    const next = paceRequest(host).then(() => (started = true));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(started).toBe(false);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await next;
     vi.useRealTimers();
   });
 

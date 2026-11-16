@@ -189,11 +189,11 @@ export function learnLimit(host: string, said?: number): void {
   const learnt = learntLimit.get(host);
   if (!said && learnt && seen < limitFor(host, now)!) {
     // Refused though spaced under the limit learnt: the provider allows
-    // less (about 6 a minute for some keys, refused every minute at 8).
-    // One less each time, not down to the few requests seen right after a
-    // pause (the provider may still count the earlier ones).
+    // less (refused every minute at 8, and at 29 after a quiet while: about
+    // 8 answered a minute). Down to what it answered in the last minute
+    // at once (one step a refusal took twenty refusals), never under 5.
     const current = limitFor(host, now)!;
-    const lower = Math.max(5, current - 1);
+    const lower = Math.max(5, Math.min(current - 1, seen - 1));
     learntLimit.set(host, { limit: lower, at: now, refusedAt: current });
     return;
   }
