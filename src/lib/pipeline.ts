@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -98,6 +98,7 @@ function toBubble(d: DetectedText, translation: string): Bubble {
     fill: d.fill,
     outline: d.outline || undefined,
     color: d.color,
+    outlineColor: d.outline ? d.outlineColor : undefined,
     rotation: d.rotation,
     align: d.align,
     patch: d.patch,
@@ -840,7 +841,13 @@ export async function visionPage(
       measured > 0
         ? Math.max(8, Math.min(60, measured / LETTERS_TO_FONT))
         : Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
-    const look = lookOfText(px, box, scale, fontSize, Boolean(area));
+    // Lettering drawn on the artwork keeps its style: the tilt and the slant
+    // of its lines (a shout written aslant, italic handwriting), and the
+    // colours of its letters and of their outline.
+    const scaled = { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale };
+    const rotation = area || vertical ? 0 : boxSkew(px, scaled);
+    const slant = area || vertical ? 0 : boxSlant(px, scaled, rotation);
+    const look = lookOfText(px, box, scale, fontSize, Boolean(area), rotation);
     // No lettering could be taken off the artwork there: the model placed
     // its box where there is no text. Nothing is lettered over the drawing.
     if (!region && !look.patch && !look.covered) {
@@ -859,6 +866,9 @@ export async function visionPage(
       fill: look.fill,
       outline: look.outline || undefined,
       color: look.color,
+      outlineColor: look.outline ? look.outlineColor : undefined,
+      rotation: rotation || undefined,
+      slant: slant || undefined,
       patch: look.patch,
       patchBox: look.patchBox,
     });

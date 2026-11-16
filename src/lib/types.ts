@@ -51,6 +51,10 @@ export interface Bubble {
   color?: string;
   /** Tilt of the original lettering in degrees, clockwise. */
   rotation?: number;
+  /** Slant of italic or handwritten lettering: how far letters lean right per unit of height. */
+  slant?: number;
+  /** Colour of the outline around the letters, when the original has one of its own. */
+  outlineColor?: string;
   /** Alignment of the original lines (centred when undefined). */
   align?: 'left' | 'right';
   /** Artwork repaired under the lettering (data URL) and the rectangle it covers. */
