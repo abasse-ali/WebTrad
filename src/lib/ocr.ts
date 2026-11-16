@@ -10,6 +10,7 @@ import {
   inpaintText,
   maskedCrop,
   smoothFill,
+  fillHole,
   sampleBackground,
   sampleInk,
   toneMask,
@@ -411,53 +412,38 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     const sinT = Math.sin(t);
     within = (px0, py0) => Math.abs(-(px0 - cx) * sinT + (py0 - cy) * cos) <= halfH;
   }
+  const margin = Math.max(1.5, fontSize * scale * 0.08);
   /**
-   * The background rebuilt from around the box (`smooth`) only where the
-   * letters and their outline are; the drawing elsewhere stays. The whole
-   * box rebuilt showed as a square patch over a window, a kettle, a strand
-   * of hair.
+   * Only the letters taken off, with their outline and the light halo right
+   * around them (too close to the background to be found as a colour of its
+   * own: what differs clearly from `ref`, the background as it would be
+   * without them), and `extra` pixels more around. They are filled from the
+   * drawing right next to them; the rest of the drawing stays as it is
+   * (a rebuilt box showed as a blurred patch over a window, a kettle, hair).
    */
-  const onLetters = (smooth: Pixels): Pixels | null => {
+  const onLetters = (ref: Pixels, extra = 0): Pixels | null => {
     const mask = toneMask(px, area, ink.tones, Math.max(2, Math.round(fontSize * scale * 0.15)), within);
     if (!mask) return null;
-    // The light halo or thin outline right around the letters (too close to
-    // the background to be found as a colour of its own): what differs
-    // clearly from the rebuilt background next to them. Kept, it showed as
-    // a ghost of the English letters.
     const reach = Math.max(2, Math.round(fontSize * scale * 0.3));
     const off = (p: number) => {
       const i = ((area.y + Math.floor(p / area.w)) * px.width + area.x + (p % area.w)) * 4;
-      return Math.abs(px.data[i] - smooth.data[p * 4]) + Math.abs(px.data[i + 1] - smooth.data[p * 4 + 1]) + Math.abs(px.data[i + 2] - smooth.data[p * 4 + 2]) > 36;
+      return Math.abs(px.data[i] - ref.data[p * 4]) + Math.abs(px.data[i + 1] - ref.data[p * 4 + 1]) + Math.abs(px.data[i + 2] - ref.data[p * 4 + 2]) > 36;
     };
-    for (let pass = 0; pass < reach; pass++) {
+    const ring = (keep: (p: number) => boolean) => {
       const was = mask.slice();
       for (let p = 0; p < mask.length; p++) {
         if (was[p]) continue;
         const x = p % area.w;
         const near = (x > 0 && was[p - 1]) || (x < area.w - 1 && was[p + 1]) || was[p - area.w] || was[p + area.w];
-        if (near && off(p)) mask[p] = 1;
+        if (near && keep(p)) mask[p] = 1;
       }
-    }
-    // And a pixel more for the soft edge.
-    {
-      const was = mask.slice();
-      for (let p = 0; p < mask.length; p++) {
-        const x = p % area.w;
-        if (!was[p] && ((x > 0 && was[p - 1]) || (x < area.w - 1 && was[p + 1]) || was[p - area.w] || was[p + area.w])) mask[p] = 1;
-      }
-    }
-    const blended = new Uint8ClampedArray(smooth.data);
-    for (let p = 0; p < mask.length; p++) {
-      if (mask[p]) continue;
-      const i = ((area.y + Math.floor(p / area.w)) * px.width + area.x + (p % area.w)) * 4;
-      blended[p * 4] = px.data[i];
-      blended[p * 4 + 1] = px.data[i + 1];
-      blended[p * 4 + 2] = px.data[i + 2];
-    }
-    return { data: blended, width: smooth.width, height: smooth.height };
+    };
+    for (let pass = 0; pass < reach; pass++) ring(off);
+    // A pixel more for the soft edge, and the extra rings.
+    for (let pass = 0; pass < 1 + extra; pass++) ring(() => true);
+    return fillHole(px, area, mask, margin);
   };
   try {
-    const margin = Math.max(1.5, fontSize * scale * 0.08);
     const line = fontSize * scale * 1.3;
     let repaired = inpaintText(px, area, ink.tones, margin, within, Math.max(12, fontSize * scale * 1.8));
     // Lines still there once repaired: white letters with a black outline
@@ -482,25 +468,35 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     // rebuilt from around is then cleaner.
     if (repaired && left <= 0.2) {
       const smooth = smoothFill(px, area, within);
-      if (smooth && smooth.texture < 6 && differs(repaired, smooth) > 0.06) repaired = onLetters(smooth) ?? smooth;
+      if (smooth && smooth.texture < 6 && differs(repaired, smooth) > 0.06) repaired = onLetters(smooth) ?? repaired;
     }
     if (left > 0.2) {
       const lines = scaled.h / Math.max(1, fontSize * scale * 1.2);
       // A box as big as a panel (the model framed the whole drawing): the original stays.
       if (lines > 7 || scaled.w > px.width * 0.85) return look;
-      let smooth: Pixels | null = smoothFill(px, area, within);
-      // Rebuilt only where the letters and their outline are, unless
-      // letters then show through.
+      // Letters still readable: their halo taken too, then a little more
+      // around them. Never the whole box rebuilt: the real drawing behind
+      // the text stays.
+      const smooth = smoothFill(px, area, within);
+      let best = repaired;
+      let bestLeft = left;
       if (smooth) {
-        const kept = onLetters(smooth);
-        if (kept && lettersLeft(px, kept, area, scaled, line) <= Math.min(0.2, lettersLeft(px, smooth, area, scaled, line) + 0.05)) smooth = kept;
+        for (const extra of [0, Math.max(2, Math.round(fontSize * scale * 0.2)), Math.max(3, Math.round(fontSize * scale * 0.4))]) {
+          const kept = onLetters(smooth, extra);
+          const k = kept ? lettersLeft(px, kept, area, scaled, line) : 1;
+          if (kept && k < bestLeft) {
+            best = kept;
+            bestLeft = k;
+          }
+          if (bestLeft <= 0.2) break;
+        }
       }
-      if (smooth && lettersLeft(px, smooth, area, scaled, line) < left) repaired = smooth;
-      else if (left > 0.45) {
+      if (bestLeft > 0.45) {
         look.outline = true;
         look.covered = true;
         return look;
       }
+      repaired = best;
     }
     if (repaired) {
       look.patch = pixelsToCanvas(repaired).toDataURL('image/jpeg', 0.92);
