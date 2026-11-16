@@ -81,7 +81,11 @@ export function rateLimitWait(body: string, now = Date.now()): number {
   }
   const after = Number(body.match(/retry[-_ ]after"?\s*[:=]\s*"?(\d+(?:\.\d+)?)/i)?.[1]);
   if (after) return Math.min(70_000, Math.max(2_000, after * 1000));
-  return 20_000;
+  // No reset time given (NVIDIA): a short pause, doubled by each refusal in
+  // a row. The provider answers about 4 to 5 requests a minute whatever the
+  // pace (refused every half minute at 27 a minute and at 5 alike); pauses
+  // of 20 to 80 s after each refusal were most of the time a chapter took.
+  return 8_000;
 }
 
 /**
@@ -187,16 +191,9 @@ export function learnLimit(host: string, said?: number): void {
   // provider is still holding the earlier excess against us, not counting
   // these few requests. The limit stays (it sank to 8 a minute and stayed there).
   const learnt = learntLimit.get(host);
-  if (!said && learnt && seen < limitFor(host, now)!) {
-    // Refused though spaced under the limit learnt: the provider allows
-    // less (refused every minute at 8, and at 29 after a quiet while: about
-    // 8 answered a minute). Down to what it answered in the last minute
-    // at once (one step a refusal took twenty refusals), never under 5.
-    const current = limitFor(host, now)!;
-    const lower = Math.max(5, Math.min(current - 1, seen - 1));
-    learntLimit.set(host, { limit: lower, at: now, refusedAt: current });
-    return;
-  }
+  // Lowering it further did not help: refused as often at 5 a minute as at
+  // 27, and slower (a chapter took 22 minutes instead of 17).
+  if (!said && learnt && seen < limitFor(host, now)!) return;
   const current = limitFor(host, now) ?? Infinity;
   const limit = said && said < 1000 ? said : Math.max(8, Math.min(Math.floor(seen * 0.8), current - 2));
   learntLimit.set(host, { limit: Math.min(current, limit), at: now, refusedAt: current });
@@ -628,13 +625,89 @@ export async function proofreadTexts(
   const list = Array.isArray(parsed) ? parsed : (parsed.fixes ?? parsed.corrections ?? parsed.lines ?? parsed.translations ?? []);
   for (const fix of Array.isArray(list) ? list : []) {
     const id = Number(fix?.id);
-    const item = items.find((i) => i.id === id);
+    const k = items.findIndex((i) => i.id === id);
+    const item = items[k];
     const value = fix?.text ?? fix?.corrected ?? fix?.translation;
     if (!item || typeof value !== 'string') continue;
+    // A change of gender only where it is known who the words are about.
+    const way = genderChange(item.text, value);
+    if (way) {
+      const near = [k - 1, k + 1, k - 2, k + 2].map((j) => items[j]).find((o) => o?.speaker && o.speaker !== item.speaker && o.gender);
+      if (!genderFixAllowed(item.text, way, item.gender, near?.gender)) continue;
+    }
     const text = acceptedFix(item.text, value);
     if (text) out.set(id, text);
   }
   return out;
+}
+
+/** Masculine and feminine endings of French words (fou/folle, sorti/sortie…). */
+const GENDER_ENDINGS: [string, string][] = [
+  ['teur', 'trice'],
+  ['eaux', 'elles'],
+  ['eux', 'euse'],
+  ['eur', 'euse'],
+  ['eau', 'elle'],
+  ['ou', 'olle'],
+  ['if', 'ive'],
+  ['el', 'elle'],
+  ['en', 'enne'],
+  ['on', 'onne'],
+  ['et', 'ette'],
+  ['er', 'ère'],
+  ['s', 'es'],
+  ['', 'e'],
+];
+
+/** "f" when `b` is `a` made feminine, "m" when made masculine, null otherwise. */
+function genderOf(a: string, b: string): 'f' | 'm' | null {
+  for (const [m, f] of GENDER_ENDINGS) {
+    if (a.endsWith(m) && a.length >= m.length + 1 && b === a.slice(0, a.length - m.length) + f) return 'f';
+    if (b.endsWith(m) && b.length >= m.length + 1 && a === b.slice(0, b.length - m.length) + f) return 'm';
+  }
+  return null;
+}
+
+/**
+ * The way a corrected line changes the gender of its words: "f" or "m"
+ * when some words only changed gender (all the same way), null when none
+ * did. Lines of a different number of words are not compared.
+ */
+export function genderChange(before: string, after: string): 'f' | 'm' | null {
+  const words = (t: string) => t.toLocaleLowerCase().split(/[^\p{L}'’-]+/u).filter(Boolean);
+  const a = words(before);
+  const b = words(after);
+  if (a.length !== b.length) return null;
+  let way: 'f' | 'm' | null = null;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    const g = genderOf(a[i], b[i]);
+    if (!g) continue;
+    if (way && way !== g) return null;
+    way = g;
+  }
+  return way;
+}
+
+/**
+ * Whether a change of gender made by the proofreader is right, from who
+ * the line is about: the speaker ("je"), the one spoken to ("tu", the
+ * other speaker of the lines around), or "il"/"elle". Unknown: refused
+ * (it turned "t'es complètement folle", said to a woman, into "fou", and
+ * "d'être normale", said by her, into "normal").
+ */
+export function genderFixAllowed(line: string, way: 'f' | 'm', speaker?: string, addressee?: string): boolean {
+  const t = ` ${line.toLocaleLowerCase().replace(/[’]/g, "'")} `;
+  const want = (g?: string) => (g === 'female' ? 'f' : g === 'male' ? 'm' : null);
+  const first = /[\s(«"-](je|j'|me|m'|moi)[\s,.!?…'-]/.test(t) || /\bj'/.test(t);
+  const second = /[\s(«"-](tu|t'|te|toi|vous)[\s,.!?…'-]/.test(t) || /\bt'/.test(t);
+  if (first && !second) return want(speaker) === way;
+  if (second && !first) return want(addressee) === way;
+  if (!first && !second) {
+    if (/[\s(«"-]elles?[\s,.!?…'-]/.test(t) && !/[\s(«"-]ils?[\s,.!?…'-]/.test(t)) return way === 'f';
+    if (/[\s(«"-]ils?[\s,.!?…'-]/.test(t) && !/[\s(«"-]elles?[\s,.!?…'-]/.test(t)) return way === 'm';
+  }
+  return false;
 }
 
 /** A proofread line, kept only when it is a correction, not a new line. */

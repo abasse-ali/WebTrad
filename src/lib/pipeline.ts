@@ -277,7 +277,7 @@ export async function visionPage(
   }
 
   // Every text the model found, in page coordinates, matched to its bubble.
-  type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number]; block?: Box; doubtful?: boolean };
+  type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number]; block?: Box; doubtful?: boolean; /** The box as the model gave it (once placed on the page). */ model?: Box };
   const found: Found[] = [];
   const inRegion = (x: number, y: number) =>
     regions.find((r) => x * scale >= r.x && x * scale <= r.x + r.w && y * scale >= r.y && y * scale <= r.y + r.h);
@@ -459,7 +459,7 @@ export async function visionPage(
       const letters = (t: string) => t.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
       if (rescue && found.some((t) => letters(t.f.text) === letters(f.text))) continue;
       if (rescue && !rescue.some((b) => overlapShare(b, box) > 0.3 || (cx >= b.x - b.w * 0.3 && cx <= b.x + b.w * 1.3 && cy >= b.y - b.h && cy <= b.y + b.h * 2))) continue;
-      found.push({ f, box, region, doubtful });
+      found.push({ f, box, region, doubtful, model: { ...box } });
     }
   };
   for (let i = 0; i < slices.length; i++) placeSlice(i);
@@ -729,23 +729,36 @@ export async function visionPage(
   // lettering lie apart in the shape, and the whole translation was lettered
   // across both. The translation is cut at the sentence end closest to the
   // share of letters of each block, one item per block.
+  // So are two bubbles drawn apart but touching, both under the model's
+  // box ("I HAVE TO BE ON THE PHONE…" and "I'LL EAT THE REST…" lettered as
+  // one text across both): the blocks of lettering under the box, each in
+  // its own bubble.
   for (const t of [...found]) {
-    if (!t.region || found.some((o) => o !== t && o.region === t.region)) continue;
+    if (t.region && found.some((o) => o !== t && o.region === t.region)) continue;
     const r = t.region;
-    const own = blocks
-      .filter((b) => {
-        const cx = (b.x + b.w / 2) * scale;
-        const cy = (b.y + b.h / 2) * scale;
-        return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
-      })
-      .sort((a, b) => a.y - b.y);
+    const inShape = (b: Box) => {
+      if (!r) return false;
+      const cx = (b.x + b.w / 2) * scale;
+      const cy = (b.y + b.h / 2) * scale;
+      return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+    };
+    const inBox = (b: Box) => {
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      const m = t.model ?? t.box;
+      return cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h && overlapShare(b, m) > 0.8;
+    };
+    const own = blocks.filter((b) => inShape(b) || inBox(b)).sort((a, b) => a.y - b.y);
     if (own.length < 2) continue;
     // Groups of blocks with a clear gap between them (more than two lines).
     const groups: Box[] = [];
     for (const b of own) {
       const g = groups[groups.length - 1];
-      const line = Math.min(b.h, g?.h ?? b.h);
-      if (g && b.y - (g.y + g.h) < Math.max(line, 12) * 2) {
+      // About a line (blocks hold several: a block's height took a gap of
+      // 67 px between two bubbles for line spacing).
+      const line = Math.min(b.h, g?.h ?? b.h, W * 0.03);
+      const otherShape = g && inRegion(g.x + g.w / 2, g.y + g.h / 2) !== inRegion(b.x + b.w / 2, b.y + b.h / 2);
+      if (g && !otherShape && b.y - (g.y + g.h) < Math.max(line, 12) * 2) {
         const x1 = Math.max(g.x + g.w, b.x + b.w);
         const y1 = Math.max(g.y + g.h, b.y + b.h);
         g.x = Math.min(g.x, b.x);
@@ -754,16 +767,23 @@ export async function visionPage(
       } else groups.push({ ...b });
     }
     if (groups.length !== 2) continue;
+    // The model's box over both halves: a text tied to a bubble far above
+    // it is not that bubble's other half.
+    if (groups.some((g) => overlapShare(g, t.model ?? t.box) < 0.3)) continue;
     // A group on another text's place (a white page taken for one shape)
     // would letter a half over that text.
     if (groups.some((g) => found.some((o) => o !== t && overlapShare(g, o.box) > 0.2))) continue;
+    // Each half in its own bubble when they are two; none claimed by another text.
+    const regionsOf = groups.map((g) => inRegion(g.x + g.w / 2, g.y + g.h / 2) ?? r);
+    if (regionsOf.some((q) => q && q !== r && found.some((o) => o !== t && o.region === q))) continue;
+    if (!r && regionsOf.some((q) => !q)) continue;
     const parts = splitAtSentence(t.f.translation, (groups[0].w * groups[0].h) / (groups[0].w * groups[0].h + groups[1].w * groups[1].h));
     const texts = splitAtSentence(t.f.text, (groups[0].w * groups[0].h) / (groups[0].w * groups[0].h + groups[1].w * groups[1].h));
     if (!parts || !texts) continue;
     found.splice(
       found.indexOf(t),
       1,
-      ...groups.map((g, k) => ({ ...t, f: { ...t.f, text: texts[k], translation: parts[k] }, box: { ...g }, block: { ...g } })),
+      ...groups.map((g, k) => ({ ...t, f: { ...t.f, text: texts[k], translation: parts[k] }, box: { ...g }, block: { ...g }, region: regionsOf[k] })),
     );
     logInfo('ocr', 'Bulles soudées lues d’un bloc par l’IA : traduction répartie entre les deux', { texte: t.f.text.slice(0, 40) });
   }
