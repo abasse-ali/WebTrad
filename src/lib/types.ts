@@ -62,7 +62,17 @@ export interface Bubble {
    * height of each line, so it never runs over the rim of a round or spiky
    * bubble.
    */
-  shape?: { y: number; step: number; x: number[] };
+  shape?: {
+    y: number;
+    step: number;
+    x: number[];
+    /** Margin taken off the rim (page pixels): the rim itself is this much further out. */
+    inset?: number;
+    /** Colour of the bubble's outline, for drawing it a little bigger when the translation needs room. */
+    rim?: string;
+    /** The whole bubble (not one lobe of two bubbles drawn joined): it may be drawn bigger. */
+    whole?: boolean;
+  };
   /** Alignment of the original lines (centred when undefined). */
   align?: 'left' | 'right';
   /** Artwork repaired under the lettering (data URL) and the rectangle it covers. */

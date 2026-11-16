@@ -61,3 +61,24 @@ describe('fitToShape', () => {
     expect(fitToShape(text, shape, 60, (s) => s.length * 34, 'fr', false, 200)).toBeNull();
   });
 });
+
+describe('grownShape', () => {
+  it('draws a bubble a little bigger around its centre, keeping the margin to its rim', async () => {
+    const { grownShape } = await import('../src/lib/layout');
+    // A rectangle-like bubble: rows 100…200, inside 50…250 with a margin of 10.
+    const x: number[] = [];
+    for (let y = 100; y <= 200; y += 10) x.push(50, 250);
+    const shape = { y: 100, step: 10, x, inset: 10, whole: true };
+    const g = grownShape(shape, 1.2, { width: 1000, height: 1000 });
+    // The rim went from 40…260 to 18…282 (centre 150, ×1.2); the text room keeps 10 px off it.
+    expect(g.shape.x[0]).toBe(28);
+    expect(g.shape.x[1]).toBe(272);
+    expect(g.shape.step).toBeCloseTo(12);
+    const xs = g.outline.filter((_, i) => i % 2 === 0);
+    const ys = g.outline.filter((_, i) => i % 2 === 1);
+    expect(Math.min(...xs)).toBe(18);
+    expect(Math.max(...xs)).toBe(282);
+    expect(Math.min(...ys)).toBeLessThan(100);
+    expect(Math.max(...ys)).toBeGreaterThan(200);
+  });
+});

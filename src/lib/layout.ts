@@ -42,6 +42,8 @@ export interface BubbleLayout {
   eraseRotation?: number;
   /** Plain band over lettering on the artwork (no repaired artwork): drawn with soft edges. */
   softErase?: boolean;
+  /** The bubble drawn again a little bigger (its outline as a polygon, page pixels), to give a long translation room. */
+  bubbleOutline?: { points: number[]; rim: string; width: number };
   /** Shift of each line's centre from the centre of `area` (lines fitted to the bubble's shape). */
   lineX?: number[];
   align: 'left' | 'center' | 'right';
@@ -200,6 +202,58 @@ function clampBox(b: Box, W: number, H: number): Box {
 }
 
 /**
+ * A bubble's shape made `k` times bigger around its centre, the margin to
+ * its rim kept, within the page; with the polygon of its new rim.
+ */
+export function grownShape(
+  shape: NonNullable<Bubble['shape']>,
+  k: number,
+  page: { width: number; height: number },
+): { shape: NonNullable<Bubble['shape']>; outline: number[] } {
+  const inset = shape.inset ?? 0;
+  const rows = shape.x.length / 2;
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < rows; i++) {
+    if (shape.x[i * 2 + 1] < shape.x[i * 2]) continue;
+    sum += (shape.x[i * 2] + shape.x[i * 2 + 1]) / 2;
+    n++;
+  }
+  const cx = n ? sum / n : 0;
+  const cy = shape.y + ((rows - 1) * shape.step) / 2;
+  const x: number[] = [];
+  const left: [number, number][] = [];
+  const right: [number, number][] = [];
+  for (let i = 0; i < rows; i++) {
+    const l = shape.x[i * 2];
+    const r = shape.x[i * 2 + 1];
+    if (r < l) {
+      x.push(0, -1);
+      continue;
+    }
+    const rimL = Math.max(0, cx + (l - inset - cx) * k);
+    const rimR = Math.min(page.width, cx + (r + inset - cx) * k);
+    const y = Math.min(page.height, Math.max(0, cy + (shape.y + i * shape.step - cy) * k));
+    x.push(Math.round(rimL + inset), Math.round(rimR - inset));
+    left.push([rimL, y]);
+    right.push([rimR, y]);
+  }
+  // Closed at the top and the bottom by the rows past the first and last ones.
+  const pad = inset * k;
+  if (left.length) {
+    left.unshift([left[0][0] + pad, left[0][1] - pad]);
+    right.unshift([right[0][0] - pad, right[0][1] - pad]);
+    const lb = left[left.length - 1];
+    const rb = right[right.length - 1];
+    left.push([lb[0] + pad, lb[1] + pad]);
+    right.push([rb[0] - pad, rb[1] + pad]);
+  }
+  const outline = [...left, ...right.reverse()].flatMap(([px, py]) => [Math.round(px), Math.round(Math.max(0, Math.min(page.height, py)))]);
+  const y0 = cy + (shape.y - cy) * k;
+  return { shape: { ...shape, y: Math.round(y0), step: shape.step * k, x }, outline };
+}
+
+/**
  * Lines of `text` at `size` fitted to the shape of a bubble: each line as
  * wide as the bubble is at its height, the block centred on `cy` (moved to
  * stay inside). The fewest lines that hold the text; null when it does not fit.
@@ -241,42 +295,48 @@ export function fitToShape(
       spans.push(s);
     }
     if (spans.length < n) continue;
-    // Greedy: each line takes the words it has room for.
-    const lines: string[] = [];
-    let line = '';
-    let k = 0;
-    let ok = true;
-    for (const u of units) {
-      if (u === '\n') {
-        lines.push(line.trim());
-        line = '';
-        if (++k >= n) {
-          ok = false;
-          break;
+    // Each line takes the words it has room for, filled from the top, and
+    // also from the bottom: the block whose least filled line is the fuller
+    // wins (a lone "DIS" on the first line of a round bubble looked dropped).
+    const pack = (fromBottom: boolean): string[] | null => {
+      const width = (k: number) => {
+        const s = spans[fromBottom ? n - 1 - k : k];
+        return s[1] - s[0];
+      };
+      const seq = fromBottom ? [...units].reverse() : units;
+      const out: string[] = [];
+      let line = '';
+      let k = 0;
+      const join = (a: string, b: string) => (fromBottom ? b + sep + a : a + sep + b);
+      for (const u of seq) {
+        if (u === '\n') {
+          out.push(line.trim());
+          line = '';
+          if (++k >= n) return null;
+          continue;
         }
-        continue;
+        const candidate = line ? join(line, u) : u;
+        if (measure(candidate.trim()) <= width(k)) {
+          line = candidate;
+          continue;
+        }
+        if (!line) return null;
+        out.push(line.trim());
+        if (++k >= n || measure(u) > width(k)) return null;
+        line = u;
       }
-      const candidate = line ? line + sep + u : u;
-      if (measure(candidate.trim()) <= spans[k][1] - spans[k][0]) {
-        line = candidate;
-        continue;
-      }
-      if (!line) {
-        ok = false;
-        break;
-      }
-      lines.push(line.trim());
-      if (++k >= n || measure(u) > spans[k][1] - spans[k][0]) {
-        ok = false;
-        break;
-      }
-      line = u;
+      if (line.trim()) out.push(line.trim());
+      if (out.length !== n) return null;
+      return fromBottom ? out.reverse() : out;
+    };
+    const fill = (ls: string[]) => Math.min(...ls.map((l, i) => measure(l) / Math.max(1, spans[i][1] - spans[i][0])));
+    const down = pack(false);
+    const up = units.includes('\n') ? null : pack(true);
+    const lines = down && up ? (fill(up) > fill(down) ? up : down) : (down ?? up);
+    if (!lines) {
+      // Not even one try fits this many lines: more lines, or nothing fits.
+      continue;
     }
-    if (!ok) continue;
-    if (line.trim()) lines.push(line.trim());
-    if (lines.length === 0) return null;
-    // Fewer lines than room was made for: centred again on those lines.
-    if (lines.length < n) continue;
     return { lines, left: spans.map((s) => s[0]), right: spans.map((s) => s[1]), top, lineH: lh };
   }
   return null;
@@ -385,6 +445,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   // as the bubble is at its height (narrower at the top and the bottom of a
   // round or spiky bubble), and never run over it.
   let lineX: number[] | undefined;
+  let bubbleOutline: BubbleLayout['bubbleOutline'];
   if (b.shape && !b.rotation && !b.vertical && b.seam === undefined) {
     const cy = b.y + b.h / 2;
     let best: ReturnType<typeof fitToShape> = null;
@@ -404,6 +465,36 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
       best = fitToShape(display, b.shape, minSize, measureAt(minSize), opts.target, Boolean(target.noSpaces), cy);
       bestSize = minSize;
     }
+    // The translation much smaller than the original lettering (French runs
+    // longer than English): the bubble is drawn again a little bigger, up to
+    // a quarter, with its outline, and the text takes the room gained.
+    let outline: number[] | undefined;
+    const wanted = maxSize * 0.8;
+    if (best && bestSize < wanted && b.shape.whole && b.shape.inset !== undefined) {
+      for (const k of [1.08, 1.16, 1.25]) {
+        const g = grownShape(b.shape, k, page);
+        let fit: ReturnType<typeof fitToShape> = null;
+        let fitSize = 0;
+        let lo3 = bestSize;
+        let hi3 = maxSize;
+        for (let i = 0; i < 12 && hi3 - lo3 > 0.25; i++) {
+          const mid = (lo3 + hi3) / 2;
+          const f = fitToShape(display, g.shape, mid, measureAt(mid), opts.target, Boolean(target.noSpaces), cy);
+          if (f) {
+            fit = f;
+            fitSize = mid;
+            lo3 = mid;
+          } else hi3 = mid;
+        }
+        if (fit && fitSize > bestSize * 1.08) {
+          best = fit;
+          bestSize = fitSize;
+          outline = g.outline;
+          if (fitSize >= wanted) break;
+        }
+      }
+    }
+    if (outline) bubbleOutline = { points: outline, rim: b.shape.rim ?? '#1a1a1a', width: Math.max(1.5, page.width * 0.003) };
     if (best) {
       const left = Math.min(...best.left);
       const right = Math.max(...best.right);
@@ -427,6 +518,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     slant: b.slant ?? 0,
     outlineColor: b.outlineColor ?? outlineColor(b.color ?? contrastColor(fill)),
     lineX,
+    bubbleOutline,
     softErase: !b.area && !b.patch && !b.shape ? true : undefined,
     eraseRotation: !b.area && !b.patch && b.rotation && Math.abs(b.rotation) <= 35 ? b.rotation : undefined,
     align: b.align ?? 'center',
@@ -490,6 +582,21 @@ export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]
     roundRect(c, l.erase, l.radius);
     c.fill();
     c.restore();
+    if (l.bubbleOutline) {
+      const p = l.bubbleOutline.points;
+      c.save();
+      c.beginPath();
+      c.moveTo(p[0], p[1]);
+      for (let i = 2; i < p.length; i += 2) c.lineTo(p[i], p[i + 1]);
+      c.closePath();
+      c.fillStyle = l.fill;
+      c.fill();
+      c.lineJoin = 'round';
+      c.lineWidth = l.bubbleOutline.width;
+      c.strokeStyle = l.bubbleOutline.rim;
+      c.stroke();
+      c.restore();
+    }
   }
   for (const l of layouts) {
     c.save();

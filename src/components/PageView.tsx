@@ -82,6 +82,17 @@ function TranslatedLayer({
                 boxShadow: l.eraseRotation || l.softErase ? `0 0 ${cq(l.fontSize * 0.5)} ${cq(l.fontSize * 0.2)} ${l.fill}` : undefined,
               }}
             />
+            {l.bubbleOutline && (
+              <svg className="tb-grown" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
+                <polygon
+                  points={l.bubbleOutline.points.join(' ')}
+                  fill={l.fill}
+                  stroke={l.bubbleOutline.rim}
+                  strokeWidth={l.bubbleOutline.width}
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
             <div className="tb-text" dir={l.rtl ? 'rtl' : 'ltr'} style={textStyle}>
               {l.lines.map((line, i) => (
                 <span key={i} style={l.lineX?.[i] ? { transform: `translateX(${cq(l.lineX[i])})` } : undefined}>
