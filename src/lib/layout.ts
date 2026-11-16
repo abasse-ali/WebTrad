@@ -202,6 +202,38 @@ function clampBox(b: Box, W: number, H: number): Box {
 }
 
 /**
+ * A bubble that can be drawn again bigger: a smooth, round or oval shape in
+ * one piece, holding all of the original lettering. A spiky bubble (a
+ * shout), one with gaps (cut by a panel border) or one only partly found
+ * was redrawn as a broken polygon, the English left visible beside it.
+ */
+export function growable(shape: NonNullable<Bubble['shape']>, text: Box): boolean {
+  const rows = shape.x.length / 2;
+  if (rows < 6) return false;
+  const widths: number[] = [];
+  for (let i = 0; i < rows; i++) {
+    const l = shape.x[i * 2];
+    const r = shape.x[i * 2 + 1];
+    if (r < l) return false;
+    widths.push(r - l);
+  }
+  const sorted = [...widths].sort((a, b) => a - b);
+  const typical = sorted[Math.floor(rows * 0.75)];
+  for (let i = 1; i < rows; i++) {
+    // The sides of a round bubble move little from one row to the next.
+    const jump = Math.max(Math.abs(shape.x[i * 2] - shape.x[i * 2 - 2]), Math.abs(shape.x[i * 2 + 1] - shape.x[i * 2 - 1]));
+    if (jump > Math.max(4, typical * 0.12) * Math.max(1, shape.step / 4)) return false;
+  }
+  for (let i = 1; i < rows - 1; i++) {
+    // A spike: a row much wider than both its neighbours.
+    if (widths[i] - Math.max(widths[i - 1], widths[i + 1]) > typical * 0.08) return false;
+  }
+  const top = shape.y;
+  const bottom = shape.y + (rows - 1) * shape.step;
+  return top <= text.y + text.h * 0.25 && bottom >= text.y + text.h * 0.75;
+}
+
+/**
  * A bubble's shape made `k` times bigger around its centre, the margin to
  * its rim kept, within the page; with the polygon of its new rim.
  */
@@ -350,7 +382,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   if (!text || b.hidden) return null;
   // Only OCR measures the line box itself; AI boxes include the line spacing.
   const capsSource = b.confidence !== undefined && isAllCaps(b.original);
-  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, b.outlineColor, b.slant, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length, b.shape?.y, b.shape?.x.length]);
+  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, b.outlineColor, b.slant, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length, b.shape?.y, b.shape?.x.length, b.roomy]);
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
@@ -445,7 +477,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   // original: the room for it grows over the drawing around (the original
   // letters stay erased as before), up to half again, instead of the
   // French being written tiny in the place of a short English line.
-  if (!b.area && !b.shape && b.seam === undefined && size < maxSize * 0.8) {
+  if (!b.area && !b.shape && b.roomy && b.seam === undefined && size < maxSize * 0.8) {
     for (const k of [1.15, 1.3, 1.5]) {
       const grown = clampBox(
         { x: area.x + (area.w * (1 - k)) / 2, y: area.y + (area.h * (1 - k)) / 2, w: area.w * k, h: area.h * k },
@@ -507,7 +539,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     // a quarter, with its outline, and the text takes the room gained.
     let outline: number[] | undefined;
     const wanted = maxSize * 0.8;
-    if (best && bestSize < wanted && b.shape.whole && b.shape.inset !== undefined) {
+    if (best && bestSize < wanted && b.shape.whole && b.shape.inset !== undefined && growable(b.shape, b)) {
       for (const k of [1.08, 1.16, 1.25]) {
         const g = grownShape(b.shape, k, page);
         let fit: ReturnType<typeof fitToShape> = null;

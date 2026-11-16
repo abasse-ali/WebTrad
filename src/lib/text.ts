@@ -421,7 +421,7 @@ const SFX_WORDS = new Set(
     'bam pow wham kaboom boom thwip whiz zing ping ting tink chime ring vroom screech skid tremor quake ' +
     'whistle twirl swirl spin whirl twist flick fling flip wave ' +
     'smile grin giggle chuckle snicker smirk sparkle glare pause dun rummage fumble brush scrub bow ' +
-    'fwip shlup gasp startle flinch tremble'
+    'fwip shlup gasp startle flinch tremble doom du dum dump badum thud lean squeak eeek eek'
   ).split(' '),
 );
 

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, plainAround, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -424,7 +424,9 @@ export async function visionPage(
       }
       // A sound effect over a wide light area taken for a bubble (a pillow,
       // a wall): drawn, left as it is ("SNORE" lettered tiny on a pillow).
-      if (region && isSoundEffect(f.text) && (region.w / scale) * (region.h / scale) > box.w * box.h * 25) continue;
+      // So is what the model itself calls a sound effect.
+      const wide = region ? (region.w / scale) * (region.h / scale) > box.w * box.h * 25 : true;
+      if ((isSoundEffect(f.text) || f.sfx) && wide) continue;
       // Website watermarks are not translated, even over a bubble.
       if (isWatermark(f.text)) continue;
       // Chat lines on a drawn screen stay as drawn: too small to letter over.
@@ -482,7 +484,9 @@ export async function visionPage(
     if (b.h > W * 0.25 || b.w < W * 0.05) return false;
     const cx = b.x + b.w / 2;
     const cy = b.y + b.h / 2;
-    if (seen.some((t) => overlapShare(b, t) > 0.2 || (cx >= t.x - t.w * 0.3 && cx <= t.x + t.w * 1.3 && cy >= t.y - t.h * 0.5 && cy <= t.y + t.h * 1.5))) return false;
+    // Close to a text read is that text (a box drawn a little off); a bubble
+    // beside it, touching it, is not (its text was left untranslated).
+    if (seen.some((t) => overlapShare(b, t) > 0.35 || (cx >= t.x - t.w * 0.15 && cx <= t.x + t.w * 1.15 && cy >= t.y - t.h * 0.25 && cy <= t.y + t.h * 1.25))) return false;
     const seed = { x: b.x * scale, y: b.y * scale, w: b.w * scale, h: b.h * scale };
     if (!printedInk(seed)) return false;
     const r = inRegion(cx, cy);
@@ -1000,11 +1004,28 @@ export async function visionPage(
       outlineColor: look.outline ? look.outlineColor : undefined,
       rotation: rotation || undefined,
       slant: slant || undefined,
+      roomy: !region && plainAround(px, scaled) ? true : undefined,
       patch: look.patch,
       patchBox: look.patchBox,
     });
   }
-  return evenCutText(bubbles, H);
+  return evenCutText(withoutDrawnShouts(bubbles, H), H);
+}
+
+/**
+ * One or two words lettered on the artwork in letters far bigger than the
+ * page's dialogue: a drawn sound effect the model translated anyway
+ * ("DU-DOOM" became "BOUM-BOUM" on a grey card). Left as drawn.
+ */
+export function withoutDrawnShouts(bubbles: Bubble[], H: number): Bubble[] {
+  const usual = usualFontSize(bubbles.filter((b) => b.area || b.shape), H);
+  return bubbles.filter((b) => {
+    if (b.area || b.shape || !b.fontSize) return true;
+    const words = b.original.replace(/[-‐–—~]+/g, '').trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
+    if (words.length > 2) return true;
+    if (isSoundEffect(b.original.replace(/[-‐–—~]+/g, ' '))) return false;
+    return !(usual && b.fontSize > usual * 1.6);
+  });
 }
 
 /**

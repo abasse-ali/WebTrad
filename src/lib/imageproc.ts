@@ -718,6 +718,108 @@ function keepLines(mask: Uint8Array, w: number, h: number, maxGlyph: number): vo
 }
 
 /**
+ * The background under a box rebuilt from what lies around it: each pixel
+ * blends the colours just left and right of its row with those just above
+ * and below its column (a gradient, a shading carries on under the
+ * letters), with the grain of the drawing around added. For lettering the
+ * letter-by-letter repair leaves readable (screen tones, grainy shading).
+ */
+export function smoothFill(px: Pixels, box: Box, within?: (x: number, y: number) => boolean): (Pixels & { grain: number }) | null {
+  const { width: W, height: H, data } = px;
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const w = Math.min(W, Math.round(box.x + box.w)) - x0;
+  const h = Math.min(H, Math.round(box.y + box.h)) - y0;
+  if (w < 4 || h < 4) return null;
+  const B = 3;
+  const avg = (xs: number[], ys: number[]): [number, number, number] | null => {
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    for (const y of ys)
+      for (const x of xs) {
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const i = (y * W + x) * 4;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        n++;
+      }
+    return n ? [r / n, g / n, b / n] : null;
+  };
+  const range = (a: number, n: number) => Array.from({ length: n }, (_, k) => a + k);
+  const left: ([number, number, number] | null)[] = [];
+  const right: ([number, number, number] | null)[] = [];
+  for (let y = 0; y < h; y++) {
+    left.push(avg(range(x0 - B, B), [y0 + y]));
+    right.push(avg(range(x0 + w, B), [y0 + y]));
+  }
+  const top: ([number, number, number] | null)[] = [];
+  const bottom: ([number, number, number] | null)[] = [];
+  for (let x = 0; x < w; x++) {
+    top.push(avg([x0 + x], range(y0 - B, B)));
+    bottom.push(avg([x0 + x], range(y0 + h, B)));
+  }
+  // The grain: how much neighbouring pixels around the box differ.
+  let dev = 0;
+  let dn = 0;
+  const lumAt = (x: number, y: number) => luminance(data, (y * W + x) * 4);
+  for (let x = x0; x < x0 + w - 1; x++)
+    for (const y of [y0 - 2, y0 + h + 1]) {
+      if (y < 0 || y >= H) continue;
+      dev += (lumAt(x, y) - lumAt(x + 1, y)) ** 2;
+      dn++;
+    }
+  for (let y = y0; y < y0 + h - 1; y++)
+    for (const x of [x0 - 2, x0 + w + 1]) {
+      if (x < 0 || x >= W - 1) continue;
+      dev += (lumAt(x, y) - lumAt(x, y + 1)) ** 2;
+      dn++;
+    }
+  const grain = dn ? Math.min(30, Math.sqrt(dev / dn / 2)) : 0;
+  let seed = 12345;
+  const noise = () => {
+    // Sum of uniforms: about a normal spread.
+    let t = 0;
+    for (let k = 0; k < 3; k++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      t += seed / 0x7fffffff - 0.5;
+    }
+    return t * 2;
+  };
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      const src = ((y0 + y) * W + x0 + x) * 4;
+      if (within && !within(x0 + x, y0 + y)) {
+        out.set(data.subarray(src, src + 4), o);
+        continue;
+      }
+      const u = (x + 0.5) / w;
+      const v = (y + 0.5) / h;
+      const L = left[y] ?? right[y];
+      const R = right[y] ?? left[y];
+      const T = top[x] ?? bottom[x];
+      const Bm = bottom[x] ?? top[x];
+      const n = grain * noise();
+      for (let c = 0; c < 3; c++) {
+        const hz = L && R ? L[c] * (1 - u) + R[c] * u : null;
+        const vt = T && Bm ? T[c] * (1 - v) + Bm[c] * v : null;
+        // The nearer pair of sides counts more.
+        const wh = 1 / (Math.min(u, 1 - u) + 0.05);
+        const wv = 1 / (Math.min(v, 1 - v) + 0.05);
+        const val = hz !== null && vt !== null ? (hz * wh + vt * wv) / (wh + wv) : (hz ?? vt ?? data[src + c]);
+        out[o + c] = val + n;
+      }
+      out[o + 3] = 255;
+    }
+  }
+  return { data: out, width: w, height: h, grain };
+}
+
+/**
  * Removes lettering drawn over artwork: pixels close to the ink colours are
  * masked (plus a margin for anti-aliasing) and filled from their surroundings,
  * layer by layer from the edge of each letter inwards. Returns the repaired
@@ -1552,6 +1654,26 @@ export function letterHeightByEdges(px: Pixels, box: Box): number {
   if (runs.length === 0 || (runs.length === 1 && runs[0] > rows.length * 0.8)) return 0;
   runs.sort((a, b) => a - b);
   return runs[Math.floor((runs.length - 1) * 0.5)];
+}
+
+/** Whether the band around a box is plain (no drawing): its edges are few. */
+export function plainAround(px: Pixels, box: Box): boolean {
+  const { data, width: W, height: H } = px;
+  const band = Math.max(6, Math.round(Math.min(box.w, box.h) * 0.5));
+  const x0 = Math.max(0, Math.round(box.x - band));
+  const x1 = Math.min(W - 1, Math.round(box.x + box.w + band));
+  const y0 = Math.max(0, Math.round(box.y - band));
+  const y1 = Math.min(H, Math.round(box.y + box.h + band));
+  let edges = 0;
+  let n = 0;
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) {
+      if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) continue;
+      n++;
+      const i = (y * W + x) * 4;
+      if (Math.abs(luminance(data, i) - luminance(data, i + 4)) > 24) edges++;
+    }
+  return n > 0 && edges / n < 0.02;
 }
 
 /** Average brightness of a box of `px` (0 dark – 255 white). */

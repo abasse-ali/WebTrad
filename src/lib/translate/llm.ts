@@ -634,6 +634,8 @@ export interface VisionBubble {
   speaker?: string;
   gender?: Gender;
   kind?: TextKind;
+  /** The model says it is a drawn sound effect: never lettered over. */
+  sfx?: boolean;
 }
 
 /** The speaker fields of a model's item, cleaned. */
@@ -650,14 +652,14 @@ export function speakerOf(item: { speaker?: unknown; gender?: unknown; kind?: un
 
 const SPEAKER_RULES = `- "speaker": who says it, so that it can be read aloud with that character's voice. The character's name when the story gives it, else a short description of how they look that you would give again on every page ("masked man", "pink-haired nurse", "red-haired girl in a hoodie"). When a list of characters is given, reuse its labels exactly for the same people. Follow the tail of the bubble to the character. "narrator" for narration boxes, "sign" for written text in the scenery.
 - "gender": "male", "female" or "unknown", the speaker's, from the drawing and the way they speak.
-- "kind": "dialogue", "thought" (thought bubbles, inner voice), "narration" or "sign".`;
+- "kind": "dialogue", "thought" (thought bubbles, inner voice), "narration", "sign", or "sfx" for a sound effect drawn on the artwork (DU-DOOM, BRUSH, DUN…) if you list one by mistake: it is never translated.`;
 
 function visionPrompt(order: 'yxyx' | 'xyxy'): string {
   const box = order === 'xyxy' ? '[xmin, ymin, xmax, ymax]' : '[ymin, xmin, ymax, xmax]';
   const key = order === 'xyxy' ? 'bbox_2d' : 'box_2d';
   return `You are an expert manga, manhwa, manhua, webtoon and comics translator with perfect OCR skills.
 Find every piece of story text in the image: speech bubbles, thought bubbles, narration boxes, and text written on objects or in the scenery (signs, screens, phones, letters, labels, posters). Ignore watermarks, page numbers, credits, the series logo or title artwork, and "to be continued" banners.
-Do NOT include sound effects, onomatopoeia or cries drawn as artwork outside the speech bubbles (stylised, coloured or outlined letters on the drawing: HUFF, HAAA, HNNG, UGH, SHLICK…). Do NOT include website watermarks (TOOMICS.com…), even when they lie on a bubble. Sound effects: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
+Do NOT include sound effects, onomatopoeia or cries drawn as artwork outside the speech bubbles (stylised, coloured or outlined letters on the drawing: HUFF, HAAA, HNNG, UGH, SHLICK…). Do NOT include website watermarks (TOOMICS.com…), even when they lie on a bubble. Sound effects are NEVER translated, whatever their size or colour, even with a hyphen (DU-DOOM, BA-DUMP) or several words: drawn effect words such as HUFF, SLAP, SMACK, TWITCH, SWOOSH, GRIP, THRUST, 쿵, 두근, ドキ, ゴゴゴ, 砰 must be left out entirely, even when they are big or in bubbles of their own.
 For each one give its bounding box as ${box} normalised to 0-1000 (tight around the lettering), the exact original text, and a translation in the requested language.
 How to translate, like a professional scanlation team:
 - Read the whole image first: a sentence often runs over several bubbles; translate each bubble so that, read in order, they form natural sentences.
@@ -758,6 +760,7 @@ export async function visionTranslate(
       text: typeof item.text === 'string' ? item.text : '',
       translation: typeof item.translation === 'string' ? item.translation : '',
       ...speakerOf(item),
+      ...(/^(sfx|sound|effect|onomat)/i.test(String(item.kind ?? item.type ?? '')) ? { sfx: true } : {}),
     });
   }
   return { bubbles: out, sourceLanguage };
