@@ -5,12 +5,12 @@ import { deleteChapter } from '../lib/db';
 import { cancelChapter, useJobs, type JobState } from '../lib/pipeline';
 import { clearPosition, getLastRead, loadPosition, type ReadingPosition } from '../lib/progress';
 import { groupBySeries, seriesOf, type SeriesGroup } from '../lib/series';
-import { useSettings } from '../lib/settings';
+import { updateSettings, useSettings } from '../lib/settings';
 import type { Chapter } from '../lib/types';
 import { navigate } from '../router';
 import { CoverDialog } from './CoverDialog';
 import { Icon } from './Icon';
-import { QuickLink } from './QuickImport';
+import { AddSheet, HelpSheet, type AddTab } from './AddSheet';
 
 type Sort = 'recent' | 'title';
 const SORT_KEY = 'webtrad.librarySort';
@@ -74,7 +74,15 @@ export function Library() {
   const [sort, setSort] = useState<Sort>(storedSort);
   const [coverFor, setCoverFor] = useState<{ chapters: Chapter[]; name: string } | null>(null);
   const [actionsFor, setActionsFor] = useState<SeriesGroup<Chapter> | null>(null);
+  const [adding, setAdding] = useState<AddTab | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const hasChapters = (chapters?.length ?? 0) > 0;
+  const sheets = (
+    <>
+      {adding && <AddSheet initialTab={adding} onClose={() => setAdding(null)} />}
+      {helpOpen && <HelpSheet onClose={() => setHelpOpen(false)} />}
+    </>
+  );
 
   // Reading positions live in localStorage (see lib/progress): read once per list.
   const positions = useMemo(() => new Map((chapters ?? []).map((c) => [c.id, loadPosition(c.id)])), [chapters]);
@@ -113,43 +121,63 @@ export function Library() {
   if (!hasChapters) {
     return (
       <div className="library">
-        <header className="page-head">
-          <h1>{t('library.title')}</h1>
-        </header>
-        <section className="empty">
-          <img src="./icon.svg" alt="" width={64} height={64} />
-          <h2>{t('hero.title')}</h2>
-          <p className="muted">{t('hero.text')}</p>
-          <QuickLink />
-          <a className="btn" href="#/new">
-            <Icon name="image" size={18} /> {t('quick.files')}
-          </a>
-        </section>
-        <section className="group">
-          <h2 className="group-title">{t('how.title')}</h2>
-          <ol className="list steps">
-            {([1, 2, 3, 4] as const).map((n) => (
-              <li key={n} className="list-row">
-                <span className="step-num">{n}</span>
-                <span className="list-text">
-                  <strong>{t(`how.${n}.title`)}</strong>
-                  <small>{t(`how.${n}.text`)}</small>
-                </span>
-              </li>
-            ))}
-          </ol>
+        <BrandBar />
+        <h1 className="screen-title">{t('library.title')}</h1>
+        <section className="start">
+          <StartArt />
+          <h2>{t('start.title')}</h2>
+          <p className="muted">{t('start.text')}</p>
+          <div className="start-options">
+            <button className="start-option main" onClick={() => setAdding('url')}>
+              <span className="start-icon">
+                <Icon name="link" size={26} />
+              </span>
+              <span className="start-text">
+                <strong>
+                  {t('start.link')} <span className="badge">{t('start.link.badge')}</span>
+                </strong>
+                <span className="muted">{t('start.link.text')}</span>
+              </span>
+              <Icon name="forward" size={20} />
+            </button>
+            <button className="start-option" onClick={() => setAdding('images')}>
+              <span className="start-icon">
+                <Icon name="image" size={26} />
+              </span>
+              <span className="start-text">
+                <strong>{t('start.images')}</strong>
+                <span className="muted">{t('start.images.text')}</span>
+              </span>
+              <Icon name="forward" size={20} />
+            </button>
+            <button className="start-option" onClick={() => setAdding('file')}>
+              <span className="start-icon">
+                <Icon name="folder" size={26} />
+              </span>
+              <span className="start-text">
+                <strong>{t('start.file')}</strong>
+                <span className="muted">{t('start.file.text')}</span>
+              </span>
+              <Icon name="forward" size={20} />
+            </button>
+          </div>
+          <button className="link-btn where" onClick={() => setHelpOpen(true)}>
+            <Icon name="help" size={18} /> {t('start.where')}
+          </button>
           <p className="muted small center">
             {t('features.private')} {t('common.free')}.
           </p>
         </section>
+        {sheets}
       </div>
     );
   }
 
   return (
     <div className="library">
+      <BrandBar />
       <header className="page-head">
-        <h1>{t('library.title')}</h1>
+        <h1 className="screen-title">{t('library.title')}</h1>
         <div className="head-actions">
           <button
             className={`icon-btn ${searching ? 'on' : ''}`}
@@ -180,8 +208,6 @@ export function Library() {
         </label>
       )}
 
-      {!searching && <QuickLink />}
-
       {resume && !searching && (
         <a className="continue" href={`#/read/${encodeURIComponent(resume.chapter.id)}`}>
           <img src={seriesCover([resume.chapter], resume.chapter) ?? ''} alt="" />
@@ -204,7 +230,7 @@ export function Library() {
       )}
 
       {groups.length === 0 && <p className="muted center">{t('library.noMatch', { query: query.trim() })}</p>}
-      <ul className="shelf">
+      <ul className="cards">
         {groups.map((g) => {
           const latest = g.items[g.items.length - 1];
           const busy = g.items.find((c) => jobs.get(c.id)?.running && !jobs.get(c.id)?.queued);
@@ -215,44 +241,63 @@ export function Library() {
           const pos = single ? positions.get(latest.id) : null;
           const ratio = single ? (pos?.finished ? 1 : (pos?.ratio ?? 0)) : read / g.items.length;
           const number = seriesOf(latest.title).number;
+          const job = busy ? jobs.get(busy.id) : undefined;
           return (
-            <li key={g.key} className="tile">
-              <a href={seriesHref(g)} className="tile-link">
-                <span className="tile-cover">
-                  {seriesCover(g.items) ? <img src={seriesCover(g.items)} alt="" loading="lazy" /> : <Icon name="image" size={32} />}
-                  {busy ? (
-                    <span className="tag busy">
-                      <span className="dot" /> {t('library.tag.working')}
-                    </span>
-                  ) : single ? (
-                    state && state.tone !== 'ok' && <span className={`tag ${state.tone}`}>{t(state.key, state.vars)}</span>
-                  ) : (
-                    unread > 0 && <span className="tag count">{unread}</span>
-                  )}
+            <li key={g.key} className="card-item">
+              <a href={seriesHref(g)} className="card-link">
+                <span className="card-cover">
+                  {seriesCover(g.items) ? <img src={seriesCover(g.items)} alt="" loading="lazy" /> : <Icon name="image" size={28} />}
                   {ratio > 0.01 && (
                     <span className="bar" aria-hidden="true">
                       <span style={{ transform: `scaleX(${ratio})` }} />
                     </span>
                   )}
                 </span>
-                <span className="tile-title" title={g.name}>
-                  {g.name}
-                </span>
-                <span className="tile-meta">
-                  {single
-                    ? number !== null
-                      ? t('library.series.chapter', { number })
-                      : t(chapterState(latest, undefined, null).key, chapterState(latest, undefined, null).vars)
-                    : t('library.series.count', { count: g.items.length })}
+                <span className="card-text">
+                  <strong className="card-title" title={g.name}>
+                    {g.name}
+                  </strong>
+                  <span className="card-badges">
+                    <span className="badge-pill">
+                      <Icon name={latest.layout === 'manga' || latest.layout === 'comic' ? 'library' : 'phone'} size={13} />{' '}
+                      {t(`add.layout.badge.${latest.layout ?? 'webtoon'}`)}
+                    </span>
+                    <span className="badge-pill">
+                      <Icon name="globe" size={13} /> {latest.targetLang.toUpperCase().slice(0, 2)}
+                    </span>
+                    {!single && unread > 0 && <span className="badge-pill accent">{unread}</span>}
+                  </span>
+                  <span className="card-meta">
+                    {busy && job ? (
+                      <>
+                        <span className="dot" /> {t('reader.translating', { done: job.done, total: job.total || busy.pageIds.length })}
+                      </>
+                    ) : single ? (
+                      state && state.tone !== 'ok' && state.tone !== '' ? (
+                        <span className={`tone-${state.tone}`}>{t(state.key, state.vars)}</span>
+                      ) : number !== null ? (
+                        t('library.series.chapter', { number })
+                      ) : (
+                        t('library.series.count', { count: 1 })
+                      )
+                    ) : (
+                      t('library.series.count', { count: g.items.length })
+                    )}
+                  </span>
                 </span>
               </a>
-              <button className="tile-more" onClick={() => setActionsFor(g)} aria-label={`${t('reader.menu')} – ${g.name}`}>
+              <button className="card-more" onClick={() => setActionsFor(g)} aria-label={`${t('reader.menu')} – ${g.name}`}>
                 <Icon name="more" size={18} />
               </button>
             </li>
           );
         })}
       </ul>
+
+      <button className="fab" onClick={() => setAdding('url')}>
+        <Icon name="plus" size={22} /> {t('library.add')}
+      </button>
+      {sheets}
 
       {actionsFor && (
         <ActionSheet title={actionsFor.name} onClose={() => setActionsFor(null)}>
@@ -284,6 +329,48 @@ export function Library() {
         </ActionSheet>
       )}
       {coverFor && <CoverDialog chapters={coverFor.chapters} name={coverFor.name} onClose={() => setCoverFor(null)} />}
+    </div>
+  );
+}
+
+/** The app's name and the switch between dark and light. */
+function BrandBar() {
+  const t = useT();
+  const { theme } = useSettings();
+  const dark =
+    theme === 'dark' || (theme === 'auto' && typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
+  return (
+    <div className="brand-bar">
+      <span className="brand">
+        <img src="./icon.svg" alt="" width={34} height={34} />
+        <span>WebTrad</span>
+      </span>
+      <button
+        className="round-btn"
+        onClick={() => updateSettings({ theme: dark ? 'light' : 'dark' })}
+        aria-label={dark ? t('theme.toLight') : t('theme.toDark')}
+        title={dark ? t('theme.toLight') : t('theme.toDark')}
+      >
+        <Icon name={dark ? 'moon' : 'sun'} size={22} />
+      </button>
+    </div>
+  );
+}
+
+/** Three pages fanned out, each saying hello in another language. */
+function StartArt() {
+  return (
+    <div className="start-art" aria-hidden="true">
+      <span className="art-card left">
+        <span className="art-bubble">안녕!</span>
+      </span>
+      <span className="art-card right">
+        <span className="art-bubble">こんにちは</span>
+      </span>
+      <span className="art-card middle">
+        <span className="art-bubble">Bonjour !</span>
+        <span className="art-lines" />
+      </span>
     </div>
   );
 }

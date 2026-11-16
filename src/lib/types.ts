@@ -24,7 +24,11 @@ export interface Chapter {
   nextUrl?: string;
   /** Page counters, refreshed while the chapter is processed. */
   stats?: { done: number; errors: number; total: number };
+  /** How it is laid out: a vertical webtoon, a manga read right to left, a comic read left to right. */
+  layout?: ComicLayout;
 }
+
+export type ComicLayout = 'webtoon' | 'manga' | 'comic';
 
 export interface Bubble {
   id: string;

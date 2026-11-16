@@ -16,13 +16,14 @@ import type { Bubble, Chapter, Page } from './types';
 const MAX_SIDE = 1536;
 
 /** Bubbles read aloud: translated, shown, the end of a cut bubble left out (read with its start). */
-export function readable(bubbles: Bubble[]): Bubble[] {
+export function readable(bubbles: Bubble[], layout?: Chapter['layout']): Bubble[] {
   return bubbles
     .filter((b) => !b.hidden && b.seam !== 'prev' && /[\p{L}\p{N}]/u.test(b.translation))
     .sort((a, b) => {
-      // Reading order: top to bottom; side by side (same height), left first.
+      // Reading order: top to bottom; side by side (same height), left first
+      // (right first in a manga).
       const overlap = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-      if (overlap > Math.min(a.h, b.h) * 0.5) return a.x - b.x;
+      if (overlap > Math.min(a.h, b.h) * 0.5) return layout === 'manga' ? b.x - a.x : a.x - b.x;
       return a.y - b.y;
     });
 }

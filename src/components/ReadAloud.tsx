@@ -68,7 +68,7 @@ export function ReadAloud({ chapter, pages, onClose }: { chapter: Chapter; pages
       const r = document.getElementById(`page-${p.index}`)?.getBoundingClientRect();
       if (!r || r.bottom <= 0) continue;
       const k = r.height / p.height;
-      const items = readable(p.bubbles);
+      const items = readable(p.bubbles, chapter.layout);
       const item = items.findIndex((b) => r.top + (b.y + b.h) * k > 40);
       if (item >= 0) return { page: i, item };
       if (r.top >= 0) return { page: i, item: 0 };
@@ -129,7 +129,7 @@ export function ReadAloud({ chapter, pages, onClose }: { chapter: Chapter; pages
       // The characters of the next page are found while this one is read.
       const next = pagesRef.current[page + 1];
       if (next && next.status === 'done' && needsSpeakers(next)) void ensureSpeakers(next, chapter).catch(() => undefined);
-      const items = readable(p.bubbles);
+      const items = readable(p.bubbles, chapter.layout);
       for (; item < items.length; item++) {
         pos.current = { page, item };
         const b = items[item];
@@ -195,7 +195,7 @@ export function ReadAloud({ chapter, pages, onClose }: { chapter: Chapter; pages
     setStatus(null);
     // Scrolled away while paused: reading goes on from what is on screen.
     const p = pos.current ? pagesRef.current[pos.current.page] : undefined;
-    const b = p && pos.current ? readable(p.bubbles)[pos.current.item] : undefined;
+    const b = p && pos.current ? readable(p.bubbles, chapter.layout)[pos.current.item] : undefined;
     if (!p || !b || !onScreen(p, b)) pos.current = fromScreen();
     setState('play');
   };
@@ -206,10 +206,10 @@ export function ReadAloud({ chapter, pages, onClose }: { chapter: Chapter; pages
     let { page, item } = { page: cur.page, item: cur.item + by };
     const list = pagesRef.current;
     while (page >= 0 && page < list.length) {
-      const n = readable(list[page].bubbles).length;
+      const n = readable(list[page].bubbles, chapter.layout).length;
       if (item < 0) {
         page--;
-        if (page >= 0) item = readable(list[page].bubbles).length - 1;
+        if (page >= 0) item = readable(list[page].bubbles, chapter.layout).length - 1;
         continue;
       }
       if (item >= n) {

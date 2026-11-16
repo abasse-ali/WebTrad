@@ -18,6 +18,7 @@ import type { Bubble, Chapter, Page, ReaderMode } from '../lib/types';
 import { navigate } from '../router';
 import { SPEED_LEVELS, clampSpeed, useAutoScroll } from '../lib/autoscroll';
 import { BubbleSheet } from './BubbleSheet';
+import { Modal as Sheet } from './AddSheet';
 import { UsageMeter } from './UsageMeter';
 import { Icon } from './Icon';
 import { LangSelect } from './LangSelect';
@@ -47,6 +48,7 @@ export function Reader({ id }: { id: string }) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [barHidden, setBarHidden] = useState(false);
   const [current, setCurrent] = useState(0);
+  const [viewOpen, setViewOpen] = useState(false);
   /** Automatic scrolling: off, moving, or paused with its controls still shown. */
   const [auto, setAuto] = useState<'off' | 'play' | 'pause'>('off');
   const autoRef = useRef(auto);
@@ -744,11 +746,32 @@ export function Reader({ id }: { id: string }) {
         )}
       </main>
 
-      {pages && pages.length > 1 && !editing && !draft && (
-        <div className={`reader-pos ${hidden ? 'hidden' : ''}`} aria-hidden="true">
-          {Math.min(current, pages.length - 1) + 1} / {pages.length}
+      {pages && pages.length > 0 && !editing && !draft && !voiceOn && auto === 'off' && (
+        <div className={`reader-foot ${hidden ? 'hidden' : ''}`}>
+          <span className="foot-count">
+            {Math.min(current, pages.length - 1) + 1} / {pages.length}
+          </span>
+          <input
+            type="range"
+            className="foot-slider"
+            min={1}
+            max={pages.length}
+            value={Math.min(current, pages.length - 1) + 1}
+            aria-label={t('reader.page')}
+            tabIndex={hidden ? -1 : 0}
+            onChange={(e) => {
+              const i = Number(e.target.value) - 1;
+              setCurrent(i);
+              document.getElementById(`page-${pages[i]?.index ?? i}`)?.scrollIntoView({ block: 'start' });
+            }}
+          />
+          {running && <span className="spinner" aria-label={t('reader.translating', { done: job?.done ?? 0, total: job?.total ?? pages.length })} />}
+          <button className="icon-btn" onClick={() => setViewOpen(true)} aria-label={t('reader.settings')} title={t('reader.settings')} tabIndex={hidden ? -1 : 0}>
+            <Icon name="settings" size={22} />
+          </button>
         </div>
       )}
+      {viewOpen && <ReaderSettings mode={mode} onMode={setMode} onClose={() => setViewOpen(false)} />}
 
       {pages && pages.length > 0 && !editing && !draft && !voiceOn && auto === 'off' && (
         <div className={`reader-jump ${hidden ? 'hidden' : ''}`} role="group">
@@ -802,7 +825,10 @@ export function Reader({ id }: { id: string }) {
 
       {draft && selection && (
         <BubbleSheet
+          key={draft.id}
           draft={draft}
+          page={pages?.find((p) => p.id === selection.pageId)}
+          layoutOptions={opts}
           busy={busyIds.includes(draft.id)}
           t={t}
           onChange={setDraft}
@@ -968,5 +994,52 @@ function LanguageDialog({
         </button>
       </div>
     </Modal>
+  );
+}
+
+/** "Reader settings": what the page shows, and how the translation is lettered. */
+function ReaderSettings({ mode, onMode, onClose }: { mode: 'translated' | 'original' | 'compare'; onMode: (m: 'translated' | 'original' | 'compare') => void; onClose: () => void }) {
+  const t = useT();
+  const settings = useSettings();
+  return (
+    <Sheet label={t('reader.settings')} onClose={onClose}>
+      <div className="modal-head">
+        <div>
+          <h2>{t('reader.settings')}</h2>
+        </div>
+        <button className="round-btn" onClick={onClose} aria-label={t('common.close')}>
+          <Icon name="close" size={20} />
+        </button>
+      </div>
+      <p className="field-label">{t('reader.settings.view')}</p>
+      <div className="segmented wide pill-tabs" role="group">
+        {(['translated', 'original', 'compare'] as const).map((m) => (
+          <button key={m} className={mode === m ? 'active' : ''} aria-pressed={mode === m} onClick={() => onMode(m)}>
+            {t(`reader.mode.${m}`)}
+          </button>
+        ))}
+      </div>
+      <p className="field-label">{t('reader.settings.font')}</p>
+      <div className="segmented wide pill-tabs" role="group">
+        {(['comic', 'sans', 'serif'] as const).map((f) => (
+          <button
+            key={f}
+            className={`font-${f} ${settings.font === f ? 'active' : ''}`}
+            aria-pressed={settings.font === f}
+            onClick={() => updateSettings({ font: f })}
+          >
+            {f === 'comic' ? 'Comic' : f === 'sans' ? 'Sans' : 'Serif'}
+          </button>
+        ))}
+      </div>
+      <p className="field-label">{t('reader.settings.case')}</p>
+      <div className="segmented wide pill-tabs" role="group">
+        {(['original', 'upper', 'normal'] as const).map((c) => (
+          <button key={c} className={settings.letterCase === c ? 'active' : ''} aria-pressed={settings.letterCase === c} onClick={() => updateSettings({ letterCase: c })}>
+            {t(`reader.settings.case.${c}`)}
+          </button>
+        ))}
+      </div>
+    </Sheet>
   );
 }
