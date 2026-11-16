@@ -63,3 +63,16 @@ describe('evenCutText', () => {
     expect(out[1].fontSize).toBe(24);
   });
 });
+
+describe('alignToBubbles and a box already in its bubble', () => {
+  it('does not move it onto a white shirt to explain one more box', () => {
+    const box = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
+    // The text of a dotted bubble, well placed; a second text on no bubble.
+    const items = [box(380, 4700, 300, 60), box(820, 4400, 120, 60)];
+    // The bubble, then 557 px lower a shirt and a patch of artwork.
+    const bubbles = [box(221, 4487, 614, 486), box(195, 5000, 740, 600), box(780, 4700, 200, 400)];
+    const m = alignToBubbles(items, bubbles);
+    expect(m.a).toBe(1);
+    expect(m.b).toBe(0);
+  });
+});
