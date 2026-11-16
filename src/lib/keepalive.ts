@@ -17,10 +17,11 @@ const JOB_LOCK = 'webtrad-job';
 // iOS suspends an app a few seconds after it leaves the screen, and the
 // translation stops with it. While a chapter is processed the app plays
 // silence: natively (keeps the app running, mixed with other sounds) and in
-// the page itself (keeps the web view's JavaScript running). The page's
-// sound is not mixable: WebKit takes the audio for it and would stop a
-// video playing in Safari or YouTube. It is only played while nothing else
-// plays, and never started again over another app's sound.
+// the page itself (keeps the web view's JavaScript running). On iOS 17 and
+// later the page's sound is made "ambient" (mixed with other apps' sound);
+// on older ones WebKit takes the audio for it and would stop a video
+// playing in Safari or YouTube, so it is only played while nothing else
+// plays.
 
 /** One second of silence, as a WAV data URL. */
 function silentWav(): string {
@@ -66,26 +67,20 @@ function silenceElement(): HTMLAudioElement {
 /** Plays the page's silence, unless another app is playing sound (it would be cut). */
 async function playPageSilence(): Promise<void> {
   if (!processing || getSettings().background === false) return;
-  // Already playing: the page's own silence is played by WebKit outside the
-  // app, and iOS counts it as "another app's sound" (a video was said to be
-  // playing when nothing was).
+  // Already playing: nothing to do.
   if (silence && !silence.paused) return;
   const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
-  if (await otherAudioPlaying()) {
-    // Without a sound of its own the page is frozen by iOS a minute after
-    // the app is left (the translation stopped while a video played). The
-    // Audio Session API (iOS 17) makes the page's sound "ambient": mixed
-    // with the video instead of taking its place.
-    if (!session) {
-      logInfo('app', 'Son d’une autre appli en cours : la traduction ne le coupe pas');
-      return;
-    }
-    if (session.type !== 'ambient') {
-      session.type = 'ambient';
-      logInfo('app', 'Son d’une autre appli en cours : silence de la page mélangé à ce son');
-    }
-  } else if (session && session.type !== 'auto') {
-    session.type = 'auto';
+  if (session) {
+    // The Audio Session API (iOS 17): the page's silence is always mixed
+    // with other sounds, so it never stops a video or music, and nothing
+    // has to be guessed. Asking iOS whether "another app" plays was wrong:
+    // the page's own sound, played by WebKit outside the app, counted as
+    // one (a video was said to be playing when nothing was).
+    if (session.type !== 'ambient') session.type = 'ambient';
+  } else if (await otherAudioPlaying()) {
+    // Older iOS: the page's sound would take the place of the other one.
+    logInfo('app', 'Son d’une autre appli en cours : la traduction ne le coupe pas');
+    return;
   }
   await silenceElement().play().catch(() => undefined);
 }
@@ -136,7 +131,13 @@ function backgroundWork(on: boolean): void {
   if (wanted) {
     void playPageSilence();
     logInfo('app', 'Traduction en arrière-plan activée (son silencieux)');
-  } else silence?.pause();
+  } else {
+    silence?.pause();
+    // Back to the usual audio once the work is done (reading aloud is then
+    // heard even with the ring switch on silent).
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session && session.type === 'ambient') session.type = 'auto';
+  }
 }
 
 let processing = false;

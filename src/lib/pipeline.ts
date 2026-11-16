@@ -343,7 +343,7 @@ export async function visionPage(
     // land on no lettering are then left out, never moved onto a bubble.
     const doubtful = dialogue.length > (sliceBubbles.length + sliceBlocks.length) * 1.5 + 4;
     if (doubtful) logWarn('ocr', `Morceau ${i + 1} : ${dialogue.length} textes pour ${sliceBlocks.length} blocs de lettrage, textes inventés écartés`);
-    const mapping = alignToBubbles(dialogue, [...sliceBubbles, ...sliceBlocks]);
+    const mapping = alignToBubbles(dialogue, [...sliceBubbles, ...sliceBlocks], { top, bottom: top + h });
     if (mapping.a !== 1 || mapping.b !== 0) {
       logInfo('ocr', `Cadres de l’IA replacés sur les bulles (échelle ${mapping.a.toFixed(2)}, décalage ${Math.round(mapping.b)} px)`, {
         morceau: i + 1,
@@ -892,7 +892,7 @@ export async function visionPage(
       let patch: string | undefined;
       let patchBox: Box | undefined;
       try {
-        const cleaned = cleanBubble(px, region, { x: ink.x - pad, y: ink.y - pad, w: ink.w + pad * 2, h: ink.h + pad * 2 }, fill);
+        const cleaned = cleanBubble(px, region, { x: ink.x - pad, y: ink.y - pad, w: ink.w + pad * 2, h: ink.h + pad * 2 }, fill, fontSize * scale * 1.8);
         patch = pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92);
         patchBox = { x: cleaned.x / scale, y: cleaned.y / scale, w: cleaned.pixels.width / scale, h: cleaned.pixels.height / scale };
       } catch {

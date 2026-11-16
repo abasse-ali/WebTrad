@@ -406,7 +406,11 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   } else {
     const padX = Math.min(b.w * 0.12, original * 0.6) + 3;
     const padY = Math.min(b.h * 0.12, original * 0.4) + 3;
-    area = clampBox({ x: b.x - padX, y: b.y - padY, w: b.w + padX * 2, h: b.h + padY * 2 }, page.width, page.height);
+    // A text cut between two pages is laid out whole on each of them (each
+    // shows its part): cut to the page, the two halves were laid out
+    // differently, one of them in tiny letters.
+    const box = { x: b.x - padX, y: b.y - padY, w: b.w + padX * 2, h: b.h + padY * 2 };
+    area = b.seam ? { ...clampBox({ ...box, y: 0 }, page.width, Infinity), y: box.y, h: box.h } : clampBox(box, page.width, page.height);
     erase = area;
     radius = Math.min(padX, padY) * 1.5;
   }
