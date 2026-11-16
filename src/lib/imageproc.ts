@@ -1137,15 +1137,41 @@ export function growToText(px: Pixels, box: Box): Box {
   const litCols = cols.filter((n) => n > 0).sort((a, b) => a - b);
   let nx0 = x0;
   let nx1 = x1;
-  if (litCols.length > 3) {
+  // Only on a plain background: on bricks, foliage or hatching the drawing
+  // itself is full of edges like letters, and the box spread over it (and
+  // over a sound effect beside the text).
+  const band = Math.max(4, Math.round((ny1 - ny0) * 0.5));
+  let around = 0;
+  let aroundRows = 0;
+  for (const [a, b] of [
+    [Math.max(0, ny0 - band), ny0],
+    [ny1, Math.min(H - 1, ny1 + band)],
+  ]) {
+    for (let y = a; y < b; y++) {
+      aroundRows++;
+      for (let x = x0; x < x1; x++) {
+        const i = (y * W + x) * 4;
+        if (Math.abs(luminance(data, i) - luminance(data, i + 4)) > 70) around++;
+      }
+    }
+  }
+  const insideDensity = cols.reduce((a, n) => a + n, 0) / Math.max(1, (ny1 - ny0) * (x1 - x0));
+  const aroundDensity = around / Math.max(1, aroundRows * (x1 - x0));
+  const plain = aroundRows > 0 && aroundDensity < insideDensity * 0.05;
+  if (plain && litCols.length > 3) {
     const colMin = Math.max(2, litCols[Math.floor(litCols.length * 0.5)] * 0.3);
-    const gapX = Math.max(4, Math.round(lineH * 1.1));
-    const reachX = Math.round(Math.max(box.w * 0.5, lineH * 6));
+    const colMax = Math.max(colMin * 2, litCols[Math.floor(litCols.length * 0.9)] * 2.5);
+    const gapX = Math.max(4, Math.round(lineH * 1.4));
+    // The model's box sometimes holds only the first half of the lines.
+    const reachX = Math.round(Math.max(box.w * 1.2, lineH * 10));
     const side = (from: number, step: number) => {
       let last = from - step;
       let gap = 0;
       for (let x = from, k = 0; x >= 0 && x < W - 1 && k < reachX; x += step, k++) {
-        if (colEdges(x) >= colMin) {
+        const n = colEdges(x);
+        // Far more edges than a column of the text: a big drawn sound effect next to it.
+        if (n > colMax) break;
+        if (n >= colMin) {
           last = x;
           gap = 0;
         } else if (++gap > gapX) break;

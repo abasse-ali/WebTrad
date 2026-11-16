@@ -257,7 +257,10 @@ export async function visionPage(
   await Promise.all(Array.from({ length: Math.min(VISION_PARALLEL, slices.length) }, worker));
 
   const detected = normaliseSourceCode(results.find((r) => r.sourceLanguage)?.sourceLanguage);
-  if (detected && (chapter.sourceLang === AUTO || (chapter.autoSource && detected !== chapter.sourceLang))) {
+  // Only while the language is not known yet: one page the model took for
+  // Korean switched a whole English chapter, and the page read on the device
+  // after it found no text at all.
+  if (detected && chapter.sourceLang === AUTO) {
     // The model told us the language: remember it for edits and retranslations.
     chapter.sourceLang = detected;
     chapter.autoSource = true;
@@ -311,6 +314,7 @@ export async function visionPage(
   // as drawn included): lettering under none of them was not read at all.
   const seen: Box[] = [];
   const chat: Box[] = [];
+  const untranslated: { text: string; translation: string }[] = [];
   const placeSlice = (i: number) => {
     const { top, h, rescue } = slices[i];
     const ownTop = rescue || top === 0 ? top : top + overlap / 2;
@@ -378,8 +382,15 @@ export async function visionPage(
     if (typical > 4) logInfo('ocr', `Cadres de l’IA recalés sur le texte (jusqu’à ${Math.round(typical)} px)`, { morceau: i + 1, mesures: ys.length });
     for (const f of results[i].bubbles) {
       seen.push(rawBox(f.box), toPage(f.box));
+      // A sentence sent back untranslated (the model copied the English): it
+      // is translated as text afterwards instead of being taken for a sound
+      // effect and left out (a whole page stayed in English).
+      if (f.translation.trim() && sameText(f.text, f.translation) && f.text.trim().split(/\s+/).length >= 3 && !isDrawnEffect(f.text)) {
+        f.translation = '';
+        untranslated.push(f);
+      }
       // Untranslatable sound effects ("HUFF" → "HUFF"): the drawn lettering stays.
-      if (!f.translation.trim() || sameText(f.text, f.translation)) continue;
+      else if (!f.translation.trim() || sameText(f.text, f.translation)) continue;
       // Nothing to translate in "…?" or "!!": the drawn marks stay as they are.
       if (!/[\p{L}\p{N}]/u.test(f.text)) continue;
       const box = toPage(f.box);
@@ -496,6 +507,22 @@ export async function visionPage(
       logWarn('ocr', `Nouvelle lecture impossible : ${(err as Error).message.slice(0, 120)}`);
     }
   }
+  if (untranslated.length > 0 && !signal.aborted) {
+    try {
+      const { translations } = await translateTexts(
+        untranslated.map((f) => f.text),
+        chapter.sourceLang !== AUTO ? chapter.sourceLang : 'en',
+        chapter.targetLang,
+        signal,
+      );
+      untranslated.forEach((f, k) => (f.translation = translations[k] ?? ''));
+      logInfo('ocr', `${untranslated.length} texte(s) rendu(s) non traduit(s) par l’IA : traduit(s) à part`);
+    } catch (err) {
+      if (signal.aborted) throw err;
+      logWarn('ocr', `Textes non traduits par l’IA : ${(err as Error).message.slice(0, 120)}`);
+    }
+    for (let k = found.length - 1; k >= 0; k--) if (!found[k].f.translation.trim()) found.splice(k, 1);
+  }
   // Lettering found on the page itself. A box that lies on no lettering
   // (the model placed it wrong, sometimes a bubble's height away) takes the
   // nearest block of lettering that no other box has, in reading order.
@@ -593,7 +620,9 @@ export async function visionPage(
     // Marks the blocks left out ("I…" at the start of a line, a lone "?")
     // stayed visible beside the translation: the ink of the bubble completes
     // the box, unless it is far bigger (a drawn effect crossing the bubble).
-    if (ink && ink.w * ink.h <= (x1 - x0) * (y1 - y0) * 2.5 && ink.x < x1 && ink.x + ink.w > x0 && ink.y < y1 && ink.y + ink.h > y0) {
+    // (Up to 6 times: lines the blocks missed, at the ends of lines or a whole
+    // line, stayed in English around a translation lettered too small.)
+    if (ink && ink.w * ink.h <= (x1 - x0) * (y1 - y0) * 6 && ink.h <= (y1 - y0) * 5 && ink.x < x1 && ink.x + ink.w > x0 && ink.y < y1 && ink.y + ink.h > y0) {
       x0 = Math.min(x0, ink.x);
       y0 = Math.min(y0, ink.y);
       x1 = Math.max(x1, ink.x + ink.w);
