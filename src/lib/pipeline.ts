@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, plainAround, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
+import { cleanBubble, contrastColor, luminance, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, plainAround, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -1436,173 +1436,193 @@ async function detectChapterLanguage(chapter: Chapter, pages: Page[], signal: Ab
   }
 }
 
-/** Tallest image of several short pages read together, in page widths (one request). */
+/** Tallest stretch of the strip read in one request without being sliced, in widths. */
 const GROUP_MAX_RATIO = 2.65;
 
-/**
- * Consecutive short pages read together: the pages of a chapter cut in
- * many short images (800×1045) each took a request, and the provider's
- * limit (about 8 to 10 a minute) made a chapter of 106 pages take a quarter
- * of an hour. Two or three of them stacked make one image of an ordinary
- * height: half the requests, and the bubbles cut between them are read
- * whole, without a request of their own.
- */
-export function pageGroups(pages: Page[], linked: (page: Page) => boolean = () => false): Page[][] {
-  const groups: Page[][] = [];
-  const height = (g: Page[]) => g.reduce((h, q) => h + q.height, 0);
-  for (const p of pages) {
-    const last = groups[groups.length - 1];
-    const head = last?.[0];
-    const tail = last?.[last.length - 1];
-    const joins = last && tail!.index + 1 === p.index && Math.abs(p.width - head!.width) <= head!.width * 0.02;
-    if (joins && last.length < 3 && height(last) + p.height <= head!.width * GROUP_MAX_RATIO) {
-      last.push(p);
-      continue;
-    }
-    // Lettering across the break between the group and this page: they
-    // are read together, or the text was cut in two, half of it left in
-    // English and the other half lettered apart ("…DANS THIS HOUSE?!"
-    // then "CETTE MAISON ?!"). The group's last page goes with this one
-    // when it is not tied to the page before it; else the group grows.
-    if (joins && linked(tail!)) {
-      const before = last[last.length - 2];
-      if (before && !linked(before) && tail!.height + p.height <= head!.width * GROUP_MAX_RATIO) {
-        last.pop();
-        groups.push([tail!, p]);
-        continue;
-      }
-      if (last.length < 3 && height(last) + p.height <= head!.width * GROUP_STRETCH_RATIO) {
-        last.push(p);
-        continue;
-      }
-    }
-    groups.push([p]);
-  }
-  return groups;
-}
-
-/** Tallest group allowed to keep a text across a break whole (read in two overlapping slices). */
+/** Tallest stretch allowed when no empty band comes sooner (read in two overlapping slices). */
 const GROUP_STRETCH_RATIO = 4;
 
-/**
- * Pages whose bottom is crossed by lettering going on at the top of the next
- * page (a line cut by the break), found without the AI on a strip around each
- * break. Each page is decoded once.
- */
-export async function crossedBreaks(pages: Page[], signal?: AbortSignal): Promise<Set<string>> {
-  const crossed = new Set<string>();
-  let previous: { page: Page; strip: Pixels } | null = null;
-  for (const page of pages) {
-    if (signal?.aborted) break;
-    let bitmap: DecodedImage | null = null;
-    try {
-      bitmap = await decodeImage(page.blob);
-      const W = bitmap.width;
-      const R = Math.max(20, Math.round(W * 0.11));
-      if (previous && previous.page.index + 1 === page.index && previous.strip.width === W && bitmap.height > R * 2) {
-        const top = bitmapPixels(bitmap, 1, { x: 0, y: 0, w: W, h: R });
-        const joined = new Uint8ClampedArray(W * R * 2 * 4);
-        joined.set(previous.strip.data, 0);
-        joined.set(top.data, W * R * 4);
-        const blocks = findTextBlocks({ data: joined, width: W, height: R * 2 });
-        if (blocks.some((b) => b.y < R - 3 && b.y + b.h > R + 3)) crossed.add(previous.page.id);
-      }
-      previous = bitmap.height > R * 2 ? { page, strip: bitmapPixels(bitmap, 1, { x: 0, y: bitmap.height - R, w: W, h: R }) } : null;
-    } catch {
-      previous = null;
-    } finally {
-      bitmap?.close();
-    }
-  }
-  return crossed;
+// --- The chapter as one strip, cut between panels ------------------------------
+//
+// Sites cut a webtoon into images of a fixed height (800×1045…), anywhere:
+// through a bubble, between two lines of a text. The pages are put back end
+// to end as one strip, and the strip is cut again where nothing is drawn
+// across the whole width (the white space between panels), so that each
+// stretch read by the AI holds whole bubbles and whole texts.
+
+/** A part of a page drawn in a stretch of the strip. */
+export interface Segment {
+  page: Page;
+  /** First row of the part in the page. */
+  srcY: number;
+  /** Where it is drawn in the stretch. */
+  dstY: number;
+  h: number;
 }
 
-/** Several short pages read by the AI as one image, the texts given back to their own page. */
-async function processGroup(group: Page[], chapter: Chapter, signal: AbortSignal): Promise<void> {
-  const settings = getSettings();
-  const first = group[0];
-  const last = group[group.length - 1];
-  setJob(chapter.id, { pageIndex: first.index, phase: 'ocr' });
-  for (const p of group) await patchPage(p.id, { status: 'ocr', error: undefined });
-  const bitmaps: DecodedImage[] = [];
-  try {
-    for (const p of group) {
-      try {
-        bitmaps.push(await decodeImage(p.blob));
-      } catch {
-        const fresh = await getPage(p.id);
-        if (!fresh) throw new Error(`Image de la page ${p.index + 1} illisible`);
-        p.blob = fresh.blob;
-        bitmaps.push(await decodeImage(fresh.blob));
-      }
-    }
-    const W = bitmaps[0].width;
-    const tops: number[] = [];
-    let H = 0;
-    for (const b of bitmaps) {
-      tops.push(H);
-      H += Math.round(b.height * (W / b.width));
-    }
-    const canvas = createCanvas(W, H);
-    const c = context2d(canvas);
-    bitmaps.forEach((b, i) => c.drawImage(b.source, 0, tops[i], W, Math.round(b.height * (W / b.width))));
-    const joined: DecodedImage = { source: canvas, width: W, height: H, close: () => (canvas.width = canvas.height = 0) };
-    const start = performance.now();
-    const context = await storySoFar(chapter, first.index);
-    let all: Bubble[];
-    try {
-      all = await visionPage(joined, chapter, signal, context, { group: true });
-    } finally {
-      joined.close();
-    }
-    // Each text to its page; a bubble across the break between two of them
-    // to both, as a bubble cut between two pages is.
-    const per: Bubble[][] = group.map(() => []);
-    for (const b of all) {
-      // Everything drawn for it: its letters, the room of its bubble, the
-      // repaired patch. A bubble whose letters were on one page but whose
-      // room ran onto the one above had its first line cut by the page.
-      const parts = [b, b.area, b.patchBox, b.shape && { y: b.shape.y, h: (b.shape.x.length / 2) * b.shape.step }].filter(Boolean) as { y: number; h: number }[];
-      const top = Math.min(...parts.map((p) => p.y));
-      const bottom = Math.max(...parts.map((p) => p.y + p.h));
-      group.forEach((_, i) => {
-        const y0 = tops[i];
-        const y1 = i + 1 < group.length ? tops[i + 1] : H;
-        if (bottom <= y0 || top >= y1) return;
-        const across = top < y0 - 2 || bottom > y1 + 2;
-        const here = shiftBubble(b, -y0);
-        if (!across) per[i].push(here);
-        else {
-          // The upper part carries the text; the lower one only erases.
-          const upper = top >= y0;
-          per[i].push({ ...here, id: upper ? b.id : uid(), seam: upper ? 'next' : 'prev' });
-        }
-      });
-    }
-    // The end of a bubble begun on the page before the group is already lettered.
-    const own = (await getPage(first.id))?.bubbles.filter((b) => b.seam === 'prev') ?? [];
-    // (Read again by the group, the same text was lettered a second time, tiny, beside it.)
-    if (own.length > 0)
-      per[0] = [...per[0].filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmaps[0].height), b) || similarText(o.original, b.original))), ...own];
-    // A bubble cut at the bottom of the last page: joined to the next page as usual.
-    try {
-      per[per.length - 1] = await stitchSeam(last, bitmaps[bitmaps.length - 1], chapter, signal, per[per.length - 1], context);
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') throw err;
-      logWarn('ocr', `Bulle à cheval sur la page ${last.index + 2} non recollée : ${(err as Error).message.slice(0, 120)}`);
-    }
-    for (const [i, p] of group.entries()) {
-      await patchPage(p.id, { bubbles: per[i], status: 'done', stalled: 0 });
-      rememberSpeakers(chapter.title, per[i]);
-    }
-    logInfo('ocr', `Pages ${first.index + 1} à ${last.index + 1} lues ensemble par l’IA : ${per.map((b) => b.length).join(' + ')} texte(s)`, {
-      taille: `${W}×${H}`,
-      modèle: settings.llm.model,
-      ms: since(start),
-    });
-  } finally {
-    bitmaps.forEach((b) => b.close());
+/** A stretch of the strip read by one request. */
+export interface Chunk {
+  segments: Segment[];
+  width: number;
+  height: number;
+}
+
+/** How many pixels of each row stand out from the row's own colour: 0 across a gutter. */
+export function rowBusy(px: Pixels): Uint16Array {
+  const { data, width: W, height: H } = px;
+  const out = new Uint16Array(H);
+  const samples: number[] = new Array(9);
+  for (let y = 0; y < H; y++) {
+    const row = y * W * 4;
+    for (let k = 0; k < 9; k++) samples[k] = luminance(data, row + Math.floor(((k + 0.5) * W) / 9) * 4);
+    samples.sort((a, b) => a - b);
+    const ref = samples[4];
+    let n = 0;
+    for (let x = 0; x < W; x++) if (Math.abs(luminance(data, row + x * 4) - ref) > 40) n++;
+    out[y] = n;
   }
+  return out;
+}
+
+/** Stretches no taller than this many widths are read in one request. */
+const CHUNK_RATIO = 2.6;
+
+/**
+ * Where to cut the strip of `pages` (all of width `W`, with the busy rows of
+ * each): in the middle of bands of empty rows taller than a line spacing (a
+ * gap between two lines of one text is not one), each stretch as tall as
+ * allowed. Without such a band, a stretch up to four widths (read in two
+ * overlapping slices), else a cut at the quietest row.
+ */
+export function planChunks(pages: { page: Page; busy: Uint16Array }[], W: number): Chunk[] {
+  const starts: number[] = [];
+  let total = 0;
+  for (const p of pages) {
+    starts.push(total);
+    total += p.busy.length;
+  }
+  const busyAt = (y: number) => {
+    let i = starts.length - 1;
+    while (i > 0 && starts[i] > y) i--;
+    return pages[i].busy[y - starts[i]] ?? 0;
+  };
+  const band = Math.max(12, Math.round(W * 0.03));
+  const cuts: number[] = [];
+  let run = -1;
+  for (let y = 0; y <= total; y++) {
+    const empty = y < total && busyAt(y) <= 1;
+    if (empty && run < 0) run = y;
+    if (!empty && run >= 0) {
+      if (y - run >= band && run > 0 && y < total) cuts.push(Math.round((run + y) / 2));
+      run = -1;
+    }
+  }
+  const chunks: Chunk[] = [];
+  const make = (a: number, b: number): Chunk => {
+    const segments: Segment[] = [];
+    pages.forEach((p, i) => {
+      const y0 = Math.max(a, starts[i]);
+      const y1 = Math.min(b, starts[i] + p.busy.length);
+      if (y1 > y0) segments.push({ page: p.page, srcY: y0 - starts[i], dstY: y0 - a, h: y1 - y0 });
+    });
+    return { segments, width: W, height: b - a };
+  };
+  let s = 0;
+  while (total - s > W * GROUP_MAX_RATIO) {
+    const lo = s + W * 0.8;
+    const hi = s + W * CHUNK_RATIO;
+    let cut = [...cuts].reverse().find((c) => c > lo && c <= hi);
+    if (cut === undefined) cut = cuts.find((c) => c > hi && c <= s + W * GROUP_STRETCH_RATIO);
+    if (cut === undefined) {
+      // No empty band: the quietest row of the last part of the stretch.
+      let best = Math.round(hi);
+      for (let y = Math.round(s + W * 1.8); y <= hi; y++) if (busyAt(y) < busyAt(best)) best = y;
+      cut = best;
+    }
+    chunks.push(make(s, cut));
+    s = cut;
+  }
+  chunks.push(make(s, total));
+  return chunks;
+}
+
+/** A page's image, read again from storage when iOS lost the bytes held in memory. */
+async function decodePage(p: Page): Promise<DecodedImage> {
+  try {
+    return await decodeImage(p.blob);
+  } catch {
+    const fresh = await getPage(p.id);
+    if (!fresh) throw new Error(`Image de la page ${p.index + 1} illisible`);
+    p.blob = fresh.blob;
+    return decodeImage(fresh.blob);
+  }
+}
+
+/** The busy rows of each page (each decoded once). */
+async function stripProfiles(pages: Page[], signal: AbortSignal): Promise<Uint16Array[]> {
+  const out: Uint16Array[] = [];
+  for (const p of pages) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const bitmap = await decodePage(p);
+    try {
+      out.push(rowBusy(bitmapPixels(bitmap)));
+    } finally {
+      bitmap.close();
+    }
+  }
+  return out;
+}
+
+/** One stretch of the strip read by the AI; the texts of each page, in its own coordinates. */
+async function processChunk(chunk: Chunk, chapter: Chapter, signal: AbortSignal): Promise<Map<string, Bubble[]>> {
+  const settings = getSettings();
+  const { width: W, height: H, segments } = chunk;
+  const canvas = createCanvas(W, H);
+  const c = context2d(canvas);
+  for (const sg of segments) {
+    const bitmap = await decodePage(sg.page);
+    try {
+      c.drawImage(bitmap.source, 0, sg.srcY, bitmap.width, sg.h, 0, sg.dstY, W, sg.h);
+    } finally {
+      bitmap.close();
+    }
+  }
+  const joined: DecodedImage = { source: canvas, width: W, height: H, close: () => (canvas.width = canvas.height = 0) };
+  const start = performance.now();
+  const first = segments[0].page;
+  const last = segments[segments.length - 1].page;
+  const context = await storySoFar(chapter, first.index);
+  let all: Bubble[];
+  try {
+    all = await visionPage(joined, chapter, signal, context, { group: true });
+  } finally {
+    joined.close();
+  }
+  const per = new Map<string, Bubble[]>(segments.map((sg) => [sg.page.id, []]));
+  for (const b of all) {
+    // Everything drawn for it: its letters, the room of its bubble, the repaired patch.
+    const parts = [b, b.area, b.patchBox, b.shape && { y: b.shape.y, h: (b.shape.x.length / 2) * b.shape.step }].filter(Boolean) as { y: number; h: number }[];
+    const top = Math.min(...parts.map((p) => p.y));
+    const bottom = Math.max(...parts.map((p) => p.y + p.h));
+    const hit = segments.filter((sg) => bottom > sg.dstY && top < sg.dstY + sg.h);
+    if (hit.length === 0) continue;
+    // Within one page: whole. Across a break between two images of the
+    // site: on each, the upper part carrying the text, the others only erasing.
+    hit.forEach((sg, k) => {
+      const here = shiftBubble(b, sg.srcY - sg.dstY);
+      if (hit.length === 1) per.get(sg.page.id)!.push(here);
+      else per.get(sg.page.id)!.push({ ...here, id: k === 0 ? b.id : uid(), seam: k === 0 ? 'next' : 'prev' });
+    });
+  }
+  const pagesText = first.index === last.index ? `Page ${first.index + 1}` : `Pages ${first.index + 1} à ${last.index + 1}`;
+  logInfo('ocr', `${pagesText} : passage lu par l’IA, coupé entre les cases : ${all.length} texte(s)`, {
+    taille: `${W}×${H}`,
+    de: `${first.index + 1}:${segments[0].srcY}`,
+    à: `${last.index + 1}:${segments[segments.length - 1].srcY + segments[segments.length - 1].h}`,
+    modèle: settings.llm.model,
+    ms: since(start),
+  });
+  return per;
 }
 
 /** A bubble moved up or down (page coordinates), with everything placed on the page. */
@@ -1909,27 +1929,89 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     const parallel = visionEnabled() && !opts.translateOnly ? PAGE_PARALLEL : 1;
     let nextPage = 0;
     // Short pages read by the AI two or three at a time (one request).
-    let units: Page[][] = todo.map((p) => [p]);
-    if (parallel > 1) {
-      const crossed = await crossedBreaks(todo, controller.signal);
-      units = pageGroups(todo, (p) => crossed.has(p.id));
-      if (crossed.size > 0) logInfo('job', `Texte à cheval sur deux pages : ${crossed.size} jointure(s), pages lues ensemble`);
-    }
-    const doGroup = async (group: Page[]): Promise<'next' | 'stop'> => {
-      if (group.length === 1) return doPage(group[0]);
+    // AI reading: the pages put back end to end and cut again between panels
+    // (see planChunks), each stretch read by one request.
+    type Unit = { page: Page } | { chunk: Chunk };
+    let units: Unit[] = todo.map((page) => ({ page }));
+    const pending = new Map<string, { bubbles: Bubble[]; need: number; got: number }>();
+    const solo = new Set<string>();
+    if (parallel > 1 && todo.length > 0) {
+      setJob(chapterId, { message: 'Préparation des pages…' });
       try {
-        await processGroup(group, chapter, controller.signal);
-        done += group.length;
+        const runs: Page[][] = [];
+        for (const p of todo) {
+          const run = runs[runs.length - 1];
+          const tail = run?.[run.length - 1];
+          if (run && tail!.index + 1 === p.index && Math.abs(p.width - run[0].width) <= 2) run.push(p);
+          else runs.push([p]);
+        }
+        const planned: Unit[] = [];
+        for (const run of runs) {
+          // One page of an ordinary height: read as it is (with its neighbours joined if a bubble crosses).
+          if (run.length === 1 && run[0].height <= run[0].width * GROUP_MAX_RATIO) {
+            planned.push({ page: run[0] });
+            continue;
+          }
+          const busy = await stripProfiles(run, controller.signal);
+          for (const chunk of planChunks(run.map((page, i) => ({ page, busy: busy[i] })), run[0].width)) planned.push({ chunk });
+        }
+        units = planned;
+        for (const u of units) {
+          if (!('chunk' in u)) continue;
+          for (const sg of u.chunk.segments) {
+            const a = pending.get(sg.page.id) ?? { bubbles: [], need: 0, got: 0 };
+            a.need++;
+            pending.set(sg.page.id, a);
+          }
+        }
+        const nChunks = units.filter((u) => 'chunk' in u).length;
+        logInfo('job', `Chapitre recollé en une bande et recoupé entre les cases : ${nChunks} passage(s) pour ${todo.length} page(s)`);
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
+        logWarn('job', `Découpage entre les cases impossible, pages lues une à une : ${(err as Error).message.slice(0, 120)}`);
+        units = todo.map((page) => ({ page }));
+        pending.clear();
+      }
+      setJob(chapterId, { message: undefined });
+    }
+    const doUnit = async (unit: Unit): Promise<'next' | 'stop'> => {
+      if ('page' in unit) return doPage(unit.page);
+      const pages = unit.chunk.segments.map((sg) => sg.page).filter((p) => !solo.has(p.id));
+      if (pages.length === 0) return 'next';
+      setJob(chapterId, { pageIndex: pages[0].index, phase: 'ocr' });
+      for (const p of pages) if (p.status !== 'ocr') await patchPage(p.id, { status: 'ocr', error: undefined });
+      try {
+        const per = await processChunk(unit.chunk, chapter, controller.signal);
+        for (const p of pages) {
+          const a = pending.get(p.id)!;
+          a.bubbles.push(...(per.get(p.id) ?? []));
+          a.got++;
+          if (a.got < a.need) continue;
+          await patchPage(p.id, { bubbles: a.bubbles, status: 'done', stalled: 0 });
+          rememberSpeakers(chapter.title, a.bubbles);
+          done++;
+        }
         setJob(chapterId, { done, engine: 'llm', message: undefined });
       } catch (err) {
         if ((err as Error).name === 'AbortError') {
-          for (const p of group) await patchPage(p.id, { status: p.bubbles.length ? 'done' : 'pending' });
+          for (const p of pages) await patchPage(p.id, { status: 'pending' });
           return 'stop';
         }
-        // Read one by one instead (a refusal of the content filter, an
-        // unreadable answer…): each page then takes its own way.
-        logWarn('job', `Pages ${group[0].index + 1} à ${group[group.length - 1].index + 1} lues une à une : ${(err as Error).message.slice(0, 120)}`);
-        for (const p of group) if ((await doPage(p)) === 'stop') return 'stop';
+        if (err instanceof TranslateError && err.fatal) {
+          for (const p of pages) await patchPage(p.id, { status: 'pending', error: undefined });
+          logError('job', `Traduction arrêtée à la page ${pages[0].index + 1} : ${(err as Error).message}`, { chapitre: chapter.title });
+          setJob(chapterId, { message: (err as Error).message });
+          stopped = true;
+          return 'stop';
+        }
+        // Read page by page instead (a refusal of the content filter, an
+        // answer that never came…): each page then takes its own way.
+        logWarn('job', `Pages ${pages[0].index + 1} à ${pages[pages.length - 1].index + 1} lues une à une : ${(err as Error).message.slice(0, 120)}`);
+        for (const p of pages) {
+          if (pending.get(p.id)!.got >= pending.get(p.id)!.need) continue;
+          solo.add(p.id);
+          if ((await doPage(p)) === 'stop') return 'stop';
+        }
         return 'next';
       }
       await refreshStats(chapterId);
@@ -1977,8 +2059,8 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         // The provider refused a request for going too fast: one page at a
         // time from then on (two at once only made both wait, refused).
         if (n > 0 && lastRateLimitAt() >= startedAt) return;
-        const group = units[nextPage++];
-        if ((await doGroup(group)) === 'stop') return;
+        const unit = units[nextPage++];
+        if ((await doUnit(unit)) === 'stop') return;
       }
     };
     if (opts.proofreadOnly) done = todo.length;

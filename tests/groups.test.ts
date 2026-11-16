@@ -1,29 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { pageGroups } from '../src/lib/pipeline';
+import { planChunks } from '../src/lib/pipeline';
 import type { Page } from '../src/lib/types';
 
-const page = (index: number, width: number, height: number) => ({ id: `p${index}`, index, width, height }) as Page;
 
-describe('pageGroups', () => {
-  it('reads short pages of the same width two or three at a time', () => {
-    const pages = [0, 1, 2, 3, 4].map((i) => page(i, 800, 1045));
-    expect(pageGroups(pages).map((g) => g.map((p) => p.index))).toEqual([[0, 1], [2, 3], [4]]);
-    const tiny = [0, 1, 2, 3].map((i) => page(i, 800, 600));
-    expect(pageGroups(tiny).map((g) => g.length)).toEqual([3, 1]);
+describe('planChunks', () => {
+  const W = 800;
+  /** A page of 1045 rows, busy except for the given empty bands [from, to). */
+  const page = (index: number, empty: [number, number][]) => {
+    const busy = new Uint16Array(1045).fill(30);
+    for (const [a, b] of empty) busy.fill(0, a, b);
+    return { page: { id: `p${index}`, index, width: W, height: 1045 } as Page, busy };
+  };
+  it('cuts the strip in the middle of gutters, each stretch as tall as allowed', () => {
+    const pages = [page(0, [[600, 700]]), page(1, [[200, 260], [900, 1000]]), page(2, [[500, 560]]), page(3, [])];
+    const chunks = planChunks(pages, W);
+    // Gutters at 650, 1275, 1995, 2620 of the strip: cut at 1995 (≤ 2080), then at… the rest fits.
+    const cuts = chunks.slice(1).map((c) => c.segments[0].srcY + (c.segments[0].page.index * 1045));
+    expect(cuts[0]).toBe(1995);
+    for (const c of chunks) expect(c.height).toBeLessThanOrEqual(W * 2.65);
+    // The strip whole, in order, page by page.
+    expect(chunks.reduce((h, c) => h + c.height, 0)).toBe(4 * 1045);
+    expect(chunks[0].segments.map((s) => [s.page.index, s.srcY, s.dstY, s.h])).toEqual([[0, 0, 0, 1045], [1, 0, 1045, 950]]);
   });
-  it('keeps two pages crossed by a text in the same group', () => {
-    const pages = [35, 36, 37, 38, 39].map((i) => page(i, 800, 1045));
-    // 36 → 37 crossed: 36 leaves the group of 35 and goes with 37.
-    const crossed = new Set(['p36']);
-    expect(pageGroups(pages, (p) => crossed.has(p.id)).map((g) => g.map((p) => p.index))).toEqual([[35], [36, 37], [38, 39]]);
-    // 35 → 36 and 36 → 37 crossed: the three pages together.
-    const both = new Set(['p35', 'p36']);
-    expect(pageGroups(pages, (p) => both.has(p.id)).map((g) => g.map((p) => p.index))).toEqual([[35, 36, 37], [38, 39]]);
-  });
-  it('keeps tall pages, other widths and gaps in the order apart', () => {
-    expect(pageGroups([page(0, 800, 1800), page(1, 800, 1045)]).length).toBe(2);
-    expect(pageGroups([page(0, 800, 900), page(1, 690, 900)]).length).toBe(2);
-    expect(pageGroups([page(0, 800, 900), page(2, 800, 900)]).length).toBe(2);
+  it('does not cut between two lines of a text (a gap shorter than a line spacing)', () => {
+    const pages = [page(0, [[700, 710]]), page(1, [[300, 320]]), page(2, [[100, 112]])];
+    const chunks = planChunks(pages, W);
+    // No band of 24 empty rows: no gutter; stretches cut at the quietest rows instead, none over 2.6 widths.
+    for (const c of chunks) expect(c.height).toBeLessThanOrEqual(W * 2.65);
   });
 });
 
