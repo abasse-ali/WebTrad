@@ -1140,7 +1140,7 @@ export function growToText(px: Pixels, box: Box): Box {
   // Only on a plain background: on bricks, foliage or hatching the drawing
   // itself is full of edges like letters, and the box spread over it (and
   // over a sound effect beside the text).
-  const band = Math.max(4, Math.round((ny1 - ny0) * 0.5));
+  const band = Math.max(4, Math.round(Math.min((ny1 - ny0) * 0.5, lineH * 1.2)));
   let around = 0;
   let aroundRows = 0;
   for (const [a, b] of [
@@ -1157,7 +1157,39 @@ export function growToText(px: Pixels, box: Box): Box {
   }
   const insideDensity = cols.reduce((a, n) => a + n, 0) / Math.max(1, (ny1 - ny0) * (x1 - x0));
   const aroundDensity = around / Math.max(1, aroundRows * (x1 - x0));
-  const plain = aroundRows > 0 && aroundDensity < insideDensity * 0.05;
+  // Lines not told apart (tilted lines overlapping rows): their ends neither.
+  const plain = aroundRows > 0 && aroundDensity < insideDensity * 0.12 && (lines >= 2 || y1 - y0 < (x1 - x0) * 0.4);
+  // Rows of the box between its lines (letters on none of them).
+  const offRow: boolean[] = [];
+  for (let y = ny0; y < ny1; y++) offRow.push(y < y0 || y >= y1 ? false : inside[y - y0] < min * 0.5);
+  const offRows = offRow.filter(Boolean).length;
+  const between = (x: number) => {
+    let n = 0;
+    for (let y = ny0; y < ny1; y++) {
+      if (!offRow[y - ny0]) continue;
+      const i = (y * W + x) * 4;
+      if (Math.abs(luminance(data, i) - luminance(data, i + 4)) > 70) n++;
+    }
+    return n;
+  };
+  const beyond = (x: number) => {
+    let n = 0;
+    for (const [a, b] of [
+      [Math.max(0, ny0 - band), ny0],
+      [ny1, Math.min(H, ny1 + band)],
+    ]) {
+      for (let y = a; y < b; y++) {
+        const i = (y * W + x) * 4;
+        if (Math.abs(luminance(data, i) - luminance(data, i + 4)) > 70) n++;
+      }
+    }
+    return n;
+  };
+  // A column of the text: its ink stays on the lines, not above or below
+  // them (a sound effect, hair, a drawn edge) nor as much between them
+  // (foliage, bricks, hatching).
+  const textLike = (x: number, n: number) =>
+    beyond(x) <= Math.max(4, n * 0.8) && !(offRows >= 3 && between(x) >= 3 && between(x) > n * 0.5 * (offRows / (ny1 - ny0)));
   if (plain && litCols.length > 3) {
     const colMin = Math.max(2, litCols[Math.floor(litCols.length * 0.5)] * 0.3);
     const colMax = Math.max(colMin * 2, litCols[Math.floor(litCols.length * 0.9)] * 2.5);
@@ -1171,6 +1203,9 @@ export function growToText(px: Pixels, box: Box): Box {
         const n = colEdges(x);
         // Far more edges than a column of the text: a big drawn sound effect next to it.
         if (n > colMax) break;
+        // Ink that goes on above or below the lines (a sound effect, hair, a
+        // drawn edge beside the text): not the end of a line of it.
+        if (n >= colMin && !textLike(x, n)) break;
         if (n >= colMin) {
           last = x;
           gap = 0;
@@ -1180,6 +1215,34 @@ export function growToText(px: Pixels, box: Box): Box {
     };
     nx0 = Math.min(x0, side(x0 - 1, -1));
     nx1 = Math.max(x1, side(x1, 1) + 1);
+  }
+  // The model's box also over something else beside the text (a sound
+  // effect): its edge columns that are not text are left out, as long as
+  // most of the box stays.
+  if (plain && litCols.length > 3 && nx0 === x0 && nx1 === x1) {
+    const colMin = Math.max(2, litCols[Math.floor(litCols.length * 0.5)] * 0.3);
+    const strayCol = (x: number) => {
+      const n = cols[x - x0];
+      return n >= colMin && !textLike(x, n);
+    };
+    const keep = Math.round((x1 - x0) * 0.5);
+    const trim = (from: number, step: number) => {
+      let last = from;
+      let quiet = 0;
+      for (let x = from, k = 0; k < x1 - x0 - keep; x += step, k++) {
+        if (strayCol(x)) {
+          last = x + step;
+          quiet = 0;
+        } else if (cols[x - x0] >= colMin && ++quiet > 3) break;
+      }
+      return last;
+    };
+    nx0 = trim(x0, 1);
+    nx1 = trim(x1 - 1, -1) + 1;
+    if (nx1 - nx0 < keep) {
+      nx0 = x0;
+      nx1 = x1;
+    }
   }
   if (ny0 === y0 && ny1 === y1 && nx0 === x0 && nx1 === x1) return box;
   return { x: nx0, y: ny0, w: nx1 - nx0, h: ny1 - ny0 };
@@ -1416,6 +1479,7 @@ export function letterHeight(px: Pixels, box: Box, tinted = false): number {
   const y0 = Math.max(0, Math.round(box.y));
   const y1 = Math.min(H, Math.round(box.y + box.h));
   const runs: number[] = [];
+  const edgeRuns: boolean[] = [];
   let start = -1;
   for (let y = y0; y <= y1; y++) {
     let ink = false;
@@ -1427,13 +1491,63 @@ export function letterHeight(px: Pixels, box: Box, tinted = false): number {
     }
     if (ink && start < 0) start = y;
     if (!ink && start >= 0) {
-      if (y - start >= 4) runs.push(y - start);
+      if (y - start >= 4) {
+        runs.push(y - start);
+        // Cut by the box and short: shading or a line half in it, not a line of letters.
+        edgeRuns.push(start === y0 || y === y1);
+      }
       start = -1;
     }
   }
   if (runs.length === 0) return 0;
+  const longest = Math.max(...runs);
+  const whole = runs.filter((r, k) => !edgeRuns[k] || r >= longest * 0.6);
+  const pool = whole.length > 0 ? whole : runs;
+  pool.sort((a, b) => a - b);
+  return pool[Math.floor((pool.length - 1) * 0.25)];
+}
+
+/**
+ * Height of the letters of lettering drawn over the artwork, where nearly
+ * every row of the box holds some dark pixel (the drawing, a bubble's rim)
+ * and `letterHeight` only sees one tall run: the bands of rows rich in
+ * letter edges, the lines being separated by rows with far fewer. 0 when no
+ * such bands are found.
+ */
+export function letterHeightByEdges(px: Pixels, box: Box): number {
+  const { data, width: W, height: H } = px;
+  const x0 = Math.max(0, Math.round(box.x));
+  const x1 = Math.min(W - 1, Math.round(box.x + box.w));
+  const y0 = Math.max(0, Math.round(box.y));
+  const y1 = Math.min(H, Math.round(box.y + box.h));
+  if (x1 - x0 < 4 || y1 - y0 < 6) return 0;
+  const rows: number[] = [];
+  for (let y = y0; y < y1; y++) {
+    let n = 0;
+    for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      if (Math.abs(luminance(data, i) - luminance(data, i + 4)) > 48) n++;
+    }
+    rows.push(n);
+  }
+  const sorted = [...rows].sort((a, b) => a - b);
+  const high = sorted[Math.floor(sorted.length * 0.8)];
+  if (high < 4) return 0;
+  const min = high * 0.4;
+  const runs: number[] = [];
+  let start = -1;
+  for (let k = 0; k <= rows.length; k++) {
+    const on = k < rows.length && rows[k] >= min;
+    if (on && start < 0) start = k;
+    if (!on && start >= 0) {
+      if (k - start >= 3) runs.push(k - start);
+      start = -1;
+    }
+  }
+  // One band over the whole box: no lines told apart.
+  if (runs.length === 0 || (runs.length === 1 && runs[0] > rows.length * 0.8)) return 0;
   runs.sort((a, b) => a - b);
-  return runs[Math.floor((runs.length - 1) * 0.25)];
+  return runs[Math.floor((runs.length - 1) * 0.5)];
 }
 
 /** Average brightness of a box of `px` (0 dark – 255 white). */

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -538,6 +538,17 @@ export async function visionPage(
     // A box much bigger than its letters (the model often frames a whole
     // bubble, or more): the block of lettering lying mostly inside it.
     if (hit < 0) hit = blocks.findIndex((b, j) => !taken.has(j) && overlapShare(b, t.box) > 0.6);
+    // Outside any bubble, a box shifted sideways onto the drawing beside
+    // the text (a sound effect next to it): the block of lettering it
+    // overlaps at the same height, letters about the size the box says.
+    if (hit < 0 && !t.region) {
+      hit = blocks.findIndex((b, j) => {
+        if (taken.has(j)) return false;
+        const ox = Math.min(b.x + b.w, t.box.x + t.box.w) - Math.max(b.x, t.box.x);
+        const oy = Math.min(b.y + b.h, t.box.y + t.box.h) - Math.max(b.y, t.box.y);
+        return ox > Math.min(b.w, t.box.w) * 0.15 && oy > Math.min(b.h, t.box.h) * 0.6 && b.h < t.box.h * 1.8 && b.w < t.box.w * 1.8;
+      });
+    }
     if (hit >= 0) {
       taken.add(hit);
       t.block = blocks[hit];
@@ -546,7 +557,19 @@ export async function visionPage(
       // (above the bubble, over the drawing), not on the letters. It now
       // takes the place of the letters found.
       if (!t.region) {
-        t.box = { ...blocks[hit] };
+        const b = blocks[hit];
+        // Only part of the lines found (the rest over the drawing, not on
+        // paper): the model's box, holding the block, keeps its width so
+        // the whole text is erased.
+        if (overlapShare(b, t.box) > 0.8 && b.w < t.box.w * 0.6) {
+          const x0 = Math.min(b.x, t.box.x);
+          const y0 = Math.min(b.y, t.box.y);
+          t.box = { x: x0, y: y0, w: Math.max(b.x + b.w, t.box.x + t.box.w) - x0, h: Math.max(b.y + b.h, t.box.y + t.box.h) - y0 };
+        } else if (overlapShare(t.box, b) > 0.9 && b.w * b.h > t.box.w * t.box.h * 1.6) {
+          // A block much bigger than the model's box around it: the marks
+          // of a bubble's rim (spikes of an open bubble) taken with the
+          // letters. The model's box stays; its lines are grown to below.
+        } else t.box = { ...b };
         t.region = inRegion(t.box.x + t.box.w / 2, t.box.y + t.box.h / 2);
       }
     }
@@ -754,6 +777,7 @@ export async function visionPage(
     const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h });
     t.box.x = g.x / scale;
     t.box.y = g.y / scale;
+    t.box.w = g.w / scale;
     t.box.h = g.h / scale;
   }
   // A translation over the wrong place is worse than none: the original
@@ -873,7 +897,7 @@ export async function visionPage(
         if (oy > my) bottom = Math.min(bottom, (my + oy) / 2);
         else top = Math.max(top, (my + oy) / 2);
       }
-      const shape = bubbleShape(region, scale, top, bottom, Math.max(2, fontSize * 0.35), px);
+      const shape = bubbleShape(region, scale, top, bottom, Math.max(2, fontSize * 0.35), px, inkBox);
       bubbles.push({
         id: uid(),
         ...inkBox,
@@ -901,11 +925,24 @@ export async function visionPage(
     // be (a model's box says nothing of the number of lines: a three-line
     // text was lettered twice too big over the drawing); else from the box,
     // whose lines are ~1.2× the letters.
-    const measured = vertical ? 0 : letterHeight(px, { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale }) / scale;
+    const scaledBox = { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale };
+    let measured = vertical ? 0 : letterHeight(px, scaledBox) / scale;
+    // Over the artwork, or with a bubble's rim in the box, every row holds
+    // dark pixels: one run as tall as the box, not a letter. The lines are
+    // then told apart by their letter edges.
+    if (measured > box.h * 0.6 && box.h > 24) {
+      measured = letterHeightByEdges(px, scaledBox) / scale;
+      // Slanted lines overlap rows: bits of letters, not lines.
+      if (measured < box.h * 0.12) measured = 0;
+    }
+    // The text must fit in its box: letters about 0.6 of their size wide,
+    // lines 1.2 of it apart.
+    const chars = Math.max(1, f.text.replace(/\s+/g, ' ').trim().length);
+    const fitting = Math.sqrt((box.w * box.h) / (chars * 0.6 * 1.2));
     const fontSize =
       measured > 0
-        ? Math.max(8, Math.min(60, measured / LETTERS_TO_FONT))
-        : Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2)));
+        ? Math.max(8, Math.min(60, measured / LETTERS_TO_FONT, Math.max(10, fitting * 1.3)))
+        : Math.max(10, Math.min(60, (vertical ? box.w : box.h) / (lines * 1.2), fitting));
     // Lettering drawn on the artwork keeps its style: the tilt and the slant
     // of its lines (a shout written aslant, italic handwriting), and the
     // colours of its letters and of their outline.
@@ -946,7 +983,7 @@ export async function visionPage(
  * its rim, between `top` and `bottom` (its own lobe of a joined shape).
  * Undefined for a shape too small to say anything.
  */
-export function bubbleShape(region: BubbleRegion, scale: number, top: number, bottom: number, inset: number, px?: Pixels): Bubble['shape'] {
+export function bubbleShape(region: BubbleRegion, scale: number, top: number, bottom: number, inset: number, px?: Pixels, ink?: Box): Bubble['shape'] {
   const step = Math.max(1, Math.round(region.h / 48));
   const rows: [number, number][] = [];
   let first = -1;
@@ -955,8 +992,33 @@ export function bubbleShape(region: BubbleRegion, scale: number, top: number, bo
     const minX = region.spans[r * 2];
     const maxX = region.spans[r * 2 + 1];
     const inBand = y >= top + inset * 0.6 && y <= bottom - inset * 0.6;
-    const left = minX / scale + inset;
-    const right = maxX / scale - inset;
+    let left = minX / scale + inset;
+    let right = maxX / scale - inset;
+    // Drawing inside the bubble's white beside the text (a sound effect
+    // whose white letters join the bubble's): the room stops at its first
+    // dark line, scanned outward from the text.
+    if (px && ink && minX >= 0) {
+      const py = region.y + r;
+      const dark = (x: number) => {
+        const i = (py * px.width + x) * 4;
+        return px.data[i] * 0.299 + px.data[i + 1] * 0.587 + px.data[i + 2] * 0.114 < 100;
+      };
+      const inkRows = y >= ink.y && y <= ink.y + ink.h;
+      const from0 = Math.round((inkRows ? ink.x : ink.x + ink.w / 2) * scale);
+      const from1 = Math.round((inkRows ? ink.x + ink.w : ink.x + ink.w / 2) * scale);
+      for (let x = Math.max(minX, from1); x <= maxX; x++) {
+        if (dark(x)) {
+          right = Math.min(right, x / scale - inset);
+          break;
+        }
+      }
+      for (let x = Math.min(maxX, from0); x >= minX; x--) {
+        if (dark(x)) {
+          left = Math.max(left, x / scale + inset);
+          break;
+        }
+      }
+    }
     if (minX < 0 || !inBand || right - left < inset) {
       if (first >= 0) rows.push([0, -1]);
       continue;

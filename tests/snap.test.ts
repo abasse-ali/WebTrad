@@ -197,3 +197,38 @@ describe('growToText sideways', () => {
     expect(out.x + out.w).toBeLessThan(370);
   });
 });
+
+describe('growToText next to a sound effect', () => {
+  it('stops at strokes that go on above and below the lines', async () => {
+    const { growToText } = await import('../src/lib/imageproc');
+    const W = 400;
+    const H = 200;
+    const data = new Uint8ClampedArray(W * H * 4).fill(120);
+    for (let y = 80; y < 96; y++)
+      for (let x = 150; x < 300; x++) if (x % 6 < 2) data.fill(250, (y * W + x) * 4, (y * W + x) * 4 + 3);
+    // A big drawn letter just left of the text, much taller than its line.
+    for (let y = 40; y < 140; y++)
+      for (let x = 100; x < 140; x++) if (x % 8 < 3) data.fill(20, (y * W + x) * 4, (y * W + x) * 4 + 3);
+    const out = growToText({ width: W, height: H, data }, { x: 160, y: 78, w: 100, h: 20 });
+    expect(out.x).toBeGreaterThanOrEqual(140);
+    expect(out.x + out.w).toBeGreaterThanOrEqual(296);
+  });
+});
+
+describe('letterHeight', () => {
+  it('ignores a short band of shading cut by the box', async () => {
+    const { letterHeight } = await import('../src/lib/imageproc');
+    const W = 200;
+    const H = 120;
+    const data = new Uint8ClampedArray(W * H * 4).fill(255);
+    const dark = (y0: number, y1: number) => {
+      for (let y = y0; y < y1; y++)
+        for (let x = 20; x < 180; x++) if (x % 5 < 2) data.fill(0, (y * W + x) * 4, (y * W + x) * 4 + 3);
+    };
+    dark(10, 32);
+    dark(40, 62);
+    // Grey shading at the bottom of the bubble, cut by the box.
+    for (let y = 70; y < 80; y++) for (let x = 20; x < 180; x++) data.fill(90, (y * W + x) * 4, (y * W + x) * 4 + 3);
+    expect(letterHeight({ width: W, height: H, data }, { x: 20, y: 10, w: 160, h: 70 })).toBeGreaterThanOrEqual(20);
+  });
+});
