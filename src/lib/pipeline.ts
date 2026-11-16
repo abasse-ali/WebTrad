@@ -810,7 +810,10 @@ export async function visionPage(
     const s = snapToText(px, { x: t.box.x * scale, y: t.box.y * scale, w: t.box.w * scale, h: t.box.h * scale });
     // Then over the lines of the same text the box left out (they stayed
     // visible under the translation).
-    const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h });
+    // A block of lettering found on the page already spans its lines: not
+    // spread sideways (over hair beside it: the tilted band of the erase was
+    // then too thin, and the last line stayed).
+    const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h }, !(t.block && Math.abs(t.block.x - t.box.x) < 1 && Math.abs(t.block.w - t.box.w) < 1));
     t.box.x = g.x / scale;
     t.box.y = g.y / scale;
     t.box.w = g.w / scale;
@@ -1331,7 +1334,15 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
       const fresh = await getPage(next.id);
       if (fresh) {
         const zones = continued.map((l) => visiblePart(l, nextBitmap.height));
-        const kept = fresh.bubbles.filter((x) => x.seam !== 'prev' && !zones.some((z) => coversCentre(z, x)));
+        // The same text already lettered there by the next page's own reading
+        // (pages read two at a time, the next pair sometimes done first): it
+        // stayed, squeezed in a corner of the bubble, beside the joined one.
+        const kept = fresh.bubbles.filter(
+          (x) =>
+            x.seam !== 'prev' &&
+            !zones.some((z) => coversCentre(z, x) || overlapShare(z, x) > 0.3) &&
+            !continued.some((l) => similarText(l.original, x.original) || similarText(l.translation, x.translation)),
+        );
         await patchPage(next.id, { bubbles: [...kept, ...continued] });
       }
     }
@@ -1416,22 +1427,74 @@ const GROUP_MAX_RATIO = 2.65;
  * height: half the requests, and the bubbles cut between them are read
  * whole, without a request of their own.
  */
-export function pageGroups(pages: Page[]): Page[][] {
+export function pageGroups(pages: Page[], linked: (page: Page) => boolean = () => false): Page[][] {
   const groups: Page[][] = [];
+  const height = (g: Page[]) => g.reduce((h, q) => h + q.height, 0);
   for (const p of pages) {
     const last = groups[groups.length - 1];
     const head = last?.[0];
     const tail = last?.[last.length - 1];
-    const fits =
-      last &&
-      last.length < 3 &&
-      tail!.index + 1 === p.index &&
-      Math.abs(p.width - head!.width) <= head!.width * 0.02 &&
-      last.reduce((h, q) => h + q.height, 0) + p.height <= head!.width * GROUP_MAX_RATIO;
-    if (fits) last.push(p);
-    else groups.push([p]);
+    const joins = last && tail!.index + 1 === p.index && Math.abs(p.width - head!.width) <= head!.width * 0.02;
+    if (joins && last.length < 3 && height(last) + p.height <= head!.width * GROUP_MAX_RATIO) {
+      last.push(p);
+      continue;
+    }
+    // Lettering across the break between the group and this page: they
+    // are read together, or the text was cut in two, half of it left in
+    // English and the other half lettered apart ("…DANS THIS HOUSE?!"
+    // then "CETTE MAISON ?!"). The group's last page goes with this one
+    // when it is not tied to the page before it; else the group grows.
+    if (joins && linked(tail!)) {
+      const before = last[last.length - 2];
+      if (before && !linked(before) && tail!.height + p.height <= head!.width * GROUP_MAX_RATIO) {
+        last.pop();
+        groups.push([tail!, p]);
+        continue;
+      }
+      if (last.length < 3 && height(last) + p.height <= head!.width * GROUP_STRETCH_RATIO) {
+        last.push(p);
+        continue;
+      }
+    }
+    groups.push([p]);
   }
   return groups;
+}
+
+/** Tallest group allowed to keep a text across a break whole (read in two overlapping slices). */
+const GROUP_STRETCH_RATIO = 4;
+
+/**
+ * Pages whose bottom is crossed by lettering going on at the top of the next
+ * page (a line cut by the break), found without the AI on a strip around each
+ * break. Each page is decoded once.
+ */
+export async function crossedBreaks(pages: Page[], signal?: AbortSignal): Promise<Set<string>> {
+  const crossed = new Set<string>();
+  let previous: { page: Page; strip: Pixels } | null = null;
+  for (const page of pages) {
+    if (signal?.aborted) break;
+    let bitmap: DecodedImage | null = null;
+    try {
+      bitmap = await decodeImage(page.blob);
+      const W = bitmap.width;
+      const R = Math.max(20, Math.round(W * 0.11));
+      if (previous && previous.page.index + 1 === page.index && previous.strip.width === W && bitmap.height > R * 2) {
+        const top = bitmapPixels(bitmap, 1, { x: 0, y: 0, w: W, h: R });
+        const joined = new Uint8ClampedArray(W * R * 2 * 4);
+        joined.set(previous.strip.data, 0);
+        joined.set(top.data, W * R * 4);
+        const blocks = findTextBlocks({ data: joined, width: W, height: R * 2 });
+        if (blocks.some((b) => b.y < R - 3 && b.y + b.h > R + 3)) crossed.add(previous.page.id);
+      }
+      previous = bitmap.height > R * 2 ? { page, strip: bitmapPixels(bitmap, 1, { x: 0, y: bitmap.height - R, w: W, h: R }) } : null;
+    } catch {
+      previous = null;
+    } finally {
+      bitmap?.close();
+    }
+  }
+  return crossed;
 }
 
 /** Several short pages read by the AI as one image, the texts given back to their own page. */
@@ -1826,7 +1889,12 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     const parallel = visionEnabled() && !opts.translateOnly ? PAGE_PARALLEL : 1;
     let nextPage = 0;
     // Short pages read by the AI two or three at a time (one request).
-    const units: Page[][] = parallel > 1 ? pageGroups(todo) : todo.map((p) => [p]);
+    let units: Page[][] = todo.map((p) => [p]);
+    if (parallel > 1) {
+      const crossed = await crossedBreaks(todo, controller.signal);
+      units = pageGroups(todo, (p) => crossed.has(p.id));
+      if (crossed.size > 0) logInfo('job', `Texte à cheval sur deux pages : ${crossed.size} jointure(s), pages lues ensemble`);
+    }
     const doGroup = async (group: Page[]): Promise<'next' | 'stop'> => {
       if (group.length === 1) return doPage(group[0]);
       try {
