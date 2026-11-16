@@ -66,6 +66,10 @@ function silenceElement(): HTMLAudioElement {
 /** Plays the page's silence, unless another app is playing sound (it would be cut). */
 async function playPageSilence(): Promise<void> {
   if (!processing || getSettings().background === false) return;
+  // Already playing: the page's own silence is played by WebKit outside the
+  // app, and iOS counts it as "another app's sound" (a video was said to be
+  // playing when nothing was).
+  if (silence && !silence.paused) return;
   const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
   if (await otherAudioPlaying()) {
     // Without a sound of its own the page is frozen by iOS a minute after
