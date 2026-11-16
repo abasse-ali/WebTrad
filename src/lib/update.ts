@@ -27,6 +27,15 @@ import { isNativeApp } from './native';
 export const NATIVE_LEVEL = 2;
 
 const RELEASE = 'https://github.com/abasse-ali/WebTrad/releases/latest/download';
+/**
+ * Where downloaded versions are kept, in the app's Library. It must be this
+ * folder: at launch the app looks for a kept version there, by its folder
+ * name only. A version kept from anywhere else made the app look for a
+ * folder that does not exist, and crash at every launch.
+ */
+const SNAPSHOTS = 'NoCloud/ionic_built_snapshots';
+/** Folder of the first downloads (before), removed. */
+const LEGACY = 'ota';
 const READY_KEY = 'webtrad.update.ready';
 const TO_KEEP_KEY = 'webtrad.update.toKeep';
 const BINARY_KEY = 'webtrad.update.binaryNative';
@@ -57,7 +66,7 @@ function write(key: string, value: unknown): void {
 /** Where the running code comes from: the installed app, or a downloaded update. */
 async function runningFromUpdate(): Promise<{ path: string; fromUpdate: boolean }> {
   const { path } = await WebView.getServerBasePath();
-  return { path, fromUpdate: path.includes('/ota/') };
+  return { path, fromUpdate: path.includes('/ionic_built_snapshots/') || path.includes('/ota/') };
 }
 
 /** Comparable version numbers: "9" < "10". */
@@ -84,7 +93,7 @@ async function check(): Promise<UpdateStatus> {
   if (zipRes.status !== 200 || typeof zipRes.data !== 'string') throw new Error(`web.zip HTTP ${zipRes.status}`);
   const zip = await JSZip.loadAsync(zipRes.data, { base64: true });
   if (!zip.file('index.html')) throw new Error('web.zip sans index.html');
-  const dir = `ota/${build}`;
+  const dir = `${SNAPSHOTS}/${build}`;
   for (const entry of Object.values(zip.files)) {
     if (entry.dir) continue;
     const data = await entry.async('base64');
@@ -119,19 +128,20 @@ async function applyIfIdle(): Promise<void> {
   await WebView.setServerBasePath({ path: ready.path });
 }
 
-/** Removes the downloaded versions other than the running one. */
+/** Removes the downloaded versions other than the running one (and a download waiting to start). */
 async function cleanOld(keep: string): Promise<void> {
+  const folder = (p?: string) => p?.match(/\/(?:ionic_built_snapshots|ota)\/([^/]+)\/?$/)?.[1];
+  const kept = [folder(keep), folder(read<Ready>(READY_KEY)?.path)];
   try {
-    const { files } = await Filesystem.readdir({ path: 'ota', directory: Directory.Library });
-    const folder = (p?: string) => p?.match(/\/ota\/([^/]+)\/?$/)?.[1];
-    // The running code, and a download waiting to be started.
-    const kept = [folder(keep), folder(read<Ready>(READY_KEY)?.path)];
+    const { files } = await Filesystem.readdir({ path: SNAPSHOTS, directory: Directory.Library });
     for (const f of files) {
-      if (!kept.includes(f.name)) await Filesystem.rmdir({ path: `ota/${f.name}`, directory: Directory.Library, recursive: true });
+      if (!kept.includes(f.name)) await Filesystem.rmdir({ path: `${SNAPSHOTS}/${f.name}`, directory: Directory.Library, recursive: true });
     }
   } catch {
     /* no folder yet */
   }
+  // The old folder, unless the code running now comes from it.
+  if (!keep.includes(`/${LEGACY}/`)) await Filesystem.rmdir({ path: LEGACY, directory: Directory.Library, recursive: true }).catch(() => undefined);
 }
 
 /** Called once the app has started and drawn its first screen. */
@@ -143,6 +153,11 @@ export function startUpdates(): void {
       if (!fromUpdate) {
         // The installed app's own code: it tells what the app can run.
         write(BINARY_KEY, NATIVE_LEVEL);
+      } else if (!path.includes('/ionic_built_snapshots/')) {
+        // Code downloaded by an earlier version, in a folder the app cannot
+        // start from: never kept (the next launch would crash); the next
+        // download goes to the right place.
+        write(TO_KEEP_KEY, undefined);
       } else {
         // Downloaded code that started and drew the app: kept for the next
         // launches. (The path given back by the web view is not always
