@@ -557,6 +557,66 @@ export function llmEngine(llm: LlmSettings = getSettings().llm): TranslationEngi
   };
 }
 
+// --- Proofreading: the translations of a chapter read again, text only ------
+
+const SYSTEM_PROOFREAD = `You are the proofreader of a scanlation team. You receive the translated lines of a comic chapter, in reading order, each with its original text.
+Fix only real mistakes in the translation:
+- spelling mistakes, typos and words that do not exist ("sorde" → "sourde");
+- words left in the source language that a reader of the target language would not understand (English slang such as "cooties" → "microbes"); names, nicknames, sound effects and words commonly used as they are stay;
+- wrong grammar or agreement (gender, plural, conjugation), using the original and the lines around for who speaks to whom;
+- a translation that clearly says something else than its original.
+Keep everything else exactly as it is: tone, slang, swear words, length, punctuation, typography and letter case. Do not rephrase lines that are already correct.
+Answer with JSON only: {"fixes":[{"id":<id>,"text":"<corrected translation>"}]} listing only the lines you changed; {"fixes":[]} when all are correct.`;
+
+/**
+ * Lines of a chapter proofread by the AI (text only, a few requests per
+ * chapter): the corrected translation of each line that had a mistake.
+ */
+export async function proofreadTexts(
+  items: { id: number; original: string; text: string }[],
+  target: string,
+  signal?: AbortSignal,
+  llm: LlmSettings = getSettings().llm,
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (items.length === 0) return out;
+  const payload = {
+    target_language: englishName(target),
+    lines: items.map((i) => ({ id: i.id, original: i.original, translation: i.text })),
+  };
+  const answer = await chat(
+    llm,
+    [
+      { role: 'system', content: SYSTEM_PROOFREAD },
+      { role: 'user', content: JSON.stringify(payload) },
+    ],
+    signal,
+  );
+  const parsed = parseJsonAnswer<{ fixes?: { id: number; text: string }[] } | { id: number; text: string }[]>(answer);
+  const list = Array.isArray(parsed) ? parsed : (parsed.fixes ?? []);
+  for (const fix of list) {
+    const id = Number(fix?.id);
+    const item = items.find((i) => i.id === id);
+    if (!item || typeof fix.text !== 'string') continue;
+    const text = acceptedFix(item.text, fix.text);
+    if (text) out.set(id, text);
+  }
+  return out;
+}
+
+/** A proofread line, kept only when it is a correction, not a new line. */
+export function acceptedFix(before: string, after: string): string | undefined {
+  let text = after.replace(/\s+/g, ' ').trim();
+  if (!text || text === before.trim()) return undefined;
+  // About the same length: a fix, not a rewrite (nor a line run into the next one).
+  const ratio = text.length / Math.max(1, before.trim().length);
+  if (ratio < 0.6 || ratio > 1.6) return undefined;
+  // Lettering in capitals stays in capitals.
+  const letters = before.replace(/[^\p{L}]/gu, '');
+  if (letters.length > 1 && letters === letters.toLocaleUpperCase()) text = text.toLocaleUpperCase();
+  return text === before.trim() ? undefined : text;
+}
+
 // --- AI vision: read + translate a page image in a single request -----------
 
 export type Gender = 'male' | 'female';
@@ -605,6 +665,7 @@ How to translate, like a professional scanlation team:
 - Use the typography of the target language (French: « » for quotes, a space before ? ! : ;).
 - In languages that mark gender (French…), agree words with the gender of the speaker and of the person spoken to, as drawn (a woman says « je suis rentrée », « je suis prête »).
 - Only text in the target language: no notes, no romanisation, no alternatives.
+- Every word in the target language and spelled right: translate slang and kids' words too (cooties → microbes), and read each translation again for typos before answering.
 For each text also say who speaks it:
 ${SPEAKER_RULES}
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
