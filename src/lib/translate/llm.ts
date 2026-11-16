@@ -376,15 +376,19 @@ export function noThinking(llm: LlmSettings): Record<string, unknown> {
   return {};
 }
 
-export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
   if (!baseOf(llm) || !llm.model.trim()) throw new TranslateError('AI engine not configured', 'llm', false);
+  // A cap on the answer: free models sometimes repeat one line forever (the
+  // same "LET'S GO!" fifteen times, 196 made-up texts, 900 KB in 90 s). The
+  // answer is cut there; its complete items are kept (see salvageItems).
+  const limit = maxTokens ? { max_tokens: maxTokens } : {};
   const data = (await request(
     llm,
     'POST',
     '/chat/completions',
     // Streamed: data keeps flowing while a big model writes a long answer,
     // instead of one silent wait that ends in a timeout.
-    { model: llm.model.trim(), temperature: 0.2, messages, stream: true, ...noThinking(llm) },
+    { model: llm.model.trim(), temperature: 0.2, messages, stream: true, ...limit, ...noThinking(llm) },
     signal,
   ).catch(async (err: Error) => {
     // A provider that refuses the option: asked again without it, and never
@@ -392,7 +396,7 @@ export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: A
     // NVIDIA's filter rejected turned the option off, and every page after it
     // took a minute again.
     if (!/HTTP 4(00|22)/.test(err.message) || err.message.startsWith(CONTENT_REFUSED) || !Object.keys(noThinking(llm)).length) throw err;
-    const answer = await request(llm, 'POST', '/chat/completions', { model: llm.model.trim(), temperature: 0.2, messages, stream: true }, signal);
+    const answer = await request(llm, 'POST', '/chat/completions', { model: llm.model.trim(), temperature: 0.2, messages, stream: true, ...limit }, signal);
     thinkingOptionRefused.add(baseOf(llm));
     return answer;
   })) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
@@ -541,10 +545,12 @@ How to translate, like a professional scanlation team:
 - Keep names, nicknames and usernames as they are; keep the gaming, internet and fandom words that readers of the target language use as they are (teamfight, carry, rank names…), translate the others.
 - Interjections in bubbles (Ugh, Huh?, Haha, Hmm, Tch) become their usual equivalents in the target language; stuttering (I-I…) and trailing dots (…) are kept.
 - Use the typography of the target language (French: « » for quotes, a space before ? ! : ;).
+- In languages that mark gender (French…), agree words with the gender of the speaker and of the person spoken to, as drawn (a woman says « je suis rentrée », « je suis prête »).
 - Only text in the target language: no notes, no romanisation, no alternatives.
 For each text also say who speaks it:
 ${SPEAKER_RULES}
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
+Only list text that is really drawn in this image: never add, guess or continue lines (the story so far is context only), and never repeat an item.
 Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|thought|narration|sign","speaker":"...","gender":"male|female|unknown","text":"...","translation":"..."}]} in reading order. List each piece of text once, one item per block of lettering: never split the lines of one block into several items, and never merge two separate blocks (two bubbles drawn touching or joined are two items). Return {"bubbles":[]} if there is no text.`;
 }
 
@@ -552,6 +558,12 @@ Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.re
 function boxOrderOf(llm: LlmSettings): 'yxyx' | 'xyxy' {
   return LLM_PRESETS.find((p) => p.id === llm.preset)?.boxOrder ?? 'yxyx';
 }
+
+/**
+ * Longest answer of the AI for one image. A busy page (26 texts) takes about
+ * 2 500 tokens; past 4 000 the model is repeating itself.
+ */
+export const VISION_MAX_TOKENS = 4000;
 
 export async function visionTranslate(
   imageDataUrl: string,
@@ -587,6 +599,7 @@ export async function visionTranslate(
       },
     ],
     signal,
+    VISION_MAX_TOKENS,
   );
   const parsed = parseJsonAnswer<{ bubbles?: unknown[]; source_language?: string } | unknown[]>(answer);
   const list = Array.isArray(parsed) ? parsed : (parsed.bubbles ?? []);
@@ -615,6 +628,9 @@ export async function visionTranslate(
       x1 = (x1 / size.width) * 1000;
     }
     if (y1 <= y0 || x1 <= x0) continue;
+    // The same text at the same place, sent again and again by a model in a loop.
+    const text = typeof item.text === 'string' ? item.text : '';
+    if (out.some((o) => o.text === text && Math.abs(o.box[0] - y0) < 15 && Math.abs(o.box[1] - x0) < 15)) continue;
     out.push({
       box: [y0, x0, y1, x1],
       text: typeof item.text === 'string' ? item.text : '',

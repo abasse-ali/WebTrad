@@ -174,8 +174,24 @@ function sameText(a: string, b: string): boolean {
   return norm(a) !== '' && norm(a) === norm(b);
 }
 
+/** Tallest slice sent to the AI, in page widths; past it the page is cut. */
+const SLICE_MAX_RATIO = 2.6;
+
+/** Height of the slices a page is cut in, and how much they overlap (page pixels). */
+export function sliceLayout(W: number, H: number): { sliceH: number; overlap: number; count: number } {
+  if (H <= W * SLICE_MAX_RATIO) return { sliceH: H, overlap: 0, count: 1 };
+  const target = W * 2.2;
+  const overlap = Math.round(target * 0.12);
+  const count = Math.ceil((H - overlap) / (target - overlap));
+  const sliceH = Math.ceil((H + overlap * (count - 1)) / count);
+  return { sliceH, overlap, count };
+}
+
 /** Height of the original letters → font size given to the layout (see `visionPage`). */
 const LETTERS_TO_FONT = 0.8;
+
+/** Pages of a chapter read by the AI at the same time. */
+const PAGE_PARALLEL = 2;
 
 /** Slices of the page read by the AI at the same time (free tiers allow ~40 requests a minute). */
 const VISION_PARALLEL = 3;
@@ -190,9 +206,11 @@ export async function visionPage(
   const W = bitmap.width;
   const H = bitmap.height;
   const series = seriesOf(chapter.title).name;
-  // Tall slices: a webtoon page costs fewer requests (vision models read tall images well).
-  const sliceH = Math.min(H, Math.round(W * 2.2));
-  const overlap = sliceH < H ? Math.round(sliceH * 0.12) : 0;
+  // Tall slices: a webtoon page costs fewer requests (vision models read tall
+  // images well). A page a little taller than one slice is read whole, and a
+  // longer one is cut in slices of equal height: an 800×1828 page was read in
+  // two requests, the second one a strip of blank paper.
+  const { sliceH, overlap } = sliceLayout(W, H);
   const scale = Math.min(1, Math.sqrt(12_000_000 / (W * H)));
   const px = bitmapPixels(bitmap, scale);
   const regions = detectAllBubbles(px);
@@ -743,6 +761,13 @@ export async function visionPage(
     const vertical = box.h > box.w * 1.6;
     const siblings = region ? kept.filter((k) => k !== t && k.region === region && !skipped.has(k)).map((k) => k.box) : [];
     const ink = region ? letteringIn(region, siblings.length ? box : undefined, siblings) : null;
+    // A bubble (or a blank stretch of paper taken for one) with no lettering
+    // at all: the model made the text up, often a line continuing the story
+    // so far. It was lettered over blank paper.
+    if (region && siblings.length === 0 && !t.block && !withInk(region)) {
+      logInfo('ocr', 'Texte ignoré : aucune écriture à cet endroit de la page', { texte: f.text.slice(0, 40) });
+      continue;
+    }
     if (region && ink && !vertical) {
       // In a bubble: sized on the real letters, erased within the bubble's shape.
       const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };
@@ -1029,13 +1054,18 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
     const starts = detectAllBubbles(topPx).filter((r) => r.y <= 1 && r.h < nextStripH * 0.95);
     let result = bubbles;
     const continued: Bubble[] = [];
+    // Each half is joined once: two pieces of this page matched with the same
+    // half on the next one lettered two translations on top of each other.
+    const used = new Set<(typeof starts)[number]>();
     for (const a of cut) {
       // Same bubble: its two halves line up across the break.
       const b = starts.find((r) => {
+        if (used.has(r)) return false;
         const overlap = Math.min(a.x + a.w, r.x + r.w) - Math.max(a.x, r.x);
         return overlap > Math.min(a.w, r.w) * 0.6;
       });
       if (!b) continue;
+      used.add(b);
       const margin = 12;
       const fromY = Math.max(0, a.y - margin);
       const partA = stripH - fromY;
@@ -1359,8 +1389,12 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     let done = 0;
     let failed = 0;
     let stopped = false;
-    for (const page of todo) {
-      if (controller.signal.aborted) break;
+    // AI reading: two pages at once. A page mostly waits for the provider
+    // (3 to 30 s an answer), so the chapter takes about half the time; the
+    // pace of requests stays under the provider's limit (see paceRequest).
+    const parallel = visionEnabled() && !opts.translateOnly ? PAGE_PARALLEL : 1;
+    let nextPage = 0;
+    const doPage = async (page: Page): Promise<'next' | 'stop'> => {
       try {
         let engine: string | undefined;
         if (opts.translateOnly && page.bubbles.length > 0) {
@@ -1377,7 +1411,7 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
       } catch (err) {
         if ((err as Error).name === 'AbortError') {
           await patchPage(page.id, { status: page.bubbles.length ? 'done' : 'pending' });
-          break;
+          return 'stop';
         }
         const message = (err as Error).message || String(err);
         if (err instanceof TranslateError && err.fatal) {
@@ -1386,7 +1420,7 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
           logError('job', `Traduction arrêtée à la page ${page.index + 1} : ${message}`, { chapitre: chapter.title });
           setJob(chapterId, { message });
           stopped = true;
-          break;
+          return 'stop';
         }
         failed++;
         logError('job', `Page ${page.index + 1} en erreur : ${message}`, { chapitre: chapter.title });
@@ -1394,7 +1428,15 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         setJob(chapterId, { failed, message });
       }
       await refreshStats(chapterId);
-    }
+      return 'next';
+    };
+    const worker = async () => {
+      while (nextPage < todo.length && !controller.signal.aborted && !stopped) {
+        const page = todo[nextPage++];
+        if ((await doPage(page)) === 'stop') return;
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, worker));
     await refreshStats(chapterId);
     logInfo('job', `Fin de « ${chapter.title} » : ${done} page(s) faite(s), ${failed} en erreur${controller.signal.aborted || stopped ? ', arrêté' : ''}`, {
       ms: since(jobStart),
