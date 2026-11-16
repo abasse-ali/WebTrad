@@ -631,10 +631,27 @@ export function sampleInk(px: Pixels, box: Box, background: string): InkInfo | n
   let darkEdge = 0;
   let lightEdge = 0;
   const isBackground = (x: number, y: number) => x < 0 || x >= W || colorDistance(data, (y * W + x) * 4, bg) < 110;
+  // White letters outlined in black on a light wall: their white is close
+  // to the wall's and was taken for it (the French came out black). Pixels
+  // clearly lighter than the background, right inside a dark stroke, are
+  // letters too.
+  const nearDark = (x: number, y: number) => {
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dx = -2; dx <= 2; dx++) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        if (luminance(data, (yy * W + xx) * 4) < bgLum - 80) return true;
+      }
+    return false;
+  };
   for (let y = y0; y < y1; y += step) {
     for (let x = x0; x < x1; x += step) {
       const i = (y * W + x) * 4;
-      if (colorDistance(data, i, bg) < 110) continue;
+      if (colorDistance(data, i, bg) < 110) {
+        const lighter = luminance(data, i) >= bgLum + 18 && colorDistance(data, i, bg) >= 45;
+        if (!lighter || !nearDark(x, y)) continue;
+      }
       const isDark = luminance(data, i) < bgLum;
       const edge = isBackground(x - 3, y) || isBackground(x + 3, y) ? 1 : 0;
       if (isDark) darkEdge += edge;
@@ -962,7 +979,9 @@ export function inpaintText(
   for (let p = 0; p < mask.length; p++) masked += mask[p];
   if (masked === 0 || masked > mask.length * 0.75) return null;
   const hole = mask.slice();
-  // Onion peel: every pass fills the masked pixels that touch known ones.
+  const src = out.slice();
+  // 1. Layer by layer from the edge of each letter inwards (smooth on plain
+  // or shaded drawing).
   for (let guard = 0; masked > 0 && guard < w + h; guard++) {
     const filled: number[] = [];
     for (let y = 0; y < h; y++) {
@@ -995,19 +1014,67 @@ export function inpaintText(
     for (const p of filled) mask[p] = 0;
     masked -= filled.length;
   }
+  // 2. Where an edge of the drawing crosses the letters (white paper against
+  // dark hair), the two sides along it agree and those across it do not:
+  // the drawing is taken along it, and the edge goes on straight through
+  // instead of being blurred into a smudge.
+  const known = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && !hole[y * w + x];
+  const skip = Math.max(1, Math.min(3, Math.round(margin)));
+  const reachOut = (x: number, y: number, dx: number, dy: number): [number, number] => {
+    for (let k = 1; k < w + h; k++) {
+      const xx = x + dx * k;
+      const yy = y + dy * k;
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) return [-1, 0];
+      if (!known(xx, yy)) continue;
+      // A little past the edge of the hole (the soft edge of the letters).
+      let kk = k;
+      for (let s2 = 1; s2 <= skip && known(x + dx * (k + s2), y + dy * (k + s2)); s2++) kk = k + s2;
+      return [(y + dy * kk) * w + (x + dx * kk), kk];
+    }
+    return [-1, 0];
+  };
+  const dirs: [number, number][] = [
+    [1, 0],
+    [0, 1],
+    [1, 1],
+    [1, -1],
+  ];
+  const edge = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (!hole[p]) continue;
+      let best: { a: number; c: number; t: number; diff: number } | null = null;
+      let worst = 0;
+      let pairs = 0;
+      for (const [dx, dy] of dirs) {
+        const [a, da] = reachOut(x, y, -dx, -dy);
+        const [c, db] = reachOut(x, y, dx, dy);
+        if (a < 0 || c < 0) continue;
+        pairs++;
+        const diff = colorDistance(src, a * 4, [src[c * 4], src[c * 4 + 1], src[c * 4 + 2]]);
+        worst = Math.max(worst, diff);
+        if (!best || diff < best.diff) best = { a, c, t: da / (da + db), diff };
+      }
+      // A real edge: one way the sides match, another way they clearly do not.
+      if (!best || pairs < 2 || best.diff > 45 || worst < 150) continue;
+      edge[p] = 1;
+      for (let k = 0; k < 3; k++) out[p * 4 + k] = src[best.a * 4 + k] * (1 - best.t) + src[best.c * 4 + k] * best.t;
+    }
+  }
   // Soften the filled area so the layers do not show: more for thick
   // letters, whose holes, filled from all sides, showed as a patchwork of
-  // squares on a blurred background.
+  // squares on a blurred background. Not across the edges carried through.
   const passes = Math.max(2, Math.min(8, Math.round(grow * 1.5)));
   for (let pass = 0; pass < passes; pass++) {
-    const src = out.slice();
+    const prev = out.slice();
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
         const p = y * w + x;
-        if (!hole[p]) continue;
+        if (!hole[p] || edge[p]) continue;
         for (let c = 0; c < 3; c++) {
           out[p * 4 + c] =
-            (src[p * 4 + c] * 4 + src[(p - 1) * 4 + c] + src[(p + 1) * 4 + c] + src[(p - w) * 4 + c] + src[(p + w) * 4 + c]) / 8;
+            (prev[p * 4 + c] * 4 + prev[(p - 1) * 4 + c] + prev[(p + 1) * 4 + c] + prev[(p - w) * 4 + c] + prev[(p + w) * 4 + c]) / 8;
         }
       }
     }
@@ -1074,11 +1141,38 @@ export function cleanBubble(
       }
     }
   }
+  // The bubble's own colour here (a shaded or tinted bubble is not the same
+  // colour everywhere): the median of what is left around the letters.
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  for (let p = 0; p < mask.length; p += 3) {
+    if (!inside[p] || mask[p]) continue;
+    rs.push(out[p * 4]);
+    gs.push(out[p * 4 + 1]);
+    bs.push(out[p * 4 + 2]);
+  }
+  const mid = (v: number[]) => v.sort((a, b) => a - b)[Math.floor(v.length / 2)];
+  const local: [number, number, number] = rs.length > 20 ? [mid(rs), mid(gs), mid(bs)] : [color[0], color[1], color[2]];
+  const paint = colorDistance(new Uint8ClampedArray([...local, 255]), 0, color) < 60 ? local : [color[0], color[1], color[2]];
+  // The faint grey edges of the letters, further out (spread by the page's
+  // compression, they stayed as a ghost of the English): taken while they
+  // are a little off the bubble's colour, next to what is erased.
+  for (let pass = 0; pass < 5; pass++) {
+    const was = mask.slice();
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (!inside[p] || was[p]) continue;
+        if (!((x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w]))) continue;
+        if (colorDistance(out, p * 4, paint) > 12) mask[p] = 2;
+      }
+  }
   for (let p = 0; p < mask.length; p++) {
     if (!mask[p]) continue;
-    out[p * 4] = color[0];
-    out[p * 4 + 1] = color[1];
-    out[p * 4 + 2] = color[2];
+    out[p * 4] = paint[0];
+    out[p * 4 + 1] = paint[1];
+    out[p * 4 + 2] = paint[2];
   }
   return { pixels: { data: out, width: w, height: h }, x: x0, y: y0 };
 }
@@ -1891,24 +1985,29 @@ export function cleanPaper(px: Pixels, rect: Box, fill: string, maxGlyph: number
   // Long strokes inside the box stay too.
   const letters = mask.map((v) => (v === 1 ? 1 : 0));
   keepLines(letters, w, h, maxGlyph);
-  // The soft edge of each letter: two pixels around it, then the faint grey
-  // further out (it stayed as a ghost of the English), never over a kept mark.
-  const faint = (p: number) => colorDistance(px.data, ((y0 + Math.floor(p / w)) * px.width + (x0 + (p % w))) * 4, color) > 9;
-  for (let pass = 0; pass < 7; pass++) {
-    const was = letters.slice();
+  // What stays: the marks that go on past the box and the long strokes,
+  // with their soft edge. Everything else is paper: painted over whole,
+  // not letter by letter (the faint grey edges of the letters, spread by
+  // the page's compression, stayed as a ghost of the English).
+  const keep = new Uint8Array(w * h);
+  for (let p = 0; p < mask.length; p++) if (mask[p] === 3 || (mask[p] === 1 && !letters[p])) keep[p] = 1;
+  for (let pass = 0; pass < 2; pass++) {
+    const was = keep.slice();
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) {
         const p = y * w + x;
-        if (was[p] || mask[p] === 3) continue;
-        if (pass >= 2 && !faint(p)) continue;
-        if ((x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w])) letters[p] = 2;
+        if (was[p]) continue;
+        if ((x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w])) keep[p] = 1;
       }
   }
-  for (let p = 0; p < letters.length; p++) {
-    if (!letters[p]) continue;
-    out[p * 4] = color[0];
-    out[p * 4 + 1] = color[1];
-    out[p * 4 + 2] = color[2];
+  // The paper as it is around the box (a light gradient, a tint), not one flat colour.
+  const paper = smoothFill(px, { x: x0, y: y0, w, h });
+  const flat = paper && paper.width === w && paper.height === h ? paper.data : null;
+  for (let p = 0; p < keep.length; p++) {
+    if (keep[p]) continue;
+    out[p * 4] = flat ? flat[p * 4] : color[0];
+    out[p * 4 + 1] = flat ? flat[p * 4 + 1] : color[1];
+    out[p * 4 + 2] = flat ? flat[p * 4 + 2] : color[2];
   }
   return { pixels: { data: out, width: w, height: h }, x: x0, y: y0 };
 }

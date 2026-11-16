@@ -420,6 +420,32 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
   const onLetters = (smooth: Pixels): Pixels | null => {
     const mask = toneMask(px, area, ink.tones, Math.max(2, Math.round(fontSize * scale * 0.15)), within);
     if (!mask) return null;
+    // The light halo or thin outline right around the letters (too close to
+    // the background to be found as a colour of its own): what differs
+    // clearly from the rebuilt background next to them. Kept, it showed as
+    // a ghost of the English letters.
+    const reach = Math.max(2, Math.round(fontSize * scale * 0.3));
+    const off = (p: number) => {
+      const i = ((area.y + Math.floor(p / area.w)) * px.width + area.x + (p % area.w)) * 4;
+      return Math.abs(px.data[i] - smooth.data[p * 4]) + Math.abs(px.data[i + 1] - smooth.data[p * 4 + 1]) + Math.abs(px.data[i + 2] - smooth.data[p * 4 + 2]) > 36;
+    };
+    for (let pass = 0; pass < reach; pass++) {
+      const was = mask.slice();
+      for (let p = 0; p < mask.length; p++) {
+        if (was[p]) continue;
+        const x = p % area.w;
+        const near = (x > 0 && was[p - 1]) || (x < area.w - 1 && was[p + 1]) || was[p - area.w] || was[p + area.w];
+        if (near && off(p)) mask[p] = 1;
+      }
+    }
+    // And a pixel more for the soft edge.
+    {
+      const was = mask.slice();
+      for (let p = 0; p < mask.length; p++) {
+        const x = p % area.w;
+        if (!was[p] && ((x > 0 && was[p - 1]) || (x < area.w - 1 && was[p + 1]) || was[p - area.w] || was[p + area.w])) mask[p] = 1;
+      }
+    }
     const blended = new Uint8ClampedArray(smooth.data);
     for (let p = 0; p < mask.length; p++) {
       if (mask[p]) continue;

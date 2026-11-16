@@ -52,3 +52,52 @@ describe('model answers made ready to letter', () => {
     for (const t of ['T-TU', 'H-HANNA!']) expect(isSoundEffect(t)).toBe(false);
   });
 });
+
+describe('lettering drawn on the artwork', () => {
+  it('sees white letters outlined in black on a light grey wall', async () => {
+    const { sampleInk } = await import('../src/lib/imageproc');
+    const w = 120;
+    const h = 40;
+    const data = new Uint8ClampedArray(w * h * 4).fill(222);
+    for (let p = 3; p < data.length; p += 4) data[p] = 255;
+    const set = (x: number, y: number, v: number) => {
+      const i = (y * w + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = v;
+    };
+    // Five strokes: a white core 4 px wide inside a black outline 2 px wide.
+    for (let k = 0; k < 5; k++) {
+      const x0 = 12 + k * 20;
+      for (let y = 8; y < 32; y++)
+        for (let x = x0; x < x0 + 8; x++) set(x, y, x < x0 + 2 || x >= x0 + 6 || y < 10 || y >= 30 ? 20 : 255);
+    }
+    const ink = sampleInk({ data, width: w, height: h }, { x: 10, y: 5, w: 100, h: 30 }, '#dedede');
+    expect(ink?.color).toBe('#ffffff');
+    expect(ink?.tones.length).toBe(2);
+  });
+
+  it('carries an edge of the drawing through the erased letters', async () => {
+    const { inpaintText } = await import('../src/lib/imageproc');
+    const w = 60;
+    const h = 40;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        // White paper on the left, dark hair on the right.
+        const v = x < 30 ? 250 : 60;
+        data[i] = data[i + 1] = data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    // A black letter across the edge.
+    for (let y = 15; y < 25; y++)
+      for (let x = 22; x < 38; x++) {
+        const i = (y * w + x) * 4;
+        data[i] = data[i + 1] = data[i + 2] = 0;
+      }
+    const out = inpaintText({ data, width: w, height: h }, { x: 0, y: 0, w, h }, [[0, 0, 0]], 1)!;
+    const at = (x: number, y: number) => out.data[(y * w + x) * 4];
+    // Both sides of the edge keep their own colour inside the old letter.
+    expect(at(25, 20)).toBeGreaterThan(200);
+    expect(at(35, 20)).toBeLessThan(110);
+  });
+});
