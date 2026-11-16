@@ -246,7 +246,7 @@ export async function visionPage(
   }
 
   // Every text the model found, in page coordinates, matched to its bubble.
-  type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number]; block?: Box };
+  type Found = { f: (typeof results)[number]['bubbles'][number]; box: Box; region?: (typeof regions)[number]; block?: Box; doubtful?: boolean };
   const found: Found[] = [];
   const inRegion = (x: number, y: number) =>
     regions.find((r) => x * scale >= r.x && x * scale <= r.x + r.w && y * scale >= r.y && y * scale <= r.y + r.h);
@@ -263,6 +263,10 @@ export async function visionPage(
   // and lettered like any bubble, instead of being repaired as artwork,
   // which took the outline of the bubble away with the letters.
   const shaped: (typeof regions)[number][] = [];
+  // The white of the page between panels, taken for a bubble when a small
+  // bubble's thin outline is open: the translation was lettered huge in the
+  // middle of the page and the bubble kept its English.
+  const pageBackground = (e: Box) => e.w >= px.width * 0.8 && (e.x <= 2 || e.x + e.w >= px.width - 2);
   const shapedBubble = (box: Box, block?: Box): (typeof regions)[number] | undefined => {
     const on = block ?? { x: box.x + box.w * 0.25, y: box.y + box.h * 0.25, w: box.w * 0.5, h: box.h * 0.5 };
     const seed = { x: on.x * scale, y: on.y * scale, w: on.w * scale, h: on.h * scale };
@@ -274,7 +278,7 @@ export async function visionPage(
     });
     if (known) return known;
     const e = enclosingBubble(px, seed);
-    if (!e) return undefined;
+    if (!e || pageBackground(e)) return undefined;
     if (!block) {
       // No lettering was found there: only a bubble whose ink is about the size of the text read.
       const ink = maskedCrop(px, e).ink;
@@ -311,6 +315,11 @@ export async function visionPage(
     const sliceBlocks = pageBlocks
       .filter((b) => b.y + b.h / 2 >= top && b.y + b.h / 2 < top + h)
       .map((b) => ({ x: b.x - b.w * 0.3, y: b.y - b.h * 0.6, w: b.w * 1.6, h: b.h * 2.2 }));
+    // Far more texts than places with lettering: the model made some up
+    // (26 texts for a page of ten, lines that are on no page). Its texts that
+    // land on no lettering are then left out, never moved onto a bubble.
+    const doubtful = dialogue.length > (sliceBubbles.length + sliceBlocks.length) * 1.5 + 4;
+    if (doubtful) logWarn('ocr', `Morceau ${i + 1} : ${dialogue.length} textes pour ${sliceBlocks.length} blocs de lettrage, textes inventés écartés`);
     const mapping = alignToBubbles(dialogue, [...sliceBubbles, ...sliceBlocks]);
     if (mapping.a !== 1 || mapping.b !== 0) {
       logInfo('ocr', `Cadres de l’IA replacés sur les bulles (échelle ${mapping.a.toFixed(2)}, décalage ${Math.round(mapping.b)} px)`, {
@@ -395,7 +404,7 @@ export async function visionPage(
       const letters = (t: string) => t.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
       if (rescue && found.some((t) => letters(t.f.text) === letters(f.text))) continue;
       if (rescue && !rescue.some((b) => overlapShare(b, box) > 0.3 || (cx >= b.x - b.w * 0.3 && cx <= b.x + b.w * 1.3 && cy >= b.y - b.h && cy <= b.y + b.h * 2))) continue;
-      found.push({ f, box, region });
+      found.push({ f, box, region, doubtful });
     }
   };
   for (let i = 0; i < slices.length; i++) placeSlice(i);
@@ -505,8 +514,9 @@ export async function visionPage(
   let lastY = -Infinity;
   for (const t of loose.sort((a, b) => a.box.y - b.box.y)) {
     // The same text already placed (read twice by overlapping slices): the
-    // copy is not moved onto another bubble's lettering, it goes.
-    if (found.some((o) => o !== t && !loose.includes(o) && similarText(o.f.text, t.f.text))) {
+    // copy is not moved onto another bubble's lettering, it goes. So does a
+    // text of a slice where the model made texts up.
+    if (t.doubtful || found.some((o) => o !== t && !loose.includes(o) && similarText(o.f.text, t.f.text))) {
       found.splice(found.indexOf(t), 1);
       continue;
     }
@@ -749,6 +759,18 @@ export async function visionPage(
         const [r, g, b] = [1, 3, 5].map((k) => parseInt(look.color!.slice(k, k + 2), 16));
         if ((r * 299 + g * 587 + b * 114) / 1000 < 128) look.color = '#111111';
       }
+      // Lettering barely different from the bubble it is written in: its
+      // colour was measured against the drawing around a small bubble (grey
+      // shading), the bubble's white taken for the letters, and the
+      // translation was written white on white. Black or white for the
+      // bubble then.
+      if (look.color) {
+        const lum = (hex: string) => {
+          const v = parseInt(hex.slice(1), 16);
+          return (((v >> 16) & 255) * 299 + ((v >> 8) & 255) * 587 + (v & 255) * 114) / 1000;
+        };
+        if (Math.abs(lum(look.color) - lum(fill)) < 90) look.color = contrastColor(fill);
+      }
       const pad = Math.max(2, fontSize * 0.5) * scale;
       let patch: string | undefined;
       let patchBox: Box | undefined;
@@ -821,7 +843,7 @@ export async function visionPage(
     const look = lookOfText(px, box, scale, fontSize, Boolean(area));
     // No lettering could be taken off the artwork there: the model placed
     // its box where there is no text. Nothing is lettered over the drawing.
-    if (!region && !look.patch) {
+    if (!region && !look.patch && !look.covered) {
       logInfo('ocr', 'Texte hors bulle ignoré : aucun lettrage à cet endroit', { texte: f.text.slice(0, 40) });
       continue;
     }

@@ -419,14 +419,16 @@ const SFX_WORDS = new Set(
     'shove press grasp clap clink clang clatter rattle creak thunk bonk boing splat splosh gush spray pump ' +
     'plap pap pomp slosh suck chomp munch nom gulp glug sip slurp kiss smooch lick sniff snore yawn ' +
     'bam pow wham kaboom boom thwip whiz zing ping ting tink chime ring vroom screech skid tremor quake ' +
-    'whistle twirl swirl spin whirl twist flick fling flip wave'
+    'whistle twirl swirl spin whirl twist flick fling flip wave ' +
+    'smile grin giggle chuckle snicker smirk sparkle glare pause dun rummage fumble'
   ).split(' '),
 );
 
 /** Cries and breaths: dialogue inside a bubble, drawn sound effects outside one. */
 const CRY_WORDS = new Set(
   ('ha haa hah hahn haan ah ahh ahn aah ugh ugh hng hnn hnng nng ngh nngh mm mmm hmm oh ooh uh uhh huh ung eek ' +
-    'kya kyaa ow ouch hyaa hyuu heh hehe kuh guh gah ack urk erk ngg fuu phew whew pant heave hic').split(' '),
+    'kya kyaa ow ouch hyaa hyuu heh hehe kuh guh gah ack urk erk ngg fuu phew whew pant heave hic ' +
+    'wah uwah uwa aw aww argh grr sob').split(' '),
 );
 
 /**

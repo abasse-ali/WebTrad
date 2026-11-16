@@ -22,3 +22,13 @@ describe('lettering left as drawn', () => {
     expect(isDrawnEffect('TWIRL')).toBe(true);
   });
 });
+
+describe('more drawn cries and effects', () => {
+  it('keeps WAAH, SMILE and PAUSE drawn', async () => {
+    const { isDrawnEffect } = await import('../src/lib/text');
+    expect(isDrawnEffect('WAAH')).toBe(true);
+    expect(isDrawnEffect('SMILE')).toBe(true);
+    expect(isDrawnEffect('PAUSE')).toBe(true);
+    expect(isDrawnEffect('SMILE AT ME')).toBe(false);
+  });
+});
