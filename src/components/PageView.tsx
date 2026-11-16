@@ -84,7 +84,9 @@ function TranslatedLayer({
             />
             <div className="tb-text" dir={l.rtl ? 'rtl' : 'ltr'} style={textStyle}>
               {l.lines.map((line, i) => (
-                <span key={i}>{line}</span>
+                <span key={i} style={l.lineX?.[i] ? { transform: `translateX(${cq(l.lineX[i])})` } : undefined}>
+                  {line}
+                </span>
               ))}
             </div>
           </div>

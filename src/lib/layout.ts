@@ -40,6 +40,8 @@ export interface BubbleLayout {
   outlineColor: string;
   /** Turn of the plain band hiding tilted lettering on the artwork (degrees), drawn with soft edges. */
   eraseRotation?: number;
+  /** Shift of each line's centre from the centre of `area` (lines fitted to the bubble's shape). */
+  lineX?: number[];
   align: 'left' | 'center' | 'right';
   /** Repaired artwork drawn over `erase` instead of a flat colour. */
   patch?: string;
@@ -195,6 +197,89 @@ function clampBox(b: Box, W: number, H: number): Box {
   return { x, y, w: Math.min(W, b.x + b.w) - x, h: Math.min(H, b.y + b.h) - y };
 }
 
+/**
+ * Lines of `text` at `size` fitted to the shape of a bubble: each line as
+ * wide as the bubble is at its height, the block centred on `cy` (moved to
+ * stay inside). The fewest lines that hold the text; null when it does not fit.
+ */
+export function fitToShape(
+  text: string,
+  shape: NonNullable<Bubble['shape']>,
+  size: number,
+  measure: Measure,
+  lang: string,
+  noSpaces: boolean,
+  cy: number,
+): { lines: string[]; left: number[]; right: number[]; top: number; lineH: number } | null {
+  const lh = size * LINE_HEIGHT;
+  const rows = shape.x.length / 2;
+  const first = shape.y;
+  const last = shape.y + (rows - 1) * shape.step;
+  const units = text
+    .split(/\n+/)
+    .flatMap((p, i) => (i > 0 ? ['\n', ...segments(p, lang, noSpaces)] : segments(p, lang, noSpaces)));
+  const sep = noSpaces ? '' : ' ';
+  const room = (y0: number, y1: number): [number, number] | null => {
+    let l = -Infinity;
+    let r = Infinity;
+    const i0 = Math.max(0, Math.floor((y0 - first) / shape.step));
+    const i1 = Math.min(rows - 1, Math.ceil((y1 - first) / shape.step));
+    for (let i = i0; i <= i1; i++) {
+      l = Math.max(l, shape.x[i * 2]);
+      r = Math.min(r, shape.x[i * 2 + 1]);
+    }
+    return r > l ? [l, r] : null;
+  };
+  for (let n = 1; n * lh <= last - first + shape.step; n++) {
+    const top = Math.min(Math.max(first, cy - (n * lh) / 2), last + shape.step - n * lh);
+    const spans: [number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      const s = room(top + i * lh, top + (i + 1) * lh);
+      if (!s) break;
+      spans.push(s);
+    }
+    if (spans.length < n) continue;
+    // Greedy: each line takes the words it has room for.
+    const lines: string[] = [];
+    let line = '';
+    let k = 0;
+    let ok = true;
+    for (const u of units) {
+      if (u === '\n') {
+        lines.push(line.trim());
+        line = '';
+        if (++k >= n) {
+          ok = false;
+          break;
+        }
+        continue;
+      }
+      const candidate = line ? line + sep + u : u;
+      if (measure(candidate.trim()) <= spans[k][1] - spans[k][0]) {
+        line = candidate;
+        continue;
+      }
+      if (!line) {
+        ok = false;
+        break;
+      }
+      lines.push(line.trim());
+      if (++k >= n || measure(u) > spans[k][1] - spans[k][0]) {
+        ok = false;
+        break;
+      }
+      line = u;
+    }
+    if (!ok) continue;
+    if (line.trim()) lines.push(line.trim());
+    if (lines.length === 0) return null;
+    // Fewer lines than room was made for: centred again on those lines.
+    if (lines.length < n) continue;
+    return { lines, left: spans.map((s) => s[0]), right: spans.map((s) => s[1]), top, lineH: lh };
+  }
+  return null;
+}
+
 const cache = new Map<string, BubbleLayout | null>();
 
 /** Computes where and how big the translation of a bubble is drawn. */
@@ -203,7 +288,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   if (!text || b.hidden) return null;
   // Only OCR measures the line box itself; AI boxes include the line spacing.
   const capsSource = b.confidence !== undefined && isAllCaps(b.original);
-  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, b.outlineColor, b.slant, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length]);
+  const key = JSON.stringify([b.x, b.y, b.w, b.h, b.area, text, b.fill, b.color, b.fontScale, b.fontSize, b.outline, b.outlineColor, b.slant, opts, page.width, capsSource, b.rotation, b.align, b.patchBox, b.patch?.length, b.shape?.y, b.shape?.x.length]);
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
@@ -294,16 +379,52 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   if (size === minSize) lines = wrapText(display, inner.w, measureAt(minSize), opts.target, Boolean(target.noSpaces));
   lines = balanceLines(display, lines, inner.w, measureAt(size), opts.target, Boolean(target.noSpaces));
 
+  // In a bubble whose shape is known: the lines follow its rim, each as wide
+  // as the bubble is at its height (narrower at the top and the bottom of a
+  // round or spiky bubble), and never run over it.
+  let lineX: number[] | undefined;
+  if (b.shape && !b.rotation && !b.vertical && b.seam === undefined) {
+    const cy = b.y + b.h / 2;
+    let best: ReturnType<typeof fitToShape> = null;
+    let bestSize = 0;
+    let lo2 = minSize;
+    let hi2 = maxSize;
+    for (let i = 0; i < 14 && hi2 - lo2 > 0.25; i++) {
+      const mid = (lo2 + hi2) / 2;
+      const fit = fitToShape(display, b.shape, mid, measureAt(mid), opts.target, Boolean(target.noSpaces), cy);
+      if (fit) {
+        best = fit;
+        bestSize = mid;
+        lo2 = mid;
+      } else hi2 = mid;
+    }
+    if (!best) {
+      best = fitToShape(display, b.shape, minSize, measureAt(minSize), opts.target, Boolean(target.noSpaces), cy);
+      bestSize = minSize;
+    }
+    if (best) {
+      const left = Math.min(...best.left);
+      const right = Math.max(...best.right);
+      area = { x: left, y: best.top, w: right - left, h: best.lines.length * best.lineH };
+      const mid = area.x + area.w / 2;
+      lineX = best.left.map((l, i) => (l + best!.right[i]) / 2 - mid);
+      lines = best.lines;
+      size = bestSize;
+    }
+  }
+  const pad0 = lineX ? 0 : padding;
+
   const layout: BubbleLayout = {
     erase,
     radius,
     area,
-    padding,
+    padding: pad0,
     fill,
     color: b.color ?? contrastColor(fill),
     rotation: b.rotation ?? 0,
     slant: b.slant ?? 0,
     outlineColor: b.outlineColor ?? outlineColor(b.color ?? contrastColor(fill)),
+    lineX,
     eraseRotation: !b.area && !b.patch && b.rotation && Math.abs(b.rotation) <= 35 ? b.rotation : undefined,
     align: b.align ?? 'center',
     patch: b.patch && b.patchBox ? b.patch : undefined,
@@ -379,9 +500,10 @@ export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]
     if (l.rotation) c.rotate((l.rotation * Math.PI) / 180);
     // Italic lean: the top of the letters goes right.
     if (l.slant) c.transform(1, 0, -l.slant, 1, 0, 0);
-    const x = l.align === 'left' ? -l.area.w / 2 + l.padding : l.align === 'right' ? l.area.w / 2 - l.padding : 0;
+    const x0 = l.align === 'left' ? -l.area.w / 2 + l.padding : l.align === 'right' ? l.area.w / 2 - l.padding : 0;
     let y = -total / 2 + lh / 2;
-    for (const line of l.lines) {
+    for (const [i, line] of l.lines.entries()) {
+      const x = x0 + (l.lineX?.[i] ?? 0);
       if (l.outline) {
         c.lineJoin = 'round';
         c.lineWidth = Math.max(2, l.fontSize * 0.18);

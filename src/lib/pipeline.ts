@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -810,10 +810,21 @@ export async function visionPage(
         }
       }
       if (area && area.w * area.h < inkBox.w * inkBox.h * 0.6) area = undefined;
+      // The bubble's own shape, within its lobe of a joined shape.
+      let top = region.y / scale;
+      let bottom = (region.y + region.h) / scale;
+      const my = inkBox.y + inkBox.h / 2;
+      for (const o of siblings) {
+        const oy = o.y + o.h / 2;
+        if (oy > my) bottom = Math.min(bottom, (my + oy) / 2);
+        else top = Math.max(top, (my + oy) / 2);
+      }
+      const shape = bubbleShape(region, scale, top, bottom, Math.max(2, fontSize * 0.35));
       bubbles.push({
         id: uid(),
         ...inkBox,
         area,
+        shape,
         original,
         translation: f.translation,
         ...voiceOf(f),
@@ -874,6 +885,35 @@ export async function visionPage(
     });
   }
   return evenCutText(bubbles, H);
+}
+
+/**
+ * The inside of a bubble row by row, in page pixels, `inset` pixels in from
+ * its rim, between `top` and `bottom` (its own lobe of a joined shape).
+ * Undefined for a shape too small to say anything.
+ */
+export function bubbleShape(region: BubbleRegion, scale: number, top: number, bottom: number, inset: number): Bubble['shape'] {
+  const step = Math.max(1, Math.round(region.h / 48));
+  const rows: [number, number][] = [];
+  let first = -1;
+  for (let r = 0; r < region.h; r += step) {
+    const y = (region.y + r) / scale;
+    const minX = region.spans[r * 2];
+    const maxX = region.spans[r * 2 + 1];
+    const inBand = y >= top + inset * 0.6 && y <= bottom - inset * 0.6;
+    const left = minX / scale + inset;
+    const right = maxX / scale - inset;
+    if (minX < 0 || !inBand || right - left < inset) {
+      if (first >= 0) rows.push([0, -1]);
+      continue;
+    }
+    if (first < 0) first = r;
+    rows.push([Math.round(left), Math.round(right)]);
+  }
+  // Rows past the last usable one are not kept.
+  while (rows.length && rows[rows.length - 1][1] < rows[rows.length - 1][0]) rows.pop();
+  if (first < 0 || rows.length < 3) return undefined;
+  return { y: Math.round((region.y + first) / scale), step: step / scale, x: rows.flat() };
 }
 
 /** The speaker fields a bubble keeps (only those the model gave). */
