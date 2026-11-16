@@ -125,3 +125,25 @@ describe('growToText', () => {
     expect(growToText(px, { x: 40, y: 200, w: 200, h: 20 })).toEqual({ x: 40, y: 200, w: 200, h: 20 });
   });
 });
+
+describe('lettersLeft', () => {
+  it('finds a line of letters left whole, even when the others are gone', async () => {
+    const { lettersLeft } = await import('../src/lib/ocr');
+    const W = 100;
+    const H = 60;
+    const page = new Uint8ClampedArray(W * H * 4).fill(128);
+    const stroke = (d: Uint8ClampedArray, top: number) => {
+      for (let y = top; y < top + 12; y++) for (let x = 10; x < 90; x += 4) d.set([255, 255, 255, 255], (y * W + x) * 4);
+    };
+    stroke(page, 5);
+    stroke(page, 30);
+    const repaired = new Uint8ClampedArray(W * H * 4).fill(128);
+    stroke(repaired, 5); // the first line was not taken off
+    const area = { x: 0, y: 0, w: W, h: H };
+    const px = { width: W, height: H, data: page };
+    const out = { width: W, height: H, data: repaired };
+    expect(lettersLeft(px, out, area, area)).toBeCloseTo(0.5, 1);
+    expect(lettersLeft(px, out, area, area, 20)).toBeGreaterThan(0.9);
+    expect(lettersLeft(px, { width: W, height: H, data: new Uint8ClampedArray(W * H * 4).fill(128) }, area, area, 20)).toBe(0);
+  });
+});

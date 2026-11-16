@@ -54,6 +54,8 @@ export interface DetectedText {
   /** Artwork repaired under the lettering, for text that is not in a bubble. */
   patch?: string;
   patchBox?: Box;
+  /** Lettering that could not be taken off the drawing: hidden under a plain band. */
+  covered?: boolean;
 }
 
 type StatusFn = (message: string, progress?: number) => void;
@@ -304,12 +306,42 @@ function contrastOf(a: string, b: string): number {
   return Math.abs(lum(a) - lum(b));
 }
 
+/**
+ * Share of the letter edges of `box` (in `px`) still found in `repaired`
+ * (the pixels of `area`, which holds the box), in the worst band of
+ * `band` rows: one line left whole is as bad as a whole text left.
+ */
+export function lettersLeft(px: Pixels, repaired: Pixels, area: Box, box: Box, band = Infinity): number {
+  const lum = (d: Uint8ClampedArray, i: number) => d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  const x0 = Math.max(area.x, Math.round(box.x));
+  const y0 = Math.max(area.y, Math.round(box.y));
+  const x1 = Math.min(area.x + repaired.width - 1, Math.round(box.x + box.w));
+  const y1 = Math.min(area.y + repaired.height, Math.round(box.y + box.h));
+  const step = Math.max(4, Math.min(band, y1 - y0));
+  let worst = 0;
+  for (let top = y0; top < y1; top += step) {
+    let before = 0;
+    let after = 0;
+    for (let y = top; y < Math.min(y1, top + step); y++)
+      for (let x = x0; x < x1 - 1; x++) {
+        const i = (y * px.width + x) * 4;
+        if (Math.abs(lum(px.data, i) - lum(px.data, i + 4)) > 60) before++;
+        const j = ((y - area.y) * repaired.width + (x - area.x)) * 4;
+        if (Math.abs(lum(repaired.data, j) - lum(repaired.data, j + 4)) > 60) after++;
+      }
+    if (before > 20) worst = Math.max(worst, after / before);
+  }
+  return worst;
+}
+
 export interface TextLook {
   fill: string;
   outline: boolean;
   color?: string;
   patch?: string;
   patchBox?: Box;
+  /** Lettering that could not be taken off the drawing: hidden under a plain band. */
+  covered?: boolean;
 }
 
 /**
@@ -361,7 +393,22 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     within = (px0, py0) => Math.abs(-(px0 - cx) * sinT + (py0 - cy) * cos) <= halfH;
   }
   try {
-    const repaired = inpaintText(px, area, ink.tones, Math.max(1.5, fontSize * scale * 0.08), within, Math.max(12, fontSize * scale * 1.8));
+    const margin = Math.max(1.5, fontSize * scale * 0.08);
+    const line = fontSize * scale * 1.3;
+    let repaired = inpaintText(px, area, ink.tones, margin, within, Math.max(12, fontSize * scale * 1.8));
+    // Lines still there once repaired: white letters with a black outline
+    // on a light, shaded drawing joined the light background, were taken
+    // for a long mark of the drawing and kept; the English stayed readable
+    // under the translation. Tried again taking off every mark of the
+    // letters' colours, then hidden under a plain band of the background.
+    if (repaired && lettersLeft(px, repaired, area, scaled, line) > 0.35) {
+      repaired = inpaintText(px, area, ink.tones, margin, within) ?? repaired;
+    }
+    if (repaired && lettersLeft(px, repaired, area, scaled, line) > 0.45) {
+      look.outline = true;
+      look.covered = true;
+      return look;
+    }
     if (repaired) {
       look.patch = pixelsToCanvas(repaired).toDataURL('image/jpeg', 0.92);
       look.patchBox = { x: area.x / scale, y: area.y / scale, w: area.w / scale, h: area.h / scale };
