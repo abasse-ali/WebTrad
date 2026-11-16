@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fatalReason, knownLimit, learnLimit, listModels, paceRequest, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
+import { fatalReason, knownLimit, learnLimit, listModels, noteAccepted, paceRequest, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
 
 const nvidia = { preset: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', apiKey: 'nvapi-test', model: 'qwen/qwen3.5-397b-a17b' };
 const gemini = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: 'k', model: 'gemini-flash-latest' };
@@ -161,9 +161,12 @@ describe('paceRequest', () => {
   it('spaces requests under a limit learnt from a refusal', async () => {
     vi.useFakeTimers();
     const host = 'pace.test';
-    for (let i = 0; i < 10; i++) await paceRequest(host);
+    for (let i = 0; i < 10; i++) {
+      await paceRequest(host);
+      noteAccepted(host);
+    }
     learnLimit(host);
-    // 10 requests in the minute: limited to 8 from now on, so the next waits.
+    // 10 answered in the minute: limited to 10 from now on, so the next waits.
     let started = false;
     const next = paceRequest(host).then(() => (started = true));
     await vi.advanceTimersByTimeAsync(30_000);
@@ -174,28 +177,34 @@ describe('paceRequest', () => {
     vi.useRealTimers();
   });
 
-  it('never learns a limit under 8 per minute, spaces requests evenly, lifts it slowly', async () => {
+  it('learns what the provider answered, spaces requests evenly, lifts it slowly', async () => {
     vi.useFakeTimers();
     const host = 'pace-grow.test';
-    for (let i = 0; i < 3; i++) await paceRequest(host);
+    // NVIDIA: answered 6 requests in the minute, refused the 7th.
+    for (let i = 0; i < 7; i++) {
+      await paceRequest(host);
+      if (i < 6) noteAccepted(host);
+    }
     learnLimit(host);
-    // 3 seen, but the floor is 8: one every 7.5 s, not five at once.
+    // One every 10 s, not seven at once.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await paceRequest(host);
     let started = false;
     const next = paceRequest(host).then(() => (started = true));
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(9_000);
     expect(started).toBe(false);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(1_100);
     await next;
-    // Twenty quiet minutes: one more a minute every two minutes, so 18 a
-    // minute, a request every 3.4 s.
+    // Twenty quiet minutes: back up to the rate refused, not past it.
     await vi.advanceTimersByTimeAsync(20 * 60_000);
     const t0 = Date.now();
     for (let i = 0; i < 3; i++) {
       const p = paceRequest(host);
-      await vi.advanceTimersByTimeAsync(4_000);
+      await vi.advanceTimersByTimeAsync(10_000);
       await p;
     }
-    expect(Date.now() - t0).toBeLessThanOrEqual(12_100);
+    expect(Date.now() - t0).toBeLessThanOrEqual(30_100);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(16_000);
     vi.useRealTimers();
   });
 });
@@ -206,20 +215,22 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
     expect(knownLimit('openrouter.ai')).toBeUndefined();
   });
 
-  it('keeps the limit learnt when refused again under it, never under 8', async () => {
+  it('never spaces requests more than 4 a minute, refused again and again', async () => {
     vi.useFakeTimers();
     const host = 'pace-floor.test';
-    for (let i = 0; i < 3; i++) await paceRequest(host);
-    learnLimit(host); // 3 seen: 8 a minute (the floor)
-    for (let k = 0; k < 5; k++) learnLimit(host); // refused again and again under it
-    // Still 8 a minute: a request every 7.5 s.
+    for (let i = 0; i < 3; i++) {
+      await paceRequest(host);
+      noteAccepted(host);
+    }
+    for (let k = 0; k < 6; k++) learnLimit(host); // refused again and again
+    // 4 a minute: a request every 15 s.
     await vi.advanceTimersByTimeAsync(60_000);
     await paceRequest(host);
     let started = false;
     const next = paceRequest(host).then(() => (started = true));
-    await vi.advanceTimersByTimeAsync(7_000);
+    await vi.advanceTimersByTimeAsync(14_000);
     expect(started).toBe(false);
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1_100);
     await next;
     vi.useRealTimers();
   });

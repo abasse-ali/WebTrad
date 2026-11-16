@@ -22,6 +22,13 @@ export interface LlmPreset {
   boxOrder?: 'yxyx' | 'xyxy';
 }
 
+/**
+ * NVIDIA's model that reads images. Qwen 3.5 was retired on 27 July 2026
+ * ("HTTP 410 Gone"): settings that still name it move to this one.
+ */
+export const NVIDIA_MODEL = 'nvidia/nemotron-3.5-super-vl-120b-a12b';
+const RETIRED_MODELS = new Set(['qwen/qwen3.5-397b-a17b']);
+
 export const LLM_PRESETS: LlmPreset[] = [
   {
     id: 'gemini',
@@ -40,7 +47,7 @@ export const LLM_PRESETS: LlmPreset[] = [
     id: 'nvidia',
     label: 'NVIDIA (gratuit, build.nvidia.com)',
     baseUrl: 'https://integrate.api.nvidia.com/v1',
-    model: 'qwen/qwen3.5-397b-a17b',
+    model: NVIDIA_MODEL,
     keyUrl: 'https://build.nvidia.com/settings/api-keys',
     vision: true,
     needsKey: true,
@@ -149,7 +156,11 @@ function load(): Settings {
     const legacy = parsed as { uppercase?: boolean };
     if ((parsed.v ?? 1) < 3 && legacy.uppercase) parsed.letterCase = 'upper';
     delete legacy.uppercase;
-    return { ...DEFAULT_SETTINGS, ...parsed, v: 4, llm: { ...defaultLlm, ...(parsed.llm ?? {}) } };
+    const llm = { ...defaultLlm, ...(parsed.llm ?? {}) };
+    // A model the provider retired: every request was refused.
+    if (llm.preset === 'nvidia' && RETIRED_MODELS.has(llm.model)) llm.model = NVIDIA_MODEL;
+    if (llm.proofModel && RETIRED_MODELS.has(llm.proofModel)) llm.proofModel = '';
+    return { ...DEFAULT_SETTINGS, ...parsed, v: 4, llm };
   } catch {
     return DEFAULT_SETTINGS;
   }

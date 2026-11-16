@@ -1691,6 +1691,202 @@ export function plainAround(px: Pixels, box: Box): boolean {
   return n > 0 && edges / n < 0.02;
 }
 
+/**
+ * Lettering on plain paper: the rings around its box, close to it and a
+ * little further, are one flat colour (the white of a bubble open on one
+ * side, the paper under a panel). It is then erased with that colour alone:
+ * the artwork rebuilt around it left grey ghosts of the English letters.
+ * The paper's colour, or null. `box` and `letter` (the size of its
+ * letters) in the pixels of `px`.
+ */
+export function plainPaper(px: Pixels, box: Box, letter: number): [number, number, number] | null {
+  const { data, width: W, height: H } = px;
+  const ring = (d: number) => {
+    const x0 = Math.max(0, Math.round(box.x - d));
+    const y0 = Math.max(0, Math.round(box.y - d));
+    const x1 = Math.min(W - 1, Math.round(box.x + box.w + d));
+    const y1 = Math.min(H - 1, Math.round(box.y + box.h + d));
+    const out: number[] = [];
+    const push = (x: number, y: number) => out.push((y * W + x) * 4);
+    for (let x = x0; x <= x1; x += 2) {
+      push(x, y0);
+      push(x, y1);
+    }
+    for (let y = y0; y <= y1; y += 2) {
+      push(x0, y);
+      push(x1, y);
+    }
+    return out;
+  };
+  const near = ring(Math.max(3, Math.round(letter * 0.35)));
+  const mid = ring(Math.max(5, Math.round(letter * 0.6)));
+  const all = [...near, ...mid];
+  const median = (k: number) => {
+    const v = all.map((i) => data[i + k]).sort((a, b) => a - b);
+    return v[Math.floor(v.length / 2)];
+  };
+  const m: [number, number, number] = [median(0), median(1), median(2)];
+  const flat = (list: number[]) => list.filter((i) => Math.abs(data[i] - m[0]) + Math.abs(data[i + 1] - m[1]) + Math.abs(data[i + 2] - m[2]) < 24).length / Math.max(1, list.length);
+  // A bubble's thin outline may cross the rings (it is kept when erasing).
+  return flat(near) >= 0.9 && flat(mid) >= 0.85 ? m : null;
+}
+
+/**
+ * Erases lettering on plain paper: inside `rect`, whatever differs from the
+ * paper takes its colour, with the soft edges of the letters, except the
+ * marks that go on out of `rect` (the outline of a bubble open on one side,
+ * crossing a corner of the box: it was cut, a white gap left in the rim)
+ * and long strokes (`maxGlyph`).
+ */
+export function cleanPaper(px: Pixels, rect: Box, fill: string, maxGlyph: number): { pixels: Pixels; x: number; y: number } {
+  const color = parseHex(fill);
+  const x0 = Math.max(0, Math.floor(rect.x));
+  const y0 = Math.max(0, Math.floor(rect.y));
+  const x1 = Math.min(px.width, Math.ceil(rect.x + rect.w));
+  const y1 = Math.min(px.height, Math.ceil(rect.y + rect.h));
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+  const out = new Uint8ClampedArray(w * h * 4);
+  const mask = new Uint8Array(w * h);
+  // On paper, a smaller difference than in a bubble is already a letter's edge.
+  const offAt = (x: number, y: number) => colorDistance(px.data, (y * px.width + x) * 4, color) > 30;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const si = ((y0 + y) * px.width + (x0 + x)) * 4;
+      const di = (y * w + x) * 4;
+      out[di] = px.data[si];
+      out[di + 1] = px.data[si + 1];
+      out[di + 2] = px.data[si + 2];
+      out[di + 3] = 255;
+      if (offAt(x0 + x, y0 + y)) mask[y * w + x] = 1;
+    }
+  // Marks touching the border of the box that go on past it are kept.
+  const seen = new Uint8Array(w * h);
+  const stack: number[] = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || seen[start]) continue;
+    const comp: number[] = [];
+    let leaves = false;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length) {
+      const p = stack.pop()!;
+      comp.push(p);
+      const x = p % w;
+      const y = (p - x) / w;
+      // Past the box: the same mark outside it.
+      if (!leaves) {
+        if (x === 0 && x0 > 0 && offAt(x0 - 1, y0 + y)) leaves = true;
+        else if (x === w - 1 && x1 < px.width && offAt(x1, y0 + y)) leaves = true;
+        else if (y === 0 && y0 > 0 && offAt(x0 + x, y0 - 1)) leaves = true;
+        else if (y === h - 1 && y1 < px.height && offAt(x0 + x, y1)) leaves = true;
+      }
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const q = yy * w + xx;
+          if (mask[q] && !seen[q]) {
+            seen[q] = 1;
+            stack.push(q);
+          }
+        }
+    }
+    if (leaves) for (const p of comp) mask[p] = 3;
+  }
+  // Long strokes inside the box stay too.
+  const letters = mask.map((v) => (v === 1 ? 1 : 0));
+  keepLines(letters, w, h, maxGlyph);
+  // The soft edge of each letter: two pixels around it, then the faint grey
+  // further out (it stayed as a ghost of the English), never over a kept mark.
+  const faint = (p: number) => colorDistance(px.data, ((y0 + Math.floor(p / w)) * px.width + (x0 + (p % w))) * 4, color) > 12;
+  for (let pass = 0; pass < 5; pass++) {
+    const was = letters.slice();
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (was[p] || mask[p] === 3) continue;
+        if (pass >= 2 && !faint(p)) continue;
+        if ((x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w])) letters[p] = 2;
+      }
+  }
+  for (let p = 0; p < letters.length; p++) {
+    if (!letters[p]) continue;
+    out[p * 4] = color[0];
+    out[p * 4 + 1] = color[1];
+    out[p * 4 + 2] = color[2];
+  }
+  return { pixels: { data: out, width: w, height: h }, x: x0, y: y0 };
+}
+
+/**
+ * The plain paper around lettering, row by row: how far the paper goes on
+ * each side of the text before the first mark (a bubble's rim), the same
+ * on both sides of its centre, and how far up and down it goes. A bubble
+ * that was not found (open on one side, a thin broken rim) still gives its
+ * translation the room and the rounded shape its inside has: "T'ES
+ * COMPLÈTEMENT TARÉE" was written tiny in the box of three short English
+ * lines. Rows `step` apart, in the pixels of `px`; null without room.
+ */
+export function paperShape(
+  px: Pixels,
+  box: Box,
+  paper: [number, number, number],
+  limit: number,
+): { y: number; step: number; spans: [number, number][] } | null {
+  const { data, width: W, height: H } = px;
+  const off = (x: number, y: number) => {
+    const i = (y * W + x) * 4;
+    return Math.abs(data[i] - paper[0]) + Math.abs(data[i + 1] - paper[1]) + Math.abs(data[i + 2] - paper[2]) >= 45;
+  };
+  // A mark: two pixels in a row off the paper (not one speck of the scan).
+  const mark = (x: number, y: number, dx: number) => off(x, y) && x + dx >= 0 && x + dx < W && off(x + dx, y);
+  const pad = Math.max(2, Math.round(Math.min(box.w, box.h) * 0.08));
+  const bx0 = Math.max(0, Math.round(box.x) - pad);
+  const bx1 = Math.min(W - 1, Math.round(box.x + box.w) + pad);
+  const by0 = Math.max(0, Math.round(box.y) - pad);
+  const by1 = Math.min(H - 1, Math.round(box.y + box.h) + pad);
+  const cx = Math.round((bx0 + bx1) / 2);
+  const reachX = Math.round(limit);
+  const span = (y: number): [number, number] | null => {
+    const inBox = y >= by0 && y <= by1;
+    if (!inBox && mark(cx, y, 1)) return null;
+    let l = inBox ? bx0 : cx;
+    while (l - 1 >= Math.max(0, bx0 - reachX) && !mark(l - 1, y, -1)) l--;
+    let r = inBox ? bx1 : cx;
+    while (r + 1 <= Math.min(W - 1, bx1 + reachX) && !mark(r + 1, y, 1)) r++;
+    // As much on both sides of the text's centre.
+    const half = Math.min(cx - l, r - cx);
+    return [cx - half, cx + half];
+  };
+  const step = 2;
+  const minW = Math.max(8, (bx1 - bx0) * 0.25);
+  const rows = new Map<number, [number, number]>();
+  for (let y = by0; y <= by1; y += step) {
+    const s = span(y);
+    if (!s) return null;
+    rows.set(y, s);
+  }
+  let top = by0;
+  for (let y = by0 - step; y >= Math.max(0, by0 - reachX); y -= step) {
+    const s = span(y);
+    if (!s || s[1] - s[0] < minW) break;
+    rows.set(y, s);
+    top = y;
+  }
+  let bottom = by1 - ((by1 - by0) % step);
+  for (let y = bottom + step; y <= Math.min(H - 1, by1 + reachX); y += step) {
+    const s = span(y);
+    if (!s || s[1] - s[0] < minW) break;
+    rows.set(y, s);
+    bottom = y;
+  }
+  const spans: [number, number][] = [];
+  for (let y = top; y <= bottom; y += step) spans.push(rows.get(y) ?? [cx, cx]);
+  return { y: top, step, spans };
+}
+
 /** Average brightness of a box of `px` (0 dark – 255 white). */
 export function meanLuminance(px: Pixels, box: Box): number {
   const x0 = Math.max(0, Math.round(box.x));

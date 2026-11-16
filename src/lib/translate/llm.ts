@@ -1,6 +1,7 @@
 import { countRequest } from '../usage';
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { englishName } from '../languages';
+import { tidyTranslation } from '../text';
 import { logError, logInfo, logWarn, since } from '../log';
 import { LLM_PRESETS, getSettings } from '../settings';
 import type { LlmSettings } from '../types';
@@ -108,7 +109,7 @@ export function fatalReason(status: number, body: string): string | undefined {
   if (status === 401 || (status === 403 && !/region/i.test(body)))
     return 'Clé API absente ou refusée par le fournisseur : vérifiez-la dans Réglages.';
   if (status === 403) return 'Ce modèle n’est pas disponible dans votre région : choisissez-en un autre dans Réglages.';
-  if (status === 404 && /model|unavailable|not found|no endpoints/i.test(body))
+  if ((status === 404 && /model|unavailable|not found|no endpoints/i.test(body)) || status === 410)
     return 'Ce modèle n’est plus disponible (ou plus gratuit) : choisissez-en un autre dans Réglages.';
   return undefined;
 }
@@ -118,25 +119,54 @@ function limitOf(body: string): string | undefined {
 }
 
 /**
- * Requests per minute a provider accepts, learnt from its first refusal
- * (NVIDIA says nothing of its limit): the next requests are spaced to stay
- * under it, instead of being refused and paused 20 s again and again.
+ * Requests per minute a provider accepts, learnt from its refusals (NVIDIA
+ * says nothing of its limit): the next requests are spaced to stay under
+ * it, instead of being refused and paused again and again. Remembered from
+ * one chapter (and one launch of the app) to the next: each chapter began
+ * at full speed and was refused within a minute.
  */
 const learntLimit = new Map<string, { limit: number; at: number; refusedAt: number }>();
+const PACE_KEY = 'webtrad.rateLimits.v1';
+/** Never spaced more than this (requests a minute): a key slowed by the provider still goes on. */
+const MIN_LIMIT = 4;
+
+function saveLimits(): void {
+  try {
+    const out: Record<string, { limit: number; refusedAt: number; at: number }> = {};
+    for (const [host, l] of learntLimit) out[host] = { limit: limitFor(host) ?? l.limit, refusedAt: l.refusedAt, at: Date.now() };
+    localStorage.setItem(PACE_KEY, JSON.stringify(out));
+  } catch {
+    /* storage refused: learnt again next time */
+  }
+}
+
+(function loadLimits() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PACE_KEY) ?? '{}') as Record<string, { limit: number; refusedAt: number; at: number }>;
+    for (const [host, l] of Object.entries(saved)) {
+      // A day later the provider may have changed its mind: learnt again.
+      if (Date.now() - l.at > 24 * 3_600_000 || !(l.limit > 0)) continue;
+      learntLimit.set(host, { limit: l.limit, refusedAt: l.refusedAt, at: Date.now() });
+    }
+  } catch {
+    /* nothing saved */
+  }
+})();
 
 /**
- * The per-minute limit in force for a host. A limit learnt from one refusal
- * may be too strict (a burst at startup, a short-lived quota): each minute
- * without a new refusal allows two more requests, and past 60 the limit goes.
+ * The per-minute limit in force for a host. A limit learnt from a refusal
+ * may be too strict (a burst at startup, a busy moment): each two minutes
+ * without a new refusal allow one more request, never up to the rate that
+ * was refused (it climbed back and was refused again, each time with a
+ * pause) unless ten quiet minutes went by; past 60 the limit goes.
  */
 function limitFor(host: string, now = Date.now()): number | undefined {
   const known = knownLimit(host);
   const learnt = learntLimit.get(host);
   if (!learnt) return known;
-  // One more every two minutes without a refusal, never up to the rate
-  // that was refused (it climbed back to 30 a minute and was refused again,
-  // each time with a pause of 20 to 40 s).
-  const limit = Math.min(learnt.limit + Math.floor((now - learnt.at) / 120_000), Math.max(learnt.limit, learnt.refusedAt - 1));
+  const quiet = now - learnt.at;
+  const cap = Math.max(learnt.limit, learnt.refusedAt - 1 + Math.floor(quiet / 600_000));
+  const limit = Math.min(learnt.limit + Math.floor(quiet / 120_000), cap);
   if (limit > Math.min(60, known ?? Infinity)) {
     learntLimit.delete(host);
     return known;
@@ -154,11 +184,24 @@ export function knownLimit(host: string): number | undefined {
   return undefined;
 }
 const recentStarts = new Map<string, number[]>();
+/** When the requests the provider answered were sent, per host. */
+const recentAccepted = new Map<string, number[]>();
 
 function startsInLastMinute(host: string, now = Date.now()): number[] {
   const list = (recentStarts.get(host) ?? []).filter((t) => now - t < 60_000);
   recentStarts.set(host, list);
   return list;
+}
+
+function acceptedInLastMinute(host: string, now = Date.now()): number[] {
+  const list = (recentAccepted.get(host) ?? []).filter((t) => now - t < 60_000);
+  recentAccepted.set(host, list);
+  return list;
+}
+
+/** A request sent at `at` was answered (not refused for going too fast). */
+export function noteAccepted(host: string, at = Date.now()): void {
+  acceptedInLastMinute(host).push(at);
 }
 
 /** Waits for a free slot under the learnt per-minute limit, then books it. */
@@ -183,20 +226,19 @@ export async function paceRequest(host: string, signal?: AbortSignal): Promise<v
   }
 }
 
-/** Remembers the rate a provider refused at (a little under it, never below 8 per minute). */
+/**
+ * Remembers the rate a provider refused at: what it answered in the minute
+ * before the refusal is what it takes. NVIDIA, spaced at 8 a minute, took
+ * two requests in three and refused the third, all chapter long (each
+ * refusal a pause): it answers about 5 to 6 a minute.
+ */
 export function learnLimit(host: string, said?: number): void {
-  const seen = startsInLastMinute(host).length;
   const now = Date.now();
-  // Refused again right after the pause, well under the limit learnt: the
-  // provider is still holding the earlier excess against us, not counting
-  // these few requests. The limit stays (it sank to 8 a minute and stayed there).
-  const learnt = learntLimit.get(host);
-  // Lowering it further did not help: refused as often at 5 a minute as at
-  // 27, and slower (a chapter took 22 minutes instead of 17).
-  if (!said && learnt && seen < limitFor(host, now)!) return;
   const current = limitFor(host, now) ?? Infinity;
-  const limit = said && said < 1000 ? said : Math.max(8, Math.min(Math.floor(seen * 0.8), current - 2));
-  learntLimit.set(host, { limit: Math.min(current, limit), at: now, refusedAt: current });
+  const accepted = acceptedInLastMinute(host, now).length;
+  const limit = said && said < 1000 ? said : Math.max(MIN_LIMIT, Math.min(accepted, current - 1));
+  learntLimit.set(host, { limit: Math.min(current, limit), at: now, refusedAt: Math.max(MIN_LIMIT + 1, Number.isFinite(current) ? current : limit + 1) });
+  saveLimits();
 }
 
 /** Milliseconds left before requests to any provider may go again. */
@@ -233,6 +275,7 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   // A rate limit was hit: every request waits for the provider's window to reset.
   await waitForCooldown(host, signal);
   if (path === '/chat/completions') await paceRequest(host, signal);
+  const sentAt = Date.now();
   // Timed after the pause: the log shows how long the provider took.
   const start = performance.now();
   const images = JSON.stringify((body as { messages?: unknown } | undefined)?.messages ?? '').split('"type":"image_url"').length - 1;
@@ -294,6 +337,7 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
   limitedStreak.delete(host);
+  if (path === '/chat/completions') noteAccepted(host, sentAt);
   if (/^\s*(data:|event:|:)/.test(res.text)) {
     const parsed = parseStream(res.text);
     // Thinking models write their reasoning first: long, slow, and unused.
@@ -376,6 +420,64 @@ export async function listModels(llm: LlmSettings): Promise<ModelInfo[]> {
       return { id, vision, free };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Text models that proofread French best among those a free NVIDIA key
+ * offers, best first. The provider retires models without notice (Qwen 3.5
+ * answered "410 Gone" for a whole chapter's proofreading): the first one
+ * of the list the account still has is taken.
+ */
+const PROOF_MODELS = [
+  /qwen3\.[5-9][^/]*-(?:397|235|480)b/i,
+  /qwen3-235b/i,
+  /deepseek-v(?:3\.[1-9]|[4-9])/i,
+  /kimi-k2/i,
+  /mistral-large/i,
+  /mistral-medium/i,
+  /gpt-oss-120b/i,
+  /llama-4-maverick/i,
+  /nemotron[^/]*ultra/i,
+];
+/** Thinking, coding or image models: slow or no better at French. */
+const NOT_PROOF = /r1|qwq|think|reason|coder|-vl|vision|guard|embed|distill/i;
+const PROOF_KEY = 'webtrad.proofModel.v1';
+
+/** Forgets the proofreading model chosen (it was retired). */
+export function forgetProofModel(): void {
+  try {
+    localStorage.removeItem(PROOF_KEY);
+  } catch {
+    /* nothing kept */
+  }
+}
+
+/**
+ * The model that proofreads for this provider when none is set: chosen
+ * among the account's models (kept three days). Undefined when the list
+ * cannot be read or holds none of them.
+ */
+export async function proofModelFor(llm: LlmSettings, gone: Set<string> = new Set()): Promise<string | undefined> {
+  if (llm.preset !== 'nvidia') return undefined;
+  try {
+    const kept = JSON.parse(localStorage.getItem(PROOF_KEY) ?? 'null') as { base: string; model: string; at: number } | null;
+    if (kept && kept.base === baseOf(llm) && Date.now() - kept.at < 3 * 86_400_000 && !gone.has(kept.model)) return kept.model;
+  } catch {
+    /* chosen again */
+  }
+  const ids = (await listModels(llm)).map((m) => m.id).filter((id) => !NOT_PROOF.test(id) && !gone.has(id));
+  for (const pattern of PROOF_MODELS) {
+    // The newest of a family ("v3.2" after "v3.1").
+    const id = ids.filter((m) => pattern.test(m)).sort().pop();
+    if (!id) continue;
+    try {
+      localStorage.setItem(PROOF_KEY, JSON.stringify({ base: baseOf(llm), model: id, at: Date.now() }));
+    } catch {
+      /* chosen again next time */
+    }
+    return id;
+  }
+  return undefined;
 }
 
 /** A 200×70 image reading "HELLO", to check that a model really reads images. */
@@ -580,9 +682,11 @@ export function llmEngine(llm: LlmSettings = getSettings().llm): TranslationEngi
 
 const SYSTEM_PROOFREAD = `You are the proofreader of a professional scanlation team. You receive the translated lines of a comic chapter, in reading order, each with its original text and, when known, who says it ("speaker", "gender").
 Read the lines together, as a conversation, and fix every real mistake of the translation:
-- spelling mistakes, typos, words that do not exist or are misused ("j'ai faut me faire prendre" → "j'ai failli me faire prendre", "ressents-je" → "ressens-je", "exité" → "excité");
+- spelling mistakes, typos, words that do not exist or are misused ("j'ai faut me faire prendre" or "j'ai faille" → "j'ai failli", "je cryais" → "je croyais", "pourquoi erais-je" → "pourquoi serais-je", "tu pense" → "tu penses", "t'es endormis" → "t'es endormi", "ces longues membres" → "ces longs membres", "lancé un sorte" → "lancé un sort", "ressents-je" → "ressens-je", "exité" → "excité");
+- a word missing, the sentence broken ("o-on vraiment risquer" → "o-on pourrait vraiment risquer");
 - agreement with the speaker's gender when they speak of themselves ("je suis sorti" said by a woman → "je suis sortie", "nu" → "nue"), and with the person spoken to or spoken of, as the lines around tell;
-- a line wholly or partly left in the source language, translated ("O-OKAY…" → "D-D'ACCORD…"); names, nicknames, honorifics (noona, unnie) and sound effects stay;
+- a line wholly or partly left in the source language, translated ("O-OKAY…" → "D-D'ACCORD…", "WOW… NICE !" → "WOW… SUPER !"); names, nicknames, honorifics (noona, unnie) and sound effects stay;
+- a cry translated by another feeling ("ACK!" (pain) → "AÏE !", not "OUF !"); "holy crap" → "putain" or "bordel", not "sacré merde";
 - English turns of phrase translated word for word, put as a native speaker would say them ("that was close" → "c'était moins une", "morning after" (the pill) → "pilule du lendemain", "of all people" → "en plus", "good timing" → "pile au bon moment");
 - a translation that says something else than its original, or the opposite (a negation lost, the wrong person: "can't wait to be a daddy, huh?!" said to him → "t'as hâte d'être papa, hein ?!");
 - a word repeated by mistake, stray characters, missing French typography (a space before ? ! : ;).
@@ -712,7 +816,7 @@ export function genderFixAllowed(line: string, way: 'f' | 'm', speaker?: string,
 
 /** A proofread line, kept only when it is a correction, not a new line. */
 export function acceptedFix(before: string, after: string): string | undefined {
-  let text = after.replace(/\s+/g, ' ').trim();
+  let text = tidyTranslation(after, before).replace(/\s+/g, ' ').trim();
   // The same words with the line breaks taken out is no correction (it was
   // logged as one, and the lines of the lettering were lost).
   const flat = before.replace(/\s+/g, ' ').trim();
@@ -775,7 +879,7 @@ How to translate, like a professional scanlation team:
 - Interjections in bubbles (Ugh, Huh?, Haha, Hmm, Tch) become their usual equivalents in the target language; stuttering (I-I…) and trailing dots (…) are kept.
 - Use the typography of the target language (French: « » for quotes, a space before ? ! : ;).
 - In languages that mark gender (French…), agree words with the gender of the speaker and of the person spoken to, as drawn (a woman says « je suis rentrée », « je suis prête »).
-- Only text in the target language: no notes, no romanisation, no alternatives.
+- Only text in the target language: no notes, no romanisation, no alternatives, no emoji or flags, no line breaks inside a translation.
 - Every word in the target language and spelled right: translate slang and kids' words too (cooties → microbes), and read each translation again for typos before answering.
 For each text also say who speaks it:
 ${SPEAKER_RULES}
@@ -871,7 +975,7 @@ export async function visionTranslate(
     out.push({
       box: [y0, x0, y1, x1],
       text: typeof item.text === 'string' ? item.text : '',
-      translation: typeof item.translation === 'string' ? item.translation : '',
+      translation: typeof item.translation === 'string' ? tidyTranslation(item.translation, text) : '',
       ...speakerOf(item),
       ...(/^(sfx|sound|effect|onomat)/i.test(String(item.kind ?? item.type ?? '')) ? { sfx: true } : {}),
     });

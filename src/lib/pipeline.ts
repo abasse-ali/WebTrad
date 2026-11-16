@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, luminance, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, plainAround, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
+import { cleanBubble, cleanPaper, contrastColor, luminance, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, paperShape, plainAround, plainPaper, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -13,9 +13,9 @@ import {
 } from './ocr';
 import { logError, logInfo, logWarn, since } from './log';
 import { LLM_PRESETS, getSettings } from './settings';
-import { normaliseCase, type Box } from './text';
+import { normaliseCase, tidyTranslation, type Box } from './text';
 import { translateTexts } from './translate';
-import { CONTENT_REFUSED, lastRateLimitAt, proofreadTexts, visionTranslate } from './translate/llm';
+import { CONTENT_REFUSED, forgetProofModel, lastRateLimitAt, proofModelFor, proofreadTexts, visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
 import { isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
 import { seriesOf } from './series';
@@ -424,6 +424,12 @@ export async function visionPage(
       const cy = box.y + box.h / 2;
       if (cy < ownTop || cy >= ownBottom) continue;
       let region = inRegion(box.x + box.w / 2, cy);
+      // A word or two in letters as tall as a panel ("TA-DA", "DUUN"): a
+      // drawn sound effect, never lettered over, whatever its region (the
+      // white inside a letter was taken for a bubble). Its translation was
+      // written small in a blurred patch that wiped out the drawing.
+      const shortText = words <= 2 && f.text.replace(/[^\p{L}\p{N}]/gu, '').length <= 12;
+      if (shortText && box.h > W * 0.13 && (!region || f.sfx || isDrawnEffect(f.text) || isSoundEffect(f.text))) continue;
       // Sound effects drawn on the artwork are not translated, even when the
       // model sends them. A cry typed small ("UGH!") in a bubble of an odd
       // shape is dialogue: its bubble is looked for before it is left out.
@@ -551,7 +557,7 @@ export async function visionPage(
         chapter.targetLang,
         signal,
       );
-      untranslated.forEach((f, k) => (f.translation = translations[k] ?? ''));
+      untranslated.forEach((f, k) => (f.translation = tidyTranslation(translations[k] ?? '', f.text)));
       logInfo('ocr', `${untranslated.length} texte(s) rendu(s) non traduit(s) par l’IA : traduit(s) à part`);
     } catch (err) {
       if (signal.aborted) throw err;
@@ -657,7 +663,7 @@ export async function visionPage(
   }
   // The lettering of a bubble: the blocks of letter-sized marks found in it
   // (a big drawn sound effect overlapping the bubble is not one), else its ink.
-  const letteringIn = (r: (typeof regions)[number], owner?: Box, others: Box[] = []): Box | null => {
+  const letteringIn = (r: (typeof regions)[number], owner?: Box, others: Box[] = [], anchor?: Box): Box | null => {
     // Two bubbles drawn joined are one white shape holding two texts: each
     // text takes the blocks of lettering closest to it (page pixels).
     const dist = (b: Box, t: Box) => Math.hypot(b.x + b.w / 2 - (t.x + t.w / 2) * scale, b.y + b.h / 2 - (t.y + t.h / 2) * scale);
@@ -669,6 +675,38 @@ export async function visionPage(
         return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
       })
       .filter((b) => !owner || others.every((o) => dist(b, owner) <= dist(b, o)));
+    // Alone in its shape: the lettering under the text read, and what lies
+    // within about a line of it. The tips of a spiky rim and the text of a
+    // bubble joined below were taken in: the translation went up onto the
+    // spikes, or down between the two bubbles.
+    let near: number | undefined;
+    if (!owner && anchor && mine.length > 1) {
+      const a = { x: anchor.x * scale, y: anchor.y * scale, w: anchor.w * scale, h: anchor.h * scale };
+      const gap = (p: Box, q: Box) => Math.max(0, Math.max(p.x, q.x) - Math.min(p.x + p.w, q.x + q.w), Math.max(p.y, q.y) - Math.min(p.y + p.h, q.y + q.h));
+      let kept = mine.filter((b) => gap(b, a) === 0);
+      if (kept.length === 0) {
+        const d = (b: Box) => Math.hypot(b.x + b.w / 2 - (a.x + a.w / 2), b.y + b.h / 2 - (a.y + a.h / 2));
+        kept = [mine.reduce((best, b) => (d(b) < d(best) ? b : best))];
+      }
+      const letters = letterHeight(px, kept[0], r.tinted) || Math.min(...kept.map((b) => b.h));
+      const reach = Math.max(10 * scale, letters * 1.6);
+      near = reach;
+      for (let grew = true; grew; ) {
+        grew = false;
+        const u = {
+          x: Math.min(...kept.map((b) => b.x)),
+          y: Math.min(...kept.map((b) => b.y)),
+          w: Math.max(...kept.map((b) => b.x + b.w)) - Math.min(...kept.map((b) => b.x)),
+          h: Math.max(...kept.map((b) => b.y + b.h)) - Math.min(...kept.map((b) => b.y)),
+        };
+        for (const b of mine) {
+          if (kept.includes(b) || gap(b, u) > reach) continue;
+          kept.push(b);
+          grew = true;
+        }
+      }
+      if (kept.length < mine.length) mine.splice(0, mine.length, ...kept);
+    }
     // Shared shape: the whole ink of the shape is the other text's too.
     const ink = owner && others.length > 0 ? null : maskedCrop(px, r).ink;
     if (mine.length === 0) return ink;
@@ -682,10 +720,13 @@ export async function visionPage(
     // (Up to 6 times: lines the blocks missed, at the ends of lines or a whole
     // line, stayed in English around a translation lettered too small.)
     if (ink && ink.w * ink.h <= (x1 - x0) * (y1 - y0) * 6 && ink.h <= (y1 - y0) * 5 && ink.x < x1 && ink.x + ink.w > x0 && ink.y < y1 && ink.y + ink.h > y0) {
-      x0 = Math.min(x0, ink.x);
-      y0 = Math.min(y0, ink.y);
-      x1 = Math.max(x1, ink.x + ink.w);
-      y1 = Math.max(y1, ink.y + ink.h);
+      // Alone in its shape, only up to about a line past the lettering kept
+      // above: the ink of a bubble joined below took the box down again.
+      const lim = near ?? Infinity;
+      x0 = Math.min(x0, Math.max(ink.x, x0 - lim));
+      y0 = Math.min(y0, Math.max(ink.y, y0 - lim));
+      x1 = Math.max(x1, Math.min(ink.x + ink.w, x1 + lim));
+      y1 = Math.max(y1, Math.min(ink.y + ink.h, y1 + lim));
     }
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   };
@@ -833,7 +874,12 @@ export async function visionPage(
     // A block of lettering found on the page already spans its lines: not
     // spread sideways (over hair beside it: the tilted band of the erase was
     // then too thin, and the last line stayed).
-    const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h }, !(t.block && Math.abs(t.block.x - t.box.x) < 1 && Math.abs(t.block.w - t.box.w) < 1));
+    // Level lines, or on plain paper (no tilted band to keep thin, no hair
+    // to spread over): the ends of lines the block left out are taken
+    // ("To be continue|d", the "T" and "G" of the longest line of a bubble
+    // stayed beside the translation).
+    const isBlock = t.block && Math.abs(t.block.x - t.box.x) < 1 && Math.abs(t.block.w - t.box.w) < 1;
+    const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h }, !isBlock || plainAround(px, s) || Math.abs(boxSkew(px, s)) < 3);
     t.box.x = g.x / scale;
     t.box.y = g.y / scale;
     t.box.w = g.w / scale;
@@ -873,7 +919,7 @@ export async function visionPage(
     const lines = Math.max(1, f.text.split('\n').length);
     const vertical = box.h > box.w * 1.6;
     const siblings = region ? kept.filter((k) => k !== t && k.region === region && !skipped.has(k)).map((k) => k.box) : [];
-    let ink = region ? letteringIn(region, siblings.length ? box : undefined, siblings) : null;
+    let ink = region ? letteringIn(region, siblings.length ? box : undefined, siblings, t.block ?? box) : null;
     // The lettering found in the "bubble" is elsewhere than the text: a light
     // background joined to another bubble was taken for this text's bubble,
     // and the translation went over that other bubble. It is lettering on
@@ -1036,10 +1082,41 @@ export async function visionPage(
     const scaled = { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale };
     const rotation = area || vertical ? 0 : boxSkew(px, scaled);
     const slant = area || vertical ? 0 : boxSlant(px, scaled, rotation);
-    const look = lookOfText(px, box, scale, fontSize, Boolean(area), rotation);
+    // On plain paper (a bubble open on one side, a line on the white between
+    // panels): erased with the paper's colour, which leaves nothing behind.
+    const paperFill = !area && !vertical && !rotation ? plainPaper(px, scaled, fontSize * scale) : null;
+    const paper = paperFill !== null;
+    // The paper's room around the letters (the inside of a bubble that was
+    // not found), row by row and a little in from its edges: the
+    // translation follows it as it would a bubble's shape.
+    let paperRows: Bubble['shape'];
+    if (paperFill) {
+      const room = paperShape(px, scaled, paperFill, Math.max(scaled.w, scaled.h) * 0.4);
+      const inset = Math.max(2, fontSize * 0.35);
+      if (room) {
+        const x = room.spans.flatMap(([l, r]) => [Math.round(l / scale + inset), Math.round(r / scale - inset)]);
+        const widest = Math.max(...room.spans.map(([l, r]) => r - l)) / scale;
+        if (widest > box.w * 0.9) paperRows = { y: room.y / scale, step: room.step / scale, x, inset };
+      }
+    }
+    const look = lookOfText(px, box, scale, fontSize, Boolean(area) || paper, rotation);
+    if (paperFill) {
+      // Erased like the inside of a bubble: the letters and their soft
+      // edges take the paper's colour, a bubble's outline crossing the box stays.
+      try {
+        const pad = Math.max(3, fontSize * scale * 0.3);
+        const hex = '#' + paperFill.map((v) => v.toString(16).padStart(2, '0')).join('');
+        const cleaned = cleanPaper(px, { x: scaled.x - pad, y: scaled.y - pad, w: scaled.w + pad * 2, h: scaled.h + pad * 2 }, hex, fontSize * scale * 1.8);
+        look.patch = pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92);
+        look.patchBox = { x: cleaned.x / scale, y: cleaned.y / scale, w: cleaned.pixels.width / scale, h: cleaned.pixels.height / scale };
+        look.fill = hex;
+      } catch {
+        /* the flat fill instead */
+      }
+    }
     // No lettering could be taken off the artwork there: the model placed
     // its box where there is no text. Nothing is lettered over the drawing.
-    if (!region && !look.patch && !look.covered) {
+    if (!region && !look.patch && !look.covered && !paper) {
       logInfo('ocr', 'Texte hors bulle ignoré : aucun lettrage à cet endroit', { texte: f.text.slice(0, 40) });
       continue;
     }
@@ -1052,13 +1129,17 @@ export async function visionPage(
       ...voiceOf(f),
       vertical,
       fontSize,
+      shape: paperRows,
       fill: look.fill,
       outline: look.outline || undefined,
       color: look.color,
       outlineColor: look.outline ? look.outlineColor : undefined,
       rotation: rotation || undefined,
       slant: slant || undefined,
-      roomy: !region && plainAround(px, scaled) ? true : undefined,
+      // With room around it, the French may take more than the English did
+      // (also in a bubble whose inside was not found: "T'ES COMPLÈTEMENT
+      // TARÉE" was written tiny in the box of three short English lines).
+      roomy: (!region || !area) && plainAround(px, scaled) ? true : undefined,
       patch: look.patch,
       patchBox: look.patchBox,
     });
@@ -1808,7 +1889,11 @@ export async function proofreadChapter(chapter: Chapter, pageIds: string[], sign
   // "nu" for a woman, "ma matinée d'après", and let them through again.
   const main = getSettings().llm;
   const preset = LLM_PRESETS.find((x) => x.id === main.preset);
-  let llm = { ...main, model: main.proofModel?.trim() || preset?.model || main.model };
+  // None chosen: the best text model the account still has (NVIDIA retires
+  // models without notice; the one named here before answered "410 Gone").
+  const gone = new Set<string>();
+  const picked = main.proofModel?.trim() ? undefined : await proofModelFor(main).catch(() => undefined);
+  let llm = { ...main, model: main.proofModel?.trim() || picked || preset?.model || main.model };
   if (llm.model !== main.model) logInfo('job', `Relecture par ${llm.model}`);
   // A batch the provider refuses (the content filter on an explicit scene,
   // an answer cut short): halved and asked again, so that one scene does not
@@ -1821,6 +1906,17 @@ export async function proofreadChapter(chapter: Chapter, pageIds: string[], sign
       // The proofreading model is not on this account (or keeps failing):
       // the main model proofreads instead.
       if (llm.model !== main.model && (err instanceof TranslateError ? err.fatal || !err.retryable || /HTTP 4\d\d/.test(err.message) : true) && !/HTTP 429/.test((err as Error).message) && !(err as Error).message.startsWith(CONTENT_REFUSED)) {
+        // A model chosen for the account and since retired: the next best one.
+        if (picked && !main.proofModel?.trim()) {
+          gone.add(llm.model);
+          forgetProofModel();
+          const next = await proofModelFor(main, gone).catch(() => undefined);
+          if (next && !gone.has(next)) {
+            logWarn('job', `Relecture : ${llm.model} indisponible (${(err as Error).message.slice(0, 80)}), relecture par ${next}`);
+            llm = { ...main, model: next };
+            return ask(batch);
+          }
+        }
         logWarn('job', `Relecture : ${llm.model} indisponible (${(err as Error).message.slice(0, 80)}), relecture par ${main.model}`);
         llm = main;
         return ask(batch);

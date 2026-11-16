@@ -324,7 +324,7 @@ export function SettingsPage() {
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
-              placeholder={preset.model || s.llm.model}
+              placeholder={s.llm.preset === 'nvidia' ? 'auto' : preset.model || s.llm.model}
               onChange={(e) => updateSettings({ llm: { ...s.llm, proofModel: e.target.value } })}
             />
           </label>
