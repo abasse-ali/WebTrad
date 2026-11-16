@@ -175,7 +175,7 @@ function sameText(a: string, b: string): boolean {
 }
 
 /** Tallest slice sent to the AI, in page widths; past it the page is cut. */
-const SLICE_MAX_RATIO = 2.6;
+const SLICE_MAX_RATIO = 2.65;
 
 /** Height of the slices a page is cut in, and how much they overlap (page pixels). */
 export function sliceLayout(W: number, H: number): { sliceH: number; overlap: number; count: number } {
@@ -1375,6 +1375,129 @@ async function detectChapterLanguage(chapter: Chapter, pages: Page[], signal: Ab
   }
 }
 
+/** Tallest image of several short pages read together, in page widths (one request). */
+const GROUP_MAX_RATIO = 2.65;
+
+/**
+ * Consecutive short pages read together: the pages of a chapter cut in
+ * many short images (800×1045) each took a request, and the provider's
+ * limit (about 8 to 10 a minute) made a chapter of 106 pages take a quarter
+ * of an hour. Two or three of them stacked make one image of an ordinary
+ * height: half the requests, and the bubbles cut between them are read
+ * whole, without a request of their own.
+ */
+export function pageGroups(pages: Page[]): Page[][] {
+  const groups: Page[][] = [];
+  for (const p of pages) {
+    const last = groups[groups.length - 1];
+    const head = last?.[0];
+    const tail = last?.[last.length - 1];
+    const fits =
+      last &&
+      last.length < 3 &&
+      tail!.index + 1 === p.index &&
+      Math.abs(p.width - head!.width) <= head!.width * 0.02 &&
+      last.reduce((h, q) => h + q.height, 0) + p.height <= head!.width * GROUP_MAX_RATIO;
+    if (fits) last.push(p);
+    else groups.push([p]);
+  }
+  return groups;
+}
+
+/** Several short pages read by the AI as one image, the texts given back to their own page. */
+async function processGroup(group: Page[], chapter: Chapter, signal: AbortSignal): Promise<void> {
+  const settings = getSettings();
+  const first = group[0];
+  const last = group[group.length - 1];
+  setJob(chapter.id, { pageIndex: first.index, phase: 'ocr' });
+  for (const p of group) await patchPage(p.id, { status: 'ocr', error: undefined });
+  const bitmaps: DecodedImage[] = [];
+  try {
+    for (const p of group) {
+      try {
+        bitmaps.push(await decodeImage(p.blob));
+      } catch {
+        const fresh = await getPage(p.id);
+        if (!fresh) throw new Error(`Image de la page ${p.index + 1} illisible`);
+        p.blob = fresh.blob;
+        bitmaps.push(await decodeImage(fresh.blob));
+      }
+    }
+    const W = bitmaps[0].width;
+    const tops: number[] = [];
+    let H = 0;
+    for (const b of bitmaps) {
+      tops.push(H);
+      H += Math.round(b.height * (W / b.width));
+    }
+    const canvas = createCanvas(W, H);
+    const c = context2d(canvas);
+    bitmaps.forEach((b, i) => c.drawImage(b.source, 0, tops[i], W, Math.round(b.height * (W / b.width))));
+    const joined: DecodedImage = { source: canvas, width: W, height: H, close: () => (canvas.width = canvas.height = 0) };
+    const start = performance.now();
+    const context = await storySoFar(chapter, first.index);
+    let all: Bubble[];
+    try {
+      all = await visionPage(joined, chapter, signal, context);
+    } finally {
+      joined.close();
+    }
+    // Each text to its page; a bubble across the break between two of them
+    // to both, as a bubble cut between two pages is.
+    const per: Bubble[][] = group.map(() => []);
+    for (const b of all) {
+      const top = b.y;
+      const bottom = b.y + b.h;
+      group.forEach((_, i) => {
+        const y0 = tops[i];
+        const y1 = i + 1 < group.length ? tops[i + 1] : H;
+        if (bottom <= y0 || top >= y1) return;
+        const across = top < y0 - 2 || bottom > y1 + 2;
+        const here = shiftBubble(b, -y0);
+        if (!across) per[i].push(here);
+        else {
+          // The upper part carries the text; the lower one only erases.
+          const upper = top >= y0;
+          per[i].push({ ...here, id: upper ? b.id : uid(), seam: upper ? 'next' : 'prev' });
+        }
+      });
+    }
+    // The end of a bubble begun on the page before the group is already lettered.
+    const own = (await getPage(first.id))?.bubbles.filter((b) => b.seam === 'prev') ?? [];
+    if (own.length > 0) per[0] = [...per[0].filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmaps[0].height), b))), ...own];
+    // A bubble cut at the bottom of the last page: joined to the next page as usual.
+    try {
+      per[per.length - 1] = await stitchSeam(last, bitmaps[bitmaps.length - 1], chapter, signal, per[per.length - 1], context);
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err;
+      logWarn('ocr', `Bulle à cheval sur la page ${last.index + 2} non recollée : ${(err as Error).message.slice(0, 120)}`);
+    }
+    for (const [i, p] of group.entries()) {
+      await patchPage(p.id, { bubbles: per[i], status: 'done', stalled: 0 });
+      rememberSpeakers(chapter.title, per[i]);
+    }
+    logInfo('ocr', `Pages ${first.index + 1} à ${last.index + 1} lues ensemble par l’IA : ${per.map((b) => b.length).join(' + ')} texte(s)`, {
+      taille: `${W}×${H}`,
+      modèle: settings.llm.model,
+      ms: since(start),
+    });
+  } finally {
+    bitmaps.forEach((b) => b.close());
+  }
+}
+
+/** A bubble moved up or down (page coordinates), with everything placed on the page. */
+function shiftBubble(b: Bubble, dy: number): Bubble {
+  if (!dy) return { ...b };
+  return {
+    ...b,
+    y: b.y + dy,
+    area: b.area ? { ...b.area, y: b.area.y + dy } : undefined,
+    patchBox: b.patchBox ? { ...b.patchBox, y: b.patchBox.y + dy } : undefined,
+    shape: b.shape ? { ...b.shape, y: b.shape.y + dy } : undefined,
+  };
+}
+
 async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): Promise<string | undefined> {
   const settings = getSettings();
   const useVision = visionEnabled();
@@ -1526,7 +1649,8 @@ export async function proofreadChapter(chapter: Chapter, pageIds: string[], sign
   for (const p of pages) {
     for (const b of p.bubbles) {
       // A line the reader wrote stays theirs.
-      if (b.hidden || b.edited || !b.original.trim() || !/\p{L}/u.test(b.translation)) continue;
+      // The end of a cut bubble follows its start (fixed with it below).
+      if (b.hidden || b.edited || b.seam === 'prev' || !b.original.trim() || !/\p{L}/u.test(b.translation)) continue;
       lines.push({ page: p.id, bubble: b.id, id: lines.length + 1, original: b.original, text: b.translation });
     }
   }
@@ -1564,6 +1688,20 @@ export async function proofreadChapter(chapter: Chapter, pageIds: string[], sign
       if (!byPage.has(l.page)) byPage.set(l.page, new Map());
       byPage.get(l.page)!.set(l.bubble, t);
       logInfo('job', `Relu : « ${l.text.slice(0, 50)} » → « ${t.slice(0, 50)} »`);
+    }
+    // The end of a cut bubble, on the next page, takes the same fix.
+    for (const [pageId, changes] of [...byPage]) {
+      const p = pages.find((q) => q.id === pageId);
+      const nextPage = p && (await getPages(chapter.id)).find((q) => q.index === p.index + 1);
+      if (!p || !nextPage) continue;
+      for (const [bubbleId, text] of changes) {
+        const start = p.bubbles.find((b) => b.id === bubbleId);
+        if (start?.seam !== 'next') continue;
+        const end = nextPage.bubbles.find((b) => b.seam === 'prev' && b.original === start.original);
+        if (!end) continue;
+        if (!byPage.has(nextPage.id)) byPage.set(nextPage.id, new Map());
+        byPage.get(nextPage.id)!.set(end.id, text);
+      }
     }
     for (const [pageId, changes] of byPage) {
       // Saved on the latest copy of the page (the reader may have edited it meanwhile).
@@ -1628,6 +1766,28 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     // pace of requests stays under the provider's limit (see paceRequest).
     const parallel = visionEnabled() && !opts.translateOnly ? PAGE_PARALLEL : 1;
     let nextPage = 0;
+    // Short pages read by the AI two or three at a time (one request).
+    const units: Page[][] = parallel > 1 ? pageGroups(todo) : todo.map((p) => [p]);
+    const doGroup = async (group: Page[]): Promise<'next' | 'stop'> => {
+      if (group.length === 1) return doPage(group[0]);
+      try {
+        await processGroup(group, chapter, controller.signal);
+        done += group.length;
+        setJob(chapterId, { done, engine: 'llm', message: undefined });
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') {
+          for (const p of group) await patchPage(p.id, { status: p.bubbles.length ? 'done' : 'pending' });
+          return 'stop';
+        }
+        // Read one by one instead (a refusal of the content filter, an
+        // unreadable answer…): each page then takes its own way.
+        logWarn('job', `Pages ${group[0].index + 1} à ${group[group.length - 1].index + 1} lues une à une : ${(err as Error).message.slice(0, 120)}`);
+        for (const p of group) if ((await doPage(p)) === 'stop') return 'stop';
+        return 'next';
+      }
+      await refreshStats(chapterId);
+      return 'next';
+    };
     const doPage = async (page: Page): Promise<'next' | 'stop'> => {
       try {
         let engine: string | undefined;
@@ -1666,12 +1826,12 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     };
     const startedAt = Date.now();
     const worker = async (n: number) => {
-      while (nextPage < todo.length && !controller.signal.aborted && !stopped) {
+      while (nextPage < units.length && !controller.signal.aborted && !stopped) {
         // The provider refused a request for going too fast: one page at a
         // time from then on (two at once only made both wait, refused).
         if (n > 0 && lastRateLimitAt() >= startedAt) return;
-        const page = todo[nextPage++];
-        if ((await doPage(page)) === 'stop') return;
+        const group = units[nextPage++];
+        if ((await doGroup(group)) === 'stop') return;
       }
     };
     if (opts.proofreadOnly) done = todo.length;
