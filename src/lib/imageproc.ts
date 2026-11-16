@@ -1182,7 +1182,7 @@ export function regionFill(px: Pixels, region: BubbleRegion): string {
  * inside; a gap of more than a line ends it. At most the box's height
  * is added on each side. `box` is in the pixels of `px`.
  */
-export function growToText(px: Pixels, box: Box): Box {
+export function growToText(px: Pixels, box: Box, sideways = true): Box {
   const { data, width: W, height: H } = px;
   const x0 = Math.max(0, Math.round(box.x));
   const x1 = Math.min(W - 1, Math.round(box.x + box.w));
@@ -1307,7 +1307,7 @@ export function growToText(px: Pixels, box: Box): Box {
   // (foliage, bricks, hatching).
   const textLike = (x: number, n: number) =>
     beyond(x) <= Math.max(4, n * 0.8) && !(offRows >= 3 && between(x) >= 3 && between(x) > n * 0.5 * (offRows / (ny1 - ny0)));
-  if (plain && litCols.length > 3) {
+  if (sideways && plain && litCols.length > 3) {
     const colMin = Math.max(2, litCols[Math.floor(litCols.length * 0.5)] * 0.3);
     const colMax = Math.max(colMin * 2, litCols[Math.floor(litCols.length * 0.9)] * 2.5);
     const gapX = Math.max(4, Math.round(lineH * 1.4));
@@ -1336,7 +1336,7 @@ export function growToText(px: Pixels, box: Box): Box {
   // The model's box also over something else beside the text (a sound
   // effect): its edge columns that are not text are left out, as long as
   // most of the box stays.
-  if (plain && litCols.length > 3 && nx0 === x0 && nx1 === x1) {
+  if (sideways && plain && litCols.length > 3 && nx0 === x0 && nx1 === x1) {
     const colMin = Math.max(2, litCols[Math.floor(litCols.length * 0.5)] * 0.3);
     const strayCol = (x: number) => {
       const n = cols[x - x0];
