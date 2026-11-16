@@ -31,3 +31,33 @@ describe('lettering', () => {
     expect(isAllCaps('OK')).toBe(false);
   });
 });
+
+describe('fitToShape', () => {
+  it('wraps the lines to the width a round bubble has at their height', async () => {
+    const { fitToShape } = await import('../src/lib/layout');
+    // A circle of radius 100 centred on (200, 200), rows every 4 px.
+    const x: number[] = [];
+    for (let y = 100; y <= 300; y += 4) {
+      const half = Math.sqrt(Math.max(0, 100 * 100 - (y - 200) ** 2));
+      x.push(Math.round(200 - half), Math.round(200 + half));
+    }
+    const shape = { y: 100, step: 4, x };
+    const measure = (s: string) => s.length * 8;
+    const text = 'TU N’AS PAS COURS CE MATIN ? LÈVE-TOI SI TU NE VEUX PAS EN ÊTRE POUR TES FRAIS !';
+    const fit = fitToShape(text, shape, 14, measure, 'fr', false, 200)!;
+    expect(fit).not.toBeNull();
+    const flat = (s: string) => s.replace(/\s+/gu, ' ');
+    expect(flat(fit.lines.join(' '))).toBe(flat(text));
+    fit.lines.forEach((line, i) => {
+      // Every line within the circle at the top and the bottom of its own row.
+      for (const y of [fit.top + i * fit.lineH, fit.top + (i + 1) * fit.lineH]) {
+        const half = Math.sqrt(Math.max(0, 100 * 100 - (y - 200) ** 2));
+        expect(measure(line)).toBeLessThanOrEqual(half * 2 + 8);
+      }
+    });
+    // Middle lines are longer than the first one.
+    expect(Math.max(...fit.lines.map((l) => l.length))).toBeGreaterThan(fit.lines[0].length);
+    // Too big a size does not fit at all.
+    expect(fitToShape(text, shape, 60, (s) => s.length * 34, 'fr', false, 200)).toBeNull();
+  });
+});

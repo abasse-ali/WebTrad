@@ -55,6 +55,14 @@ export interface Bubble {
   slant?: number;
   /** Colour of the outline around the letters, when the original has one of its own. */
   outlineColor?: string;
+  /**
+   * The inside of the bubble, row by row (page pixels, margin taken off):
+   * rows from `y`, every `step` pixels, each `[left, right]` in `x`. The
+   * translation is wrapped line by line to the width the bubble has at the
+   * height of each line, so it never runs over the rim of a round or spiky
+   * bubble.
+   */
+  shape?: { y: number; step: number; x: number[] };
   /** Alignment of the original lines (centred when undefined). */
   align?: 'left' | 'right';
   /** Artwork repaired under the lettering (data URL) and the rectangle it covers. */
