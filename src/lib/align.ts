@@ -61,13 +61,21 @@ function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: n
 
 const strip = ({ a, b, matched }: Mapping): Mapping => ({ a, b, matched });
 
-export function alignToBubbles(items: Box[], bubbles: Box[]): Mapping {
+export function alignToBubbles(items: Box[], bubbles: Box[], bounds?: { top: number; bottom: number }): Mapping {
   const identity = { a: 1, b: 0, ...score(items, bubbles, 1, 0) };
   if (items.length === 0 || bubbles.length === 0) return identity;
   let best = identity;
   const consider = (a: number, b: number) => {
     // Models squeeze or stretch, never by more than two.
     if (!(a >= 0.5 && a <= 2) || !Number.isFinite(b)) return;
+    // Every text of the image stays in the image: a mapping that puts some
+    // out of it is a coincidence of two boxes and two bubbles (a scale of
+    // 1.70 and a shift of 1257 px sent the texts of faded flashback
+    // bubbles across the page).
+    if (bounds) {
+      const margin = (bounds.bottom - bounds.top) * 0.03;
+      if (items.some((it) => a * centre(it) + b < bounds.top - margin || a * centre(it) + b > bounds.bottom + margin)) return;
+    }
     const s = score(items, bubbles, a, b);
     if (s.matched > best.matched || (s.matched === best.matched && s.error < best.error - 1e-6)) best = { a, b, ...s };
   };

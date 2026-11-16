@@ -929,7 +929,14 @@ export function inpaintText(
  * the fill. Pixels outside the bubble shape are kept, so nothing sticks out
  * of a round or grainy bubble. Returns the repaired crop of `rect`.
  */
-export function cleanBubble(px: Pixels, region: BubbleRegion, rect: Box, fill: string): { pixels: Pixels; x: number; y: number } {
+export function cleanBubble(
+  px: Pixels,
+  region: BubbleRegion,
+  rect: Box,
+  fill: string,
+  /** Size of the biggest letter: longer marks crossing the box (the bubble's own outline, where its shape was not closed) are kept. */
+  maxGlyph?: number,
+): { pixels: Pixels; x: number; y: number } {
   const color = parseHex(fill);
   const x0 = Math.max(region.x, Math.floor(rect.x));
   const y0 = Math.max(region.y, Math.floor(rect.y));
@@ -958,12 +965,20 @@ export function cleanBubble(px: Pixels, region: BubbleRegion, rect: Box, fill: s
       if (colorDistance(px.data, si, color) > 45) mask[y * w + x] = 1;
     }
   }
-  // One more pixel around each letter for the faint edge of anti-aliasing.
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const p = y * w + x;
-      if (!inside[p] || mask[p] === 1) continue;
-      if ((x > 0 && mask[p - 1] === 1) || (x < w - 1 && mask[p + 1] === 1) || (y > 0 && mask[p - w] === 1) || (y < h - 1 && mask[p + w] === 1)) mask[p] = 2;
+  if (maxGlyph) keepLines(mask, w, h, maxGlyph);
+  // Two to four more pixels around each letter (more for bigger lettering)
+  // for the faint edge of anti-aliasing and of a soft or enlarged page:
+  // with one, the outline of the letters stayed as a grey ghost of the
+  // English under the translation.
+  const passes = Math.max(2, Math.min(4, Math.round(Math.min(w, h) / 30)));
+  for (let pass = 0; pass < passes; pass++) {
+    const was = mask.slice();
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (!inside[p] || was[p]) continue;
+        if ((x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w])) mask[p] = 2;
+      }
     }
   }
   for (let p = 0; p < mask.length; p++) {
