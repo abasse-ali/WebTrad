@@ -407,7 +407,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     const w = Math.min(area.h * 0.6, page.width);
     area = clampBox({ x: area.x + area.w / 2 - w / 2, y: area.y, w, h: area.h }, page.width, page.height);
   }
-  const padding = Math.max(1, Math.min(area.w, area.h) * 0.06);
+  let padding = Math.max(1, Math.min(area.w, area.h) * 0.06);
   const inner = { w: area.w - padding * 2, h: area.h - padding * 2 };
 
   const c = ctx();
@@ -440,6 +440,43 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   }
   if (size === minSize) lines = wrapText(display, inner.w, measureAt(minSize), opts.target, Boolean(target.noSpaces));
   lines = balanceLines(display, lines, inner.w, measureAt(size), opts.target, Boolean(target.noSpaces));
+
+  // Lettering on the artwork, with a translation much longer than the
+  // original: the room for it grows over the drawing around (the original
+  // letters stay erased as before), up to half again, instead of the
+  // French being written tiny in the place of a short English line.
+  if (!b.area && !b.shape && b.seam === undefined && size < maxSize * 0.8) {
+    for (const k of [1.15, 1.3, 1.5]) {
+      const grown = clampBox(
+        { x: area.x + (area.w * (1 - k)) / 2, y: area.y + (area.h * (1 - k)) / 2, w: area.w * k, h: area.h * k },
+        page.width,
+        page.height,
+      );
+      const pad2 = Math.max(1, Math.min(grown.w, grown.h) * 0.06);
+      const in2 = { w: grown.w - pad2 * 2, h: grown.h - pad2 * 2 };
+      let s2 = 0;
+      let l2: string[] | null = null;
+      let lo2 = size;
+      let hi2 = maxSize;
+      for (let i = 0; i < 12 && hi2 - lo2 > 0.25; i++) {
+        const mid = (lo2 + hi2) / 2;
+        const m = measureAt(mid);
+        const l = wrapText(display, in2.w, m, opts.target, Boolean(target.noSpaces), false);
+        if (l && fits(l, mid, in2, m)) {
+          lo2 = mid;
+          s2 = mid;
+          l2 = l;
+        } else hi2 = mid;
+      }
+      if (l2 && s2 > size * 1.08) {
+        area = grown;
+        padding = pad2;
+        size = s2;
+        lines = balanceLines(display, l2, in2.w, measureAt(s2), opts.target, Boolean(target.noSpaces));
+        if (s2 >= maxSize * 0.8) break;
+      }
+    }
+  }
 
   // In a bubble whose shape is known: the lines follow its rim, each as wide
   // as the bubble is at its height (narrower at the top and the bottom of a
