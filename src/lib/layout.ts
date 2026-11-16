@@ -519,7 +519,9 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   // round or spiky bubble), and never run over it.
   let lineX: number[] | undefined;
   let bubbleOutline: BubbleLayout['bubbleOutline'];
-  if (b.shape && !b.rotation && !b.vertical && b.seam === undefined) {
+  // A bubble read whole across two pages has its shape too (in each page's
+  // coordinates): laid out the same on both, each drawing its part.
+  if (b.shape && !b.rotation && !b.vertical) {
     const cy = b.y + b.h / 2;
     let best: ReturnType<typeof fitToShape> = null;
     let bestSize = 0;
@@ -543,7 +545,7 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
     // a quarter, with its outline, and the text takes the room gained.
     let outline: number[] | undefined;
     const wanted = maxSize * 0.8;
-    if (best && bestSize < wanted && b.shape.whole && b.shape.inset !== undefined && growable(b.shape, b)) {
+    if (best && bestSize < wanted && b.seam === undefined && b.shape.whole && b.shape.inset !== undefined && growable(b.shape, b)) {
       for (const k of [1.08, 1.16, 1.25]) {
         const g = grownShape(b.shape, k, page);
         let fit: ReturnType<typeof fitToShape> = null;

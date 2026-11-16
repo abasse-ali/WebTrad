@@ -866,13 +866,16 @@ export async function visionPage(
       // Capitals are about 0.7 of the font size and the layout may go up
       // to 1.2 times this size: the translation ends up as big as the original.
       let letters = letterHeight(px, ink, region.tinted) / scale;
+      const chars = Math.max(1, f.text.replace(/\s+/g, ' ').trim().length);
       // The bubble's rim, or a drawing, in the box: one run as tall as it.
-      if (letters > inkBox.h * 0.6 && inkBox.h > 24) {
+      // Not a text on one line ("IF…"), as tall as its box (it was then
+      // measured at a third of its size).
+      const oneLine = letters * 0.55 * chars <= inkBox.w * 1.4;
+      if (letters > inkBox.h * 0.6 && inkBox.h > 24 && !oneLine) {
         letters = letterHeightByEdges(px, ink) / scale;
         if (letters < inkBox.h * 0.12) letters = 0;
       }
       // Never bigger than the text can be in its box.
-      const chars = Math.max(1, f.text.replace(/\s+/g, ' ').trim().length);
       const fitting = Math.max(8, Math.sqrt((inkBox.w * inkBox.h) / (chars * 0.6 * 1.2)));
       const fontSize = Math.max(
         8,
@@ -977,7 +980,8 @@ export async function visionPage(
     // Over the artwork, or with a bubble's rim in the box, every row holds
     // dark pixels: one run as tall as the box, not a letter. The lines are
     // then told apart by their letter edges.
-    if (measured > box.h * 0.6 && box.h > 24) {
+    const charsHere = Math.max(1, f.text.replace(/\s+/g, ' ').trim().length);
+    if (measured > box.h * 0.6 && box.h > 24 && measured * 0.55 * charsHere > box.w * 1.4) {
       measured = letterHeightByEdges(px, scaledBox) / scale;
       // Slanted lines overlap rows: bits of letters, not lines.
       if (measured < box.h * 0.12) measured = 0;
@@ -1067,9 +1071,13 @@ export function bubbleShape(region: BubbleRegion, scale: number, top: number, bo
         const i = (py * px.width + x) * 4;
         return px.data[i] * 0.299 + px.data[i + 1] * 0.587 + px.data[i + 2] * 0.114 < 100;
       };
-      const inkRows = y >= ink.y && y <= ink.y + ink.h;
-      const from0 = Math.round((inkRows ? ink.x : ink.x + ink.w / 2) * scale);
-      const from1 = Math.round((inkRows ? ink.x + ink.w : ink.x + ink.w / 2) * scale);
+      // Rows of the text: from a little outside its letters (started on its
+      // edge, the "I" of "IF…" was taken for a line of the drawing and the
+      // bubble's room cut in half).
+      const inkRows = y >= ink.y - inset && y <= ink.y + ink.h + inset;
+      const margin = Math.max(4, inset);
+      const from0 = Math.round((inkRows ? ink.x - margin : ink.x + ink.w / 2) * scale);
+      const from1 = Math.round((inkRows ? ink.x + ink.w + margin : ink.x + ink.w / 2) * scale);
       for (let x = Math.max(minX, from1); x <= maxX; x++) {
         if (dark(x)) {
           right = Math.min(right, x / scale - inset);
@@ -1455,8 +1463,12 @@ async function processGroup(group: Page[], chapter: Chapter, signal: AbortSignal
     // to both, as a bubble cut between two pages is.
     const per: Bubble[][] = group.map(() => []);
     for (const b of all) {
-      const top = b.y;
-      const bottom = b.y + b.h;
+      // Everything drawn for it: its letters, the room of its bubble, the
+      // repaired patch. A bubble whose letters were on one page but whose
+      // room ran onto the one above had its first line cut by the page.
+      const parts = [b, b.area, b.patchBox, b.shape && { y: b.shape.y, h: (b.shape.x.length / 2) * b.shape.step }].filter(Boolean) as { y: number; h: number }[];
+      const top = Math.min(...parts.map((p) => p.y));
+      const bottom = Math.max(...parts.map((p) => p.y + p.h));
       group.forEach((_, i) => {
         const y0 = tops[i];
         const y1 = i + 1 < group.length ? tops[i + 1] : H;
@@ -1473,7 +1485,9 @@ async function processGroup(group: Page[], chapter: Chapter, signal: AbortSignal
     }
     // The end of a bubble begun on the page before the group is already lettered.
     const own = (await getPage(first.id))?.bubbles.filter((b) => b.seam === 'prev') ?? [];
-    if (own.length > 0) per[0] = [...per[0].filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmaps[0].height), b))), ...own];
+    // (Read again by the group, the same text was lettered a second time, tiny, beside it.)
+    if (own.length > 0)
+      per[0] = [...per[0].filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmaps[0].height), b) || similarText(o.original, b.original))), ...own];
     // A bubble cut at the bottom of the last page: joined to the next page as usual.
     try {
       per[per.length - 1] = await stitchSeam(last, bitmaps[bitmaps.length - 1], chapter, signal, per[per.length - 1], context);
@@ -1551,7 +1565,7 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
       }
       // The end of a bubble begun on the previous page is already lettered.
       const own = (await getPage(page.id))?.bubbles.filter((b) => b.seam === 'prev') ?? [];
-      if (own.length > 0) bubbles = [...bubbles.filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmap.height), b))), ...own];
+      if (own.length > 0) bubbles = [...bubbles.filter((b) => !own.some((o) => coversCentre(visiblePart(o, bitmap.height), b) || similarText(o.original, b.original))), ...own];
       logInfo('ocr', `Page ${page.index + 1} lue par l’IA : ${bubbles.length} texte(s)`, {
         ...where,
         modèle: settings.llm.model,
