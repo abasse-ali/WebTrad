@@ -19,6 +19,7 @@ import { visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
 import { isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
 import { seriesOf } from './series';
+import { charactersFor, rememberSpeakers } from './cast';
 import { alignToBubbles } from './align';
 import { AUTO, normaliseSourceCode, sourceLanguage } from './languages';
 import type { Bubble, Chapter, Page } from './types';
@@ -776,6 +777,7 @@ export async function visionPage(
         area,
         original,
         translation: f.translation,
+        ...voiceOf(f),
         vertical,
         fontSize,
         fill,
@@ -813,6 +815,7 @@ export async function visionPage(
       area,
       original,
       translation: f.translation,
+      ...voiceOf(f),
       vertical,
       fontSize,
       fill: look.fill,
@@ -823,6 +826,15 @@ export async function visionPage(
     });
   }
   return evenCutText(bubbles, H);
+}
+
+/** The speaker fields a bubble keeps (only those the model gave). */
+function voiceOf(f: { speaker?: string; gender?: 'male' | 'female'; kind?: Bubble['kind'] }): Pick<Bubble, 'speaker' | 'gender' | 'kind'> {
+  const out: Pick<Bubble, 'speaker' | 'gender' | 'kind'> = {};
+  if (f.speaker) out.speaker = f.speaker;
+  if (f.gender) out.gender = f.gender;
+  if (f.kind) out.kind = f.kind;
+  return out;
 }
 
 /** Median lettering size of the texts not cut by the page edge (undefined if none). */
@@ -992,7 +1004,7 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
           return { x: ink.x, y: dy + ink.y, w: ink.w, h: ink.h };
         }
       };
-      const shared = { original, translation, fontSize, fill, color: contrastColor(fill) };
+      const shared = { original, translation, ...voiceOf(items[0]), fontSize, fill, color: contrastColor(fill) };
       const upper: Bubble = { id: uid(), ...half(bottomPx, a, stripTop), ...shared, area, seam: 'next' };
       const lower: Bubble = { id: uid(), ...half(topPx, b, 0), ...shared, area: { ...area, y: area.y - H }, seam: 'prev' };
       // What the page read on its own of this bubble is replaced.
@@ -1029,15 +1041,22 @@ export async function storySoFar(chapter: Chapter, pageIndex: number): Promise<s
     const lines = before
       .sort((a, b) => a.index - b.index)
       .flatMap((p) => p.bubbles.filter((b) => b.seam !== 'prev' && !b.hidden && b.translation.trim()).sort((a, b) => a.y - b.y))
-      .map((b) => `${b.original.replace(/\s+/g, ' ').trim()} → ${b.translation.replace(/\s+/g, ' ').trim()}`)
+      .map((b) => `${b.speaker ? `[${b.speaker}] ` : ''}${b.original.replace(/\s+/g, ' ').trim()} → ${b.translation.replace(/\s+/g, ' ').trim()}`)
       .slice(-CONTEXT_LINES);
-    return lines.length > 0 ? lines.join('\n') : undefined;
+    // The characters met so far in the series, so that the same person keeps
+    // the same label (and so the same voice when read aloud).
+    const cast = charactersFor(chapter.title);
+    const parts = [
+      ...(lines.length > 0 ? [lines.join('\n')] : []),
+      ...(cast ? [`Characters of the series so far (reuse these exact labels in "speaker" for the same people):\n${cast}`] : []),
+    ];
+    return parts.length > 0 ? parts.join('\n\n') : undefined;
   } catch {
     return undefined;
   }
 }
 
-function visionEnabled(): boolean {
+export function visionEnabled(): boolean {
   const settings = getSettings();
   const preset = LLM_PRESETS.find((p) => p.id === settings.llm.preset);
   // Without a key for a hosted provider the AI mode cannot work: use local OCR.
@@ -1110,6 +1129,7 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
         ms: since(start),
       });
       await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
+      rememberSpeakers(chapter.title, bubbles);
       return 'llm';
     }
     const detected = await ocrPage(bitmap, chapter.sourceLang, { minConfidence: settings.minConfidence, signal });

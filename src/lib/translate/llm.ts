@@ -483,12 +483,35 @@ export function llmEngine(llm: LlmSettings = getSettings().llm): TranslationEngi
 
 // --- AI vision: read + translate a page image in a single request -----------
 
+export type Gender = 'male' | 'female';
+export type TextKind = 'dialogue' | 'thought' | 'narration' | 'sign';
+
 export interface VisionBubble {
   /** Normalised 0–1000 box: [ymin, xmin, ymax, xmax]. */
   box: [number, number, number, number];
   text: string;
   translation: string;
+  /** Who says it: a name, or a description that stays the same from page to page. */
+  speaker?: string;
+  gender?: Gender;
+  kind?: TextKind;
 }
+
+/** The speaker fields of a model's item, cleaned. */
+export function speakerOf(item: { speaker?: unknown; gender?: unknown; kind?: unknown; type?: unknown }): Pick<VisionBubble, 'speaker' | 'gender' | 'kind'> {
+  const g = String(item.gender ?? '').toLowerCase();
+  const k = String(item.kind ?? item.type ?? '').toLowerCase();
+  const speaker = typeof item.speaker === 'string' ? item.speaker.replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+  return {
+    speaker: speaker && !/^(unknown|none|n\/a|\?+)$/i.test(speaker) ? speaker : undefined,
+    gender: /^(m|male|man|homme|masculin)/.test(g) ? 'male' : /^(f|female|woman|femme|féminin)/.test(g) ? 'female' : undefined,
+    kind: /^thought/.test(k) ? 'thought' : /^narrat/.test(k) ? 'narration' : /^(sign|screen|label|text)/.test(k) ? 'sign' : /^dialog|^speech/.test(k) ? 'dialogue' : undefined,
+  };
+}
+
+const SPEAKER_RULES = `- "speaker": who says it, so that it can be read aloud with that character's voice. The character's name when the story gives it, else a short description of how they look that you would give again on every page ("masked man", "pink-haired nurse", "red-haired girl in a hoodie"). When a list of characters is given, reuse its labels exactly for the same people. Follow the tail of the bubble to the character. "narrator" for narration boxes, "sign" for written text in the scenery.
+- "gender": "male", "female" or "unknown", the speaker's, from the drawing and the way they speak.
+- "kind": "dialogue", "thought" (thought bubbles, inner voice), "narration" or "sign".`;
 
 function visionPrompt(order: 'yxyx' | 'xyxy'): string {
   const box = order === 'xyxy' ? '[xmin, ymin, xmax, ymax]' : '[ymin, xmin, ymax, xmax]';
@@ -505,8 +528,10 @@ How to translate, like a professional scanlation team:
 - Interjections in bubbles (Ugh, Huh?, Haha, Hmm, Tch) become their usual equivalents in the target language; stuttering (I-I…) and trailing dots (…) are kept.
 - Use the typography of the target language (French: « » for quotes, a space before ? ! : ;).
 - Only text in the target language: no notes, no romanisation, no alternatives.
+For each text also say who speaks it:
+${SPEAKER_RULES}
 Also give the language of the original text as an ISO 639-1 code ("ko", "ja", "zh-Hans", "zh-Hant", "en"…).
-Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|narration|sign","text":"...","translation":"..."}]} in reading order. List each piece of text once, one item per block of lettering: never split the lines of one block into several items, and never merge two separate blocks (two bubbles drawn touching or joined are two items). Return {"bubbles":[]} if there is no text.`;
+Answer with JSON only: {"source_language":"<code>","bubbles":[{"${key}":${box.replace(/ /g, '')},"kind":"dialogue|thought|narration|sign","speaker":"...","gender":"male|female|unknown","text":"...","translation":"..."}]} in reading order. List each piece of text once, one item per block of lettering: never split the lines of one block into several items, and never merge two separate blocks (two bubbles drawn touching or joined are two items). Return {"bubbles":[]} if there is no text.`;
 }
 
 /** Box order the configured provider is best at. */
@@ -553,9 +578,10 @@ export async function visionTranslate(
   const list = Array.isArray(parsed) ? parsed : (parsed.bubbles ?? []);
   const sourceLanguage = Array.isArray(parsed) ? undefined : parsed.source_language;
   const out: VisionBubble[] = [];
-  const boxes: { box: number[]; xyxy: boolean; item: { text?: unknown; translation?: unknown } }[] = [];
+  type Item = { box_2d?: unknown; bbox_2d?: unknown; bbox?: unknown; box?: unknown; text?: unknown; translation?: unknown; kind?: unknown; type?: unknown; speaker?: unknown; gender?: unknown };
+  const boxes: { box: number[]; xyxy: boolean; item: Item }[] = [];
   for (const raw of list) {
-    const item = raw as { box_2d?: unknown; bbox_2d?: unknown; bbox?: unknown; box?: unknown; text?: unknown; translation?: unknown; kind?: unknown; type?: unknown };
+    const item = raw as Item;
     // Sound effects are left drawn as they are, whatever the model sent.
     if (/^(sfx|sound|onomatop)/i.test(String(item.kind ?? item.type ?? ''))) continue;
     // The key tells the order when the model picked its own habit.
@@ -579,9 +605,55 @@ export async function visionTranslate(
       box: [y0, x0, y1, x1],
       text: typeof item.text === 'string' ? item.text : '',
       translation: typeof item.translation === 'string' ? item.translation : '',
+      ...speakerOf(item),
     });
   }
   return { bubbles: out, sourceLanguage };
+}
+
+/**
+ * Who speaks each text of an image already translated (chapters read before
+ * voices existed). The texts are numbered on the image itself, next to their
+ * bubble, so the model ties each number to the character the tail points at.
+ */
+export async function identifySpeakers(
+  imageDataUrl: string,
+  texts: { id: number; text: string }[],
+  characters: string | undefined,
+  signal?: AbortSignal,
+  llm: LlmSettings = getSettings().llm,
+): Promise<Map<number, Pick<VisionBubble, 'speaker' | 'gender' | 'kind'>>> {
+  const prompt = `You help read a manga, manhwa or webtoon page aloud with one voice per character. In the image, each text has a red number next to it. For every number, say who speaks it:
+${SPEAKER_RULES}
+Answer with JSON only: {"items":[{"id":<number>,"speaker":"...","gender":"male|female|unknown","kind":"dialogue|thought|narration|sign"}]}, one entry per number.`;
+  const answer = await chat(
+    llm,
+    [
+      { role: 'system', content: prompt },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text:
+              (characters ? `Characters so far (reuse these labels):\n${characters}\n` : '') +
+              `Texts:\n${texts.map((t) => `${t.id}. ${t.text.replace(/\s+/g, ' ').trim()}`).join('\n')}`,
+          },
+          { type: 'image_url', image_url: { url: imageDataUrl } },
+        ],
+      },
+    ],
+    signal,
+  );
+  const parsed = parseJsonAnswer<{ items?: unknown[] } | unknown[]>(answer);
+  const list = Array.isArray(parsed) ? parsed : (parsed.items ?? []);
+  const out = new Map<number, Pick<VisionBubble, 'speaker' | 'gender' | 'kind'>>();
+  for (const raw of list) {
+    const item = raw as { id?: unknown; speaker?: unknown; gender?: unknown; kind?: unknown };
+    const id = Number(item.id);
+    if (Number.isFinite(id)) out.set(id, speakerOf(item));
+  }
+  return out;
 }
 
 /** Quick round trip used by the "Test" button in the settings. */
