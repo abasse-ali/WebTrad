@@ -592,13 +592,16 @@ export async function proofreadTexts(
     ],
     signal,
   );
-  const parsed = parseJsonAnswer<{ fixes?: { id: number; text: string }[] } | { id: number; text: string }[]>(answer);
-  const list = Array.isArray(parsed) ? parsed : (parsed.fixes ?? []);
-  for (const fix of list) {
+  type Fix = { id?: unknown; text?: unknown; translation?: unknown; corrected?: unknown };
+  const parsed = parseJsonAnswer<Record<string, Fix[] | undefined> | Fix[]>(answer);
+  // Models name things their own way: "fixes", "corrections", the lines sent back…
+  const list = Array.isArray(parsed) ? parsed : (parsed.fixes ?? parsed.corrections ?? parsed.lines ?? parsed.translations ?? []);
+  for (const fix of Array.isArray(list) ? list : []) {
     const id = Number(fix?.id);
     const item = items.find((i) => i.id === id);
-    if (!item || typeof fix.text !== 'string') continue;
-    const text = acceptedFix(item.text, fix.text);
+    const value = fix?.text ?? fix?.corrected ?? fix?.translation;
+    if (!item || typeof value !== 'string') continue;
+    const text = acceptedFix(item.text, value);
     if (text) out.set(id, text);
   }
   return out;

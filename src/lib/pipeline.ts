@@ -411,7 +411,10 @@ export async function visionPage(
       // model sends them. A cry typed small ("UGH!") in a bubble of an odd
       // shape is dialogue: its bubble is looked for before it is left out.
       if (!region && isDrawnEffect(f.text)) {
-        if (box.h > W * 0.06) continue;
+        // A known sound effect ("BRUSH", "DUN", "BOW") outside any bubble is
+        // drawn: never lettered over (a white stretch of sky taken for its
+        // bubble had "DUN" erased with the face beside it).
+        if (box.h > W * 0.06 || isSoundEffect(f.text)) continue;
         // The lettering under it, when found: a short cry ("WHAT...?!") in a
         // bubble joined to a longer one is no longer compared with the ink
         // of both, and left in English.
@@ -419,6 +422,9 @@ export async function visionPage(
         region = shapedBubble(box, under);
         if (!region) continue;
       }
+      // A sound effect over a wide light area taken for a bubble (a pillow,
+      // a wall): drawn, left as it is ("SNORE" lettered tiny on a pillow).
+      if (region && isSoundEffect(f.text) && (region.w / scale) * (region.h / scale) > box.w * box.h * 25) continue;
       // Website watermarks are not translated, even over a bubble.
       if (isWatermark(f.text)) continue;
       // Chat lines on a drawn screen stay as drawn: too small to letter over.
@@ -806,14 +812,26 @@ export async function visionPage(
   const bubbles: Bubble[] = [];
   for (const t of kept) {
     if (skipped.has(t)) continue;
-    const { f, box, region } = t;
+    const { f, box } = t;
+    let region = t.region;
     const original = pageInCaps && region ? f.text.toLocaleUpperCase() : f.text;
     const cx = box.x + box.w / 2;
     const cy = box.y + box.h / 2;
     const lines = Math.max(1, f.text.split('\n').length);
     const vertical = box.h > box.w * 1.6;
     const siblings = region ? kept.filter((k) => k !== t && k.region === region && !skipped.has(k)).map((k) => k.box) : [];
-    const ink = region ? letteringIn(region, siblings.length ? box : undefined, siblings) : null;
+    let ink = region ? letteringIn(region, siblings.length ? box : undefined, siblings) : null;
+    // The lettering found in the "bubble" is elsewhere than the text: a light
+    // background joined to another bubble was taken for this text's bubble,
+    // and the translation went over that other bubble. It is lettering on
+    // the artwork.
+    if (region && ink && overlapShare(t.block ?? box, { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale }) < 0.2) {
+      region = undefined;
+      ink = null;
+      // Put back on its own letters, as the other texts on the artwork.
+      const g = growToText(px, snapToText(px, { x: box.x * scale, y: box.y * scale, w: box.w * scale, h: box.h * scale }));
+      Object.assign(box, { x: g.x / scale, y: g.y / scale, w: g.w / scale, h: g.h / scale });
+    }
     // A bubble (or a blank stretch of paper taken for one) with no lettering
     // at all: the model made the text up, often a line continuing the story
     // so far. It was lettered over blank paper.
@@ -829,8 +847,19 @@ export async function visionPage(
       // the height of the whole block lettered some bubbles twice too big.
       // Capitals are about 0.7 of the font size and the layout may go up
       // to 1.2 times this size: the translation ends up as big as the original.
-      const letters = letterHeight(px, ink, region.tinted) / scale;
-      const fontSize = Math.max(8, Math.min(60, letters > 0 ? letters / LETTERS_TO_FONT : Math.min(inkBox.h / (lines * 1.2), W * 0.03)));
+      let letters = letterHeight(px, ink, region.tinted) / scale;
+      // The bubble's rim, or a drawing, in the box: one run as tall as it.
+      if (letters > inkBox.h * 0.6 && inkBox.h > 24) {
+        letters = letterHeightByEdges(px, ink) / scale;
+        if (letters < inkBox.h * 0.12) letters = 0;
+      }
+      // Never bigger than the text can be in its box.
+      const chars = Math.max(1, f.text.replace(/\s+/g, ' ').trim().length);
+      const fitting = Math.max(8, Math.sqrt((inkBox.w * inkBox.h) / (chars * 0.6 * 1.2)));
+      const fontSize = Math.max(
+        8,
+        Math.min(60, fitting * 1.3, letters > 0 ? letters / LETTERS_TO_FONT : Math.min(inkBox.h / (lines * 1.2), W * 0.03, fitting)),
+      );
       const fill = regionFill(px, region);
       const look = lookOfText(px, inkBox, scale, fontSize, true);
       // Dark lettering is black: a watermark crossing it tinted the sample.
@@ -1476,10 +1505,31 @@ export async function proofreadChapter(chapter: Chapter, pageIds: string[], sign
     }
   }
   let fixed = 0;
+  let skipped = 0;
+  // A batch the provider refuses (the content filter on an explicit scene,
+  // an answer cut short): halved and asked again, so that one scene does not
+  // keep the whole chapter from being proofread.
+  const ask = async (batch: typeof lines): Promise<Map<number, string>> => {
+    try {
+      return await withRetries(() => proofreadTexts(batch, chapter.targetLang, signal), signal, [4000]);
+    } catch (err) {
+      if (signal.aborted || (err instanceof TranslateError && err.fatal)) throw err;
+      if (batch.length <= 6) {
+        skipped += batch.length;
+        logWarn('job', `Relecture : ${batch.length} ligne(s) non relue(s) : ${(err as Error).message.slice(0, 120)}`);
+        return new Map();
+      }
+      const half = Math.ceil(batch.length / 2);
+      const a = await ask(batch.slice(0, half));
+      const b = await ask(batch.slice(half));
+      return new Map([...a, ...b]);
+    }
+  };
   for (let k = 0; k < lines.length; k += PROOFREAD_BATCH) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const batch = lines.slice(k, k + PROOFREAD_BATCH);
-    const fixes = await withRetries(() => proofreadTexts(batch, chapter.targetLang, signal), signal, [4000]);
+    setJob(chapter.id, { message: `Relecture des traductions… ${Math.min(lines.length, k + batch.length)}/${lines.length}` });
+    const fixes = await ask(batch);
     if (fixes.size === 0) continue;
     const byPage = new Map<string, Map<string, string>>();
     for (const l of batch) {
@@ -1502,7 +1552,7 @@ export async function proofreadChapter(chapter: Chapter, pageIds: string[], sign
       await patchPage(pageId, { bubbles });
     }
   }
-  logInfo('job', `Relecture de « ${chapter.title} » : ${fixed} correction(s) sur ${lines.length} ligne(s)`);
+  logInfo('job', `Relecture de « ${chapter.title} » : ${fixed} correction(s) sur ${lines.length} ligne(s)${skipped ? `, ${skipped} non relue(s)` : ''}`);
   return fixed;
 }
 
@@ -1605,11 +1655,14 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     if (done > 0 && !controller.signal.aborted && !stopped && (visionEnabled() || st.provider === 'llm')) {
       setJob(chapterId, { phase: 'translate', pageIndex: null, message: 'Relecture des traductions…' });
       try {
-        await proofreadChapter(chapter, todo.map((p) => p.id), controller.signal);
+        const fixed = await proofreadChapter(chapter, todo.map((p) => p.id), controller.signal);
+        setJob(chapterId, { message: opts.proofreadOnly ? `Relecture faite : ${fixed} correction(s)` : undefined });
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') logWarn('job', `Relecture non faite : ${(err as Error).message.slice(0, 120)}`);
+        if ((err as Error).name !== 'AbortError') {
+          logWarn('job', `Relecture non faite : ${(err as Error).message.slice(0, 120)}`);
+          setJob(chapterId, { message: `Relecture non faite : ${(err as Error).message.slice(0, 80)}` });
+        }
       }
-      setJob(chapterId, { message: undefined });
     }
     await refreshStats(chapterId);
     logInfo('job', `Fin de « ${chapter.title} » : ${done} page(s) faite(s), ${failed} en erreur${controller.signal.aborted || stopped ? ', arrêté' : ''}`, {
