@@ -1119,7 +1119,9 @@ export async function visionPage(
       const g = growToLetters(px, scaled, fontSize * LETTERS_TO_FONT * scale);
       Object.assign(box, { x: g.x / scale, y: g.y / scale, w: g.w / scale, h: g.h / scale });
     }
-    const look = lookOfText(px, box, scale, fontSize, Boolean(area) || paper, rotation);
+    // The style of the letters (white letters outlined in black on a grey
+    // wall…) is read as on any artwork: on paper it came out plain black.
+    const look = lookOfText(px, box, scale, fontSize, Boolean(area), rotation);
     if (paperFill) {
       // Erased like the inside of a bubble: the letters and their soft
       // edges take the paper's colour, a bubble's outline crossing the box stays.
