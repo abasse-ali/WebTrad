@@ -15,7 +15,7 @@ import { logError, logInfo, logWarn, since } from './log';
 import { LLM_PRESETS, getSettings } from './settings';
 import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
-import { CONTENT_REFUSED, visionTranslate } from './translate/llm';
+import { CONTENT_REFUSED, lastRateLimitAt, visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
 import { isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
 import { seriesOf } from './series';
@@ -1430,13 +1430,17 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
       await refreshStats(chapterId);
       return 'next';
     };
-    const worker = async () => {
+    const startedAt = Date.now();
+    const worker = async (n: number) => {
       while (nextPage < todo.length && !controller.signal.aborted && !stopped) {
+        // The provider refused a request for going too fast: one page at a
+        // time from then on (two at once only made both wait, refused).
+        if (n > 0 && lastRateLimitAt() >= startedAt) return;
         const page = todo[nextPage++];
         if ((await doPage(page)) === 'stop') return;
       }
     };
-    await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, (_, n) => worker(n)));
     await refreshStats(chapterId);
     logInfo('job', `Fin de « ${chapter.title} » : ${done} page(s) faite(s), ${failed} en erreur${controller.signal.aborted || stopped ? ', arrêté' : ''}`, {
       ms: since(jobStart),

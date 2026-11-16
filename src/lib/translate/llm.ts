@@ -59,6 +59,15 @@ function baseOf(llm: LlmSettings): string {
   return llm.baseUrl.trim().replace(/\/+$/, '');
 }
 
+/** Refusals for too many requests in a row, per provider. */
+const limitedStreak = new Map<string, number>();
+let lastLimited = 0;
+
+/** When a provider last refused a request for going too fast (ms since 1970, 0 if never). */
+export function lastRateLimitAt(): number {
+  return lastLimited;
+}
+
 /** Time before which no request goes to a provider (ms since 1970), after a 429. */
 const cooldowns = new Map<string, number>();
 
@@ -239,10 +248,22 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     throw new TranslateError(`${fatal} (HTTP ${res.status})`, 'llm', false, true);
   }
   if (res.status === 429) {
-    const waitMs = rateLimitWait(res.text);
+    // Refused again and again right after each pause (NVIDIA, once a key has
+    // gone over its limit, refused one request in two for 40 minutes): each
+    // refusal in a row doubles the pause, up to 2 minutes, instead of asking
+    // again every 20 s and keeping the provider's penalty going.
+    const streak = (limitedStreak.get(host) ?? 0) + 1;
+    limitedStreak.set(host, streak);
+    lastLimited = Date.now();
+    const waitMs = Math.min(120_000, rateLimitWait(res.text) * 2 ** Math.min(3, streak - 1));
     cooldowns.set(host, Math.max(cooldowns.get(host) ?? 0, Date.now() + waitMs));
     learnLimit(host, Number(limitOf(res.text)) || undefined);
-    logWarn('ia', `Limite de requêtes atteinte : pause de ${Math.round(waitMs / 1000)} s, puis ${limitFor(host)} requêtes par minute au plus`, meta);
+    logWarn(
+      'ia',
+      `Limite de requêtes atteinte : pause de ${Math.round(waitMs / 1000)} s, puis ${limitFor(host)} requêtes par minute au plus` +
+        (streak >= 3 ? ` (${streak} refus de suite : le fournisseur ralentit cette clé, les pages passent une par une)` : ''),
+      { ...meta, refus: streak },
+    );
     throw new TranslateError(`AI endpoint HTTP 429 (rate limit) ${res.text.slice(0, 200)}`, 'llm', true);
   }
   if (res.status < 200 || res.status >= 300) {
@@ -251,6 +272,7 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     if (isContentRefusal(res.text)) throw new TranslateError(`${CONTENT_REFUSED} (HTTP ${res.status})`, 'llm', false);
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
+  limitedStreak.delete(host);
   if (/^\s*(data:|event:|:)/.test(res.text)) {
     const parsed = parseStream(res.text);
     // Thinking models write their reasoning first: long, slow, and unused.
