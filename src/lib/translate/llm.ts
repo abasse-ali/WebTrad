@@ -118,7 +118,7 @@ function limitOf(body: string): string | undefined {
  * (NVIDIA says nothing of its limit): the next requests are spaced to stay
  * under it, instead of being refused and paused 20 s again and again.
  */
-const learntLimit = new Map<string, { limit: number; at: number }>();
+const learntLimit = new Map<string, { limit: number; at: number; refusedAt: number }>();
 
 /**
  * The per-minute limit in force for a host. A limit learnt from one refusal
@@ -129,7 +129,10 @@ function limitFor(host: string, now = Date.now()): number | undefined {
   const known = knownLimit(host);
   const learnt = learntLimit.get(host);
   if (!learnt) return known;
-  const limit = learnt.limit + 2 * Math.floor((now - learnt.at) / 60_000);
+  // One more every two minutes without a refusal, never up to the rate
+  // that was refused (it climbed back to 30 a minute and was refused again,
+  // each time with a pause of 20 to 40 s).
+  const limit = Math.min(learnt.limit + Math.floor((now - learnt.at) / 120_000), Math.max(learnt.limit, learnt.refusedAt - 1));
   if (limit > Math.min(60, known ?? Infinity)) {
     learntLimit.delete(host);
     return known;
@@ -159,11 +162,16 @@ export async function paceRequest(host: string, signal?: AbortSignal): Promise<v
   for (;;) {
     const list = startsInLastMinute(host);
     const limit = limitFor(host);
-    if (!limit || list.length < limit) {
-      list.push(Date.now());
+    const now = Date.now();
+    // Evenly spaced, not in bursts: the provider refused the third of three
+    // requests sent in the same second, though far under its limit a minute.
+    const gap = limit && learntLimit.has(host) ? 60_000 / limit : 0;
+    const last = list[list.length - 1] ?? -Infinity;
+    if (!limit || (list.length < limit && now - last >= gap)) {
+      list.push(now);
       return;
     }
-    const wait = list[0] + 60_000 - Date.now() + 200;
+    const wait = Math.max(list.length < limit ? last + gap - now : list[0] + 60_000 - now + 200, 50);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(resolve, wait);
       signal?.addEventListener('abort', () => (clearTimeout(timer), reject(new DOMException('Aborted', 'AbortError'))), { once: true });
@@ -180,8 +188,9 @@ export function learnLimit(host: string, said?: number): void {
   // these few requests. The limit stays (it sank to 8 a minute and stayed there).
   const learnt = learntLimit.get(host);
   if (!said && learnt && seen < limitFor(host, now)!) return;
-  const limit = said && said < 1000 ? said : Math.max(8, Math.floor(seen * 0.8));
-  learntLimit.set(host, { limit: Math.min(limitFor(host, now) ?? Infinity, limit), at: now });
+  const current = limitFor(host, now) ?? Infinity;
+  const limit = said && said < 1000 ? said : Math.max(8, Math.min(Math.floor(seen * 0.8), current - 2));
+  learntLimit.set(host, { limit: Math.min(current, limit), at: now, refusedAt: current });
 }
 
 /** Milliseconds left before requests to any provider may go again. */
