@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -873,7 +873,7 @@ export async function visionPage(
         if (oy > my) bottom = Math.min(bottom, (my + oy) / 2);
         else top = Math.max(top, (my + oy) / 2);
       }
-      const shape = bubbleShape(region, scale, top, bottom, Math.max(2, fontSize * 0.35));
+      const shape = bubbleShape(region, scale, top, bottom, Math.max(2, fontSize * 0.35), px);
       bubbles.push({
         id: uid(),
         ...inkBox,
@@ -946,7 +946,7 @@ export async function visionPage(
  * its rim, between `top` and `bottom` (its own lobe of a joined shape).
  * Undefined for a shape too small to say anything.
  */
-export function bubbleShape(region: BubbleRegion, scale: number, top: number, bottom: number, inset: number): Bubble['shape'] {
+export function bubbleShape(region: BubbleRegion, scale: number, top: number, bottom: number, inset: number, px?: Pixels): Bubble['shape'] {
   const step = Math.max(1, Math.round(region.h / 48));
   const rows: [number, number][] = [];
   let first = -1;
@@ -967,7 +967,27 @@ export function bubbleShape(region: BubbleRegion, scale: number, top: number, bo
   // Rows past the last usable one are not kept.
   while (rows.length && rows[rows.length - 1][1] < rows[rows.length - 1][0]) rows.pop();
   if (first < 0 || rows.length < 3) return undefined;
-  return { y: Math.round((region.y + first) / scale), step: step / scale, x: rows.flat() };
+  // The colour of the rim: the darkest pixel just past the interior, row by row.
+  let rim: string | undefined;
+  if (px) {
+    const lums: [number, number, number, number][] = [];
+    for (let r = 0; r < region.h; r += step) {
+      const maxX = region.spans[r * 2 + 1];
+      if (maxX < 0) continue;
+      let best: [number, number, number, number] | null = null;
+      for (let x = maxX + 1; x <= Math.min(px.width - 1, maxX + 5); x++) {
+        const i = ((region.y + r) * px.width + x) * 4;
+        const l = px.data[i] * 0.299 + px.data[i + 1] * 0.587 + px.data[i + 2] * 0.114;
+        if (!best || l < best[0]) best = [l, px.data[i], px.data[i + 1], px.data[i + 2]];
+      }
+      if (best) lums.push(best);
+    }
+    lums.sort((a, b) => a[0] - b[0]);
+    const m = lums[Math.floor(lums.length / 2)];
+    if (m && m[0] < 140) rim = '#' + m.slice(1).map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+  }
+  const whole = top <= region.y / scale + 1 && bottom >= (region.y + region.h) / scale - 1;
+  return { y: Math.round((region.y + first) / scale), step: step / scale, x: rows.flat(), inset, rim, whole };
 }
 
 /** The speaker fields a bubble keeps (only those the model gave). */

@@ -2311,3 +2311,13 @@ textarea {
   transform: translateY(8px);
   pointer-events: none;
 }
+
+/* A bubble drawn again a little bigger for a long translation. */
+.tb-grown {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
