@@ -213,6 +213,8 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
   it('spaces NVIDIA requests under its limit from the start', () => {
     expect(knownLimit('integrate.api.nvidia.com')).toBe(30);
     expect(knownLimit('openrouter.ai')).toBeUndefined();
+    // Paced per model: the proofreading model has its own budget.
+    expect(knownLimit('integrate.api.nvidia.com|nvidia/nemotron-3.5-super-vl-120b-a12b')).toBe(30);
   });
 
   it('never spaces requests more than 4 a minute, refused again and again', async () => {

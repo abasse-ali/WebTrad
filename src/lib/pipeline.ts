@@ -2245,8 +2245,16 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     const worker = async (n: number) => {
       while (nextPage < units.length && !controller.signal.aborted && !stopped) {
         // The provider refused a request for going too fast: one page at a
-        // time from then on (two at once only made both wait, refused).
-        if (n > 0 && lastRateLimitAt() >= startedAt) return;
+        // time while it does (two at once only made both wait, refused).
+        // Three quiet minutes later, two again: a single refusal kept the
+        // rest of the chapter, sometimes 100 pages, one page at a time.
+        if (n > 0 && lastRateLimitAt() >= startedAt && Date.now() - lastRateLimitAt() < 180_000) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 15_000);
+            controller.signal.addEventListener('abort', () => (clearTimeout(timer), resolve()), { once: true });
+          });
+          continue;
+        }
         const unit = units[nextPage++];
         if ((await doUnit(unit)) === 'stop') return;
         if (proofreads && nextPage < units.length)

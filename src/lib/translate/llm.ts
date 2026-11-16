@@ -126,7 +126,7 @@ function limitOf(body: string): string | undefined {
  * at full speed and was refused within a minute.
  */
 const learntLimit = new Map<string, { limit: number; at: number; refusedAt: number }>();
-const PACE_KEY = 'webtrad.rateLimits.v1';
+const PACE_KEY = 'webtrad.rateLimits.v2';
 /** Never spaced more than this (requests a minute): a key slowed by the provider still goes on. */
 const MIN_LIMIT = 4;
 
@@ -144,8 +144,10 @@ function saveLimits(): void {
   try {
     const saved = JSON.parse(localStorage.getItem(PACE_KEY) ?? '{}') as Record<string, { limit: number; refusedAt: number; at: number }>;
     for (const [host, l] of Object.entries(saved)) {
-      // A day later the provider may have changed its mind: learnt again.
-      if (Date.now() - l.at > 24 * 3_600_000 || !(l.limit > 0)) continue;
+      // Two hours later the provider may have changed its mind: learnt again.
+      // (Kept a day, a pace of 4 a minute learnt one evening slowed every
+      // chapter of the next day as well.)
+      if (Date.now() - l.at > 2 * 3_600_000 || !(l.limit > 0)) continue;
       learntLimit.set(host, { limit: l.limit, refusedAt: l.refusedAt, at: Date.now() });
     }
   } catch {
@@ -179,7 +181,8 @@ function limitFor(host: string, now = Date.now()): number | undefined {
  * start. NVIDIA allows 40 a minute; going over it once (two pages at a time
  * answered in 3 s) brought refusals every 20 s for the rest of the chapter.
  */
-export function knownLimit(host: string): number | undefined {
+export function knownLimit(key: string): number | undefined {
+  const host = key.split('|')[0];
   if (/(^|\.)nvidia\.com$/i.test(host)) return 30;
   return undefined;
 }
@@ -272,9 +275,13 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     }
   })();
   const model = (body as { model?: string } | undefined)?.model;
+  // NVIDIA counts its limit per model: the proofreading model's requests
+  // (and its refusals) no longer slow the reading of the pages, which waited
+  // on the same budget and the same pauses.
+  const pace = model ? `${host}|${model}` : host;
   // A rate limit was hit: every request waits for the provider's window to reset.
-  await waitForCooldown(host, signal);
-  if (path === '/chat/completions') await paceRequest(host, signal);
+  await waitForCooldown(pace, signal);
+  if (path === '/chat/completions') await paceRequest(pace, signal);
   const sentAt = Date.now();
   // Timed after the pause: the log shows how long the provider took.
   const start = performance.now();
@@ -314,15 +321,15 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     // gone over its limit, refused one request in two for 40 minutes): each
     // refusal in a row doubles the pause, up to 2 minutes, instead of asking
     // again every 20 s and keeping the provider's penalty going.
-    const streak = (limitedStreak.get(host) ?? 0) + 1;
-    limitedStreak.set(host, streak);
+    const streak = (limitedStreak.get(pace) ?? 0) + 1;
+    limitedStreak.set(pace, streak);
     lastLimited = Date.now();
     const waitMs = Math.min(120_000, rateLimitWait(res.text) * 2 ** Math.min(3, streak - 1));
-    cooldowns.set(host, Math.max(cooldowns.get(host) ?? 0, Date.now() + waitMs));
-    learnLimit(host, Number(limitOf(res.text)) || undefined);
+    cooldowns.set(pace, Math.max(cooldowns.get(pace) ?? 0, Date.now() + waitMs));
+    learnLimit(pace, Number(limitOf(res.text)) || undefined);
     logWarn(
       'ia',
-      `Limite de requêtes atteinte : pause de ${Math.round(waitMs / 1000)} s, puis ${limitFor(host)} requêtes par minute au plus` +
+      `Limite de requêtes atteinte : pause de ${Math.round(waitMs / 1000)} s, puis ${limitFor(pace)} requêtes par minute au plus` +
         (streak >= 3 ? ` (${streak} refus de suite : le fournisseur ralentit cette clé, les pages passent une par une)` : ''),
       { ...meta, refus: streak },
     );
@@ -336,8 +343,8 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
     if (res.status < 500 && isContentRefusal(res.text)) throw new TranslateError(`${CONTENT_REFUSED} (HTTP ${res.status})`, 'llm', false);
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
-  limitedStreak.delete(host);
-  if (path === '/chat/completions') noteAccepted(host, sentAt);
+  limitedStreak.delete(pace);
+  if (path === '/chat/completions') noteAccepted(pace, sentAt);
   if (/^\s*(data:|event:|:)/.test(res.text)) {
     const parsed = parseStream(res.text);
     // Thinking models write their reasoning first: long, slow, and unused.
