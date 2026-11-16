@@ -22,6 +22,8 @@ import { UsageMeter } from './UsageMeter';
 import { Icon } from './Icon';
 import { LangSelect } from './LangSelect';
 import { PageView } from './PageView';
+import { ReadAloud } from './ReadAloud';
+import { unlockSpeech } from '../lib/voices';
 
 const NO_BUSY: string[] = [];
 /** Scroll distance in one direction that hides or brings back the top bar. */
@@ -49,6 +51,13 @@ export function Reader({ id }: { id: string }) {
   const [auto, setAuto] = useState<'off' | 'play' | 'pause'>('off');
   const autoRef = useRef(auto);
   autoRef.current = auto;
+  /** Reading aloud, with a voice per character. */
+  const [voiceOn, setVoiceOn] = useState(false);
+  const startVoice = () => {
+    unlockSpeech();
+    setAuto('off');
+    setVoiceOn(true);
+  };
   const [siblings, setSiblings] = useState<{ previous?: Chapter; next?: Chapter }>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [fontsOk, setFontsOk] = useState(false);
@@ -209,6 +218,7 @@ export function Reader({ id }: { id: string }) {
       if (e.key === 'o') setMode((m) => (m === 'original' ? 'translated' : 'original'));
       if (e.key === 'e') setEditing((v) => !v);
       if (e.key === 'a') setAuto((a) => (a === 'off' ? 'play' : 'off'));
+      if (e.key === 'v') setVoiceOn((v) => !v);
       if (autoRef.current === 'off') return;
       if (e.key === ' ' && !(e.target instanceof HTMLButtonElement)) {
         e.preventDefault();
@@ -533,6 +543,18 @@ export function Reader({ id }: { id: string }) {
               );
             })()}
           </div>
+          {!editing && (
+            <button
+              className={`icon-btn ${voiceOn ? 'on' : ''}`}
+              aria-label={voiceOn ? t('reader.voice.close') : t('reader.voice.on')}
+              aria-pressed={voiceOn}
+              title={voiceOn ? t('reader.voice.close') : t('reader.voice.on')}
+              onClick={() => (voiceOn ? setVoiceOn(false) : startVoice())}
+              disabled={!pages?.length}
+            >
+              <Icon name="voice" size={20} />
+            </button>
+          )}
           <button
             className={`icon-btn ${editing ? 'on' : ''}`}
             aria-label={editing ? t('reader.editDone') : t('reader.edit')}
@@ -570,7 +592,10 @@ export function Reader({ id }: { id: string }) {
                 <button role="menuitem" onClick={reanalyseAll}>
                   <Icon name="sparkles" size={16} /> {t('reader.reanalyse')}
                 </button>
-                <button role="menuitem" onClick={() => (setMenuOpen(false), setAuto(auto === 'off' ? 'play' : 'off'))} disabled={!pages?.length}>
+                <button role="menuitem" onClick={() => (setMenuOpen(false), voiceOn ? setVoiceOn(false) : startVoice())} disabled={!pages?.length}>
+                  <Icon name="voice" size={16} /> {voiceOn ? t('reader.voice.close') : t('reader.voice.on')}
+                </button>
+                <button role="menuitem" onClick={() => (setMenuOpen(false), setVoiceOn(false), setAuto(auto === 'off' ? 'play' : 'off'))} disabled={!pages?.length}>
                   <Icon name="scroll" size={16} /> {auto === 'off' ? t('reader.auto.on') : t('reader.auto.off')}
                 </button>
                 <button role="menuitem" onClick={() => (setMenuOpen(false), setLangOpen(true))}>
@@ -740,6 +765,8 @@ export function Reader({ id }: { id: string }) {
           </button>
         </div>
       )}
+
+      {voiceOn && chapter && pages && !editing && !draft && <ReadAloud chapter={chapter} pages={pages} onClose={() => setVoiceOn(false)} />}
 
       {draft && selection && (
         <BubbleSheet

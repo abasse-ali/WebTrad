@@ -9,7 +9,7 @@ import { useSyncExternalStore } from 'react';
 export type LogLevel = 'info' | 'warn' | 'error';
 
 /** Areas of the app, used to filter the log. */
-export type LogCategory = 'app' | 'import' | 'ocr' | 'ia' | 'translate' | 'job' | 'export' | 'settings';
+export type LogCategory = 'app' | 'import' | 'ocr' | 'ia' | 'translate' | 'job' | 'export' | 'settings' | 'voix';
 
 export interface LogEntry {
   /** Time in ms since 1970. */

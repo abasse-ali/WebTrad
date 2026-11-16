@@ -132,6 +132,7 @@ export const DEFAULT_SETTINGS: Settings = {
   exportMaxMB: 30,
   background: true,
   scrollSpeed: DEFAULT_SPEED,
+  voiceRate: 1,
 };
 
 function load(): Settings {

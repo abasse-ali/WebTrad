@@ -113,6 +113,25 @@ Pour compiler soi-même : `npm run ios:sync` puis ouvrir `ios/App/App.xcodeproj`
   relire les pages déjà faites. Une page qui fait planter l’appareil deux fois de suite est mise de côté pour ne pas
   bloquer le reste.
 
+## Lecture à voix haute
+
+Le bouton haut-parleur du lecteur lit le chapitre bulle par bulle, avec une **voix par personnage** :
+
+- En lisant une page, l’IA dit aussi **qui parle** (son nom quand l’histoire le donne, sinon une description qui
+  reste la même d’une page à l’autre, « homme masqué ») et **s’il s’agit d’un homme ou d’une femme**, sans requête
+  de plus. Elle reçoit la liste des personnages déjà rencontrés dans la série, pour garder les mêmes noms.
+- Chaque personnage reçoit une voix de l’appareil de son genre, la moins utilisée ; quand deux personnages
+  partagent une voix, ils ont une hauteur différente. Les narrations ont une voix posée à part. Les voix sont
+  gardées d’un chapitre à l’autre de la série.
+- Le ton suit le texte : un cri est dit plus vite et plus haut, une pensée plus doucement, des points de suspension
+  plus lentement.
+- La page suit la voix, et la bulle lue est entourée de la couleur de son personnage.
+- Les chapitres traduits avant cette fonction : l’IA repère les personnages une fois par page au moment de la
+  lecture (les textes sont numérotés sur l’image envoyée), puis c’est gardé.
+- « Voix des personnages » permet de changer la voix, la hauteur ou le genre d’un personnage, et de l’écouter.
+
+Sur iPhone, des voix plus naturelles se téléchargent dans Réglages › Accessibilité › Contenu énoncé › Voix.
+
 ## Utilisation
 
 ```bash

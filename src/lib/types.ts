@@ -69,6 +69,10 @@ export interface Bubble {
    * page edge and is clipped there.
    */
   seam?: 'next' | 'prev';
+  /** Who says it (from the AI), for reading aloud with that character's voice. */
+  speaker?: string;
+  gender?: 'male' | 'female';
+  kind?: 'dialogue' | 'thought' | 'narration' | 'sign';
 }
 
 export interface Page {
@@ -130,4 +134,6 @@ export interface Settings {
   background: boolean;
   /** Automatic scrolling in the reader: speed level (1 = slowest). */
   scrollSpeed: number;
+  /** Reading aloud: speed of the voices (1 = normal). */
+  voiceRate: number;
 }
