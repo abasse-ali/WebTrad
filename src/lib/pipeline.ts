@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, cleanPaper, contrastColor, luminance, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToLetters, growToText, innerBox, letterHeight, letterHeightByEdges, paperShape, plainAround, plainPaper, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
+import { cleanBubble, cleanPaper, contrastColor, luminance, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToLetters, growToText, innerBox, letterHeight, letterHeightByEdges, paperShape, plainAround, plainPaper, trimStrokes, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -308,7 +308,19 @@ export async function visionPage(
       return row >= 0 && row < e.h && e.spans[row * 2] >= 0 && cx >= e.spans[row * 2] && cx <= e.spans[row * 2 + 1];
     });
     if (known) return known;
-    const e = enclosingBubble(px, seed);
+    let e = enclosingBubble(px, seed);
+    // A white bubble on a light drawing (a beige wall): the wall joined its
+    // white and nothing was found. Its translation was written grey, over a
+    // grey patch of rebuilt wall. Only what is white then, if it holds the
+    // whole text with room around it (not the white of outlined letters
+    // drawn on a wall).
+    if (!e || pageBackground(e)) {
+      const white = enclosingBubble(px, seed, 238);
+      // The letters without the bubble's tail found with them.
+      const t = trimStrokes(px, seed);
+      const m = Math.max(4, t.h * 0.15);
+      if (white && white.x <= t.x - m && white.y <= t.y - m && white.x + white.w >= t.x + t.w + m && white.y + white.h >= t.y + t.h + m) e = white;
+    }
     if (!e || pageBackground(e)) return undefined;
     if (!block) {
       // No lettering was found there: only a bubble whose ink is about the size of the text read.
@@ -938,6 +950,8 @@ export async function visionPage(
       continue;
     }
     if (region && ink && !vertical) {
+      // Without the bubble's tail taken with the letters.
+      ink = trimStrokes(px, ink);
       // In a bubble: sized on the real letters, erased within the bubble's shape.
       const inkBox = { x: ink.x / scale, y: ink.y / scale, w: ink.w / scale, h: ink.h / scale };
       // The size of the original letters, measured on the page: the model
@@ -1257,8 +1271,10 @@ export function bubbleShape(region: BubbleRegion, scale: number, top: number, bo
       }
       if (best) lums.push(best);
     }
+    // Among the darkest of the rim (a thin outline blends with the paper
+    // around it: the median came out brown on a beige wall).
     lums.sort((a, b) => a[0] - b[0]);
-    const m = lums[Math.floor(lums.length / 2)];
+    const m = lums[Math.floor(lums.length / 5)];
     if (m && m[0] < 140) rim = '#' + m.slice(1).map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
   }
   const whole = top <= region.y / scale + 1 && bottom >= (region.y + region.h) / scale - 1;

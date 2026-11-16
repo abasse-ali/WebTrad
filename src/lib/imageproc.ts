@@ -724,7 +724,7 @@ function keepLines(mask: Uint8Array, w: number, h: number, maxGlyph: number): vo
  * letters), with the grain of the drawing around added. For lettering the
  * letter-by-letter repair leaves readable (screen tones, grainy shading).
  */
-export function smoothFill(px: Pixels, box: Box, within?: (x: number, y: number) => boolean): (Pixels & { grain: number }) | null {
+export function smoothFill(px: Pixels, box: Box, within?: (x: number, y: number) => boolean): (Pixels & { grain: number; texture: number }) | null {
   const { width: W, height: H, data } = px;
   const x0 = Math.max(0, Math.round(box.x));
   const y0 = Math.max(0, Math.round(box.y));
@@ -761,23 +761,41 @@ export function smoothFill(px: Pixels, box: Box, within?: (x: number, y: number)
     top.push(avg([x0 + x], range(y0 - B, B)));
     bottom.push(avg([x0 + x], range(y0 + h, B)));
   }
-  // The grain: how much neighbouring pixels around the box differ.
-  let dev = 0;
-  let dn = 0;
+  // A thin line crossing a side (a bubble's outline, a panel border) was
+  // drawn across the whole box: each sample takes the median of its
+  // neighbours along the side.
+  const steady = (side: ([number, number, number] | null)[]) => {
+    const r = 4;
+    return side.map((v, k) => {
+      if (!v) return v;
+      const near = side.slice(Math.max(0, k - r), k + r + 1).filter(Boolean) as [number, number, number][];
+      const med = (c: number) => near.map((n) => n[c]).sort((a, b) => a - b)[Math.floor(near.length / 2)];
+      return [med(0), med(1), med(2)] as [number, number, number];
+    });
+  };
+  for (const side of [left, right, top, bottom]) side.splice(0, side.length, ...steady(side));
+  // The grain: how much neighbouring pixels around the box differ. The
+  // median, not the mean: lines of the drawing crossing the border (a
+  // bubble's outline) made a smooth gradient look grainy, and it was
+  // rebuilt as a speckled grey rectangle.
+  const diffs: number[] = [];
   const lumAt = (x: number, y: number) => luminance(data, (y * W + x) * 4);
   for (let x = x0; x < x0 + w - 1; x++)
     for (const y of [y0 - 2, y0 + h + 1]) {
       if (y < 0 || y >= H) continue;
-      dev += (lumAt(x, y) - lumAt(x + 1, y)) ** 2;
-      dn++;
+      diffs.push(Math.abs(lumAt(x, y) - lumAt(x + 1, y)));
     }
   for (let y = y0; y < y0 + h - 1; y++)
     for (const x of [x0 - 2, x0 + w + 1]) {
       if (x < 0 || x >= W - 1) continue;
-      dev += (lumAt(x, y) - lumAt(x, y + 1)) ** 2;
-      dn++;
+      diffs.push(Math.abs(lumAt(x, y) - lumAt(x, y + 1)));
     }
-  const grain = dn ? Math.min(30, Math.sqrt(dev / dn / 2)) : 0;
+  diffs.sort((a, b) => a - b);
+  // For a normal spread, the median difference of neighbours is about 0.95 σ.
+  const grain = diffs.length ? Math.min(30, diffs[Math.floor(diffs.length / 2)] / 0.95) : 0;
+  // How busy the drawing around is, lines included (hair, an edge): a
+  // background rebuilt by blending its sides only suits a plain one.
+  const texture = diffs.length ? Math.min(30, Math.sqrt(diffs.reduce((a, d) => a + d * d, 0) / diffs.length / 2)) : 0;
   let seed = 12345;
   const noise = () => {
     // Sum of uniforms: about a normal spread.
@@ -816,14 +834,22 @@ export function smoothFill(px: Pixels, box: Box, within?: (x: number, y: number)
       out[o + 3] = 255;
     }
   }
-  return { data: out, width: w, height: h, grain };
+  return { data: out, width: w, height: h, grain, texture };
 }
 
 /**
  * The letters of `tone` inside `box`, grown by `grow` pixels (their outline
  * and soft edge): 1 where they are, in the box's own pixels.
  */
-export function toneMask(px: Pixels, box: Box, tone: readonly number[], grow: number, within?: (x: number, y: number) => boolean): Uint8Array | null {
+export function toneMask(
+  px: Pixels,
+  box: Box,
+  /** The letters' colour first, then that of their outline (taken only right around them). */
+  tones: readonly (readonly number[])[],
+  grow: number,
+  within?: (x: number, y: number) => boolean,
+): Uint8Array | null {
+  const tone = tones[0];
   const x0 = Math.max(0, Math.round(box.x));
   const y0 = Math.max(0, Math.round(box.y));
   const w = Math.min(px.width, Math.round(box.x + box.w)) - x0;
@@ -835,6 +861,19 @@ export function toneMask(px: Pixels, box: Box, tone: readonly number[], grow: nu
       if (within && !within(x0 + x, y0 + y)) continue;
       if (colorDistance(px.data, ((y0 + y) * px.width + x0 + x) * 4, tone) < 120) mask[y * w + x] = 1;
     }
+  // The outline: of its colour and next to the letters.
+  for (const other of tones.slice(1)) {
+    for (let round = 0; round < Math.max(2, grow); round++) {
+      const was = mask.slice();
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+          const p = y * w + x;
+          if (was[p] || (within && !within(x0 + x, y0 + y))) continue;
+          const touches = (x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w]);
+          if (touches && colorDistance(px.data, ((y0 + y) * px.width + x0 + x) * 4, other) < 120) mask[p] = 1;
+        }
+    }
+  }
   for (let pass = 0; pass < grow; pass++) {
     const next = mask.slice();
     for (let y = 0; y < h; y++)
@@ -1854,8 +1893,8 @@ export function cleanPaper(px: Pixels, rect: Box, fill: string, maxGlyph: number
   keepLines(letters, w, h, maxGlyph);
   // The soft edge of each letter: two pixels around it, then the faint grey
   // further out (it stayed as a ghost of the English), never over a kept mark.
-  const faint = (p: number) => colorDistance(px.data, ((y0 + Math.floor(p / w)) * px.width + (x0 + (p % w))) * 4, color) > 12;
-  for (let pass = 0; pass < 5; pass++) {
+  const faint = (p: number) => colorDistance(px.data, ((y0 + Math.floor(p / w)) * px.width + (x0 + (p % w))) * 4, color) > 9;
+  for (let pass = 0; pass < 7; pass++) {
     const was = letters.slice();
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) {
@@ -2023,6 +2062,55 @@ export function growToLetters(px: Pixels, box: Box, letter: number): Box {
   const x1 = Math.min(u.x + u.w, box.x + box.w + reach * 3);
   const y1 = Math.min(u.y + u.h, box.y + box.h + reach * 2);
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/**
+ * A box of lettering without the strokes taken with the letters (the tail
+ * of the bubble, the curve of its rim, a line of the drawing): rows at its
+ * top or bottom, past a blank row, that cross fewer than four strokes are
+ * left out. The translation
+ * was centred low and lettered small, the tail counted as text.
+ */
+export function trimStrokes(px: Pixels, box: Box): Box {
+  const { data, width: W } = px;
+  const x0 = Math.max(0, Math.round(box.x));
+  const x1 = Math.min(W - 1, Math.round(box.x + box.w));
+  const top = Math.max(0, Math.round(box.y));
+  const bottom = Math.min(px.height - 1, Math.round(box.y + box.h) - 1);
+  // A row of letters crosses several separate strokes; the tail, the curve
+  // of the bubble's rim or a line of the drawing only one or two.
+  const runsAt = (y: number) => {
+    let runs = 0;
+    let inRun = false;
+    for (let x = x0; x <= x1; x++) {
+      const dark = luminance(data, (y * W + x) * 4) < 128;
+      if (dark && !inRun) runs++;
+      inRun = dark;
+    }
+    return runs;
+  };
+  const limit = (bottom - top) * 0.75;
+  // From an edge inward, up to the first row of letters: cut at the blank
+  // rows nearest to it, only when there are some (the "I" of "I…" crosses
+  // one stroke too, but nothing parts it from its dots).
+  const cutFrom = (from: number, step: number): number => {
+    let nearestGap = -1;
+    let blank = 0;
+    for (let y = from, k = 0; k <= limit; y += step, k++) {
+      const runs = runsAt(y);
+      if (runs >= 4) return nearestGap >= 0 ? nearestGap + step : from;
+      if (runs === 0) {
+        blank++;
+        if (blank >= 2) nearestGap = y;
+      } else blank = 0;
+    }
+    return from;
+  };
+  const y1 = cutFrom(bottom, -1);
+  const y0 = cutFrom(top, 1);
+  if (y0 === top && y1 === bottom) return box;
+  if (y1 <= y0) return box;
+  return { x: box.x, y: y0, w: box.w, h: y1 - y0 + 1 };
 }
 
 /** Average brightness of a box of `px` (0 dark – 255 white). */
