@@ -142,6 +142,12 @@ export function installLogging(info: Record<string, string>): void {
   window.addEventListener('unhandledrejection', (e) => {
     const reason = e.reason as Error | string | undefined;
     if ((reason as Error)?.name === 'AbortError') return;
-    logError('app', `Erreur non gérée : ${typeof reason === 'string' ? reason : (reason?.message ?? String(reason))}`);
+    // Where it came from: the name and the first lines of the stack (the
+    // message alone, "The object is in an invalid state.", said nothing).
+    const where = typeof reason === 'object' && reason?.stack ? reason.stack.split('\n').slice(0, 3).join(' ← ').slice(0, 300) : undefined;
+    logError('app', `Erreur non gérée : ${typeof reason === 'string' ? reason : (reason?.message ?? String(reason))}`, {
+      type: typeof reason === 'object' ? reason?.name : undefined,
+      origine: where,
+    });
   });
 }
