@@ -12,6 +12,7 @@ import {
   smoothFill,
   sampleBackground,
   sampleInk,
+  toneMask,
   type BubbleRegion,
   type Pixels,
 } from './imageproc';
@@ -337,6 +338,12 @@ export function lettersLeft(px: Pixels, repaired: Pixels, area: Box, box: Box, b
   return worst;
 }
 
+/** How far a colour is from a #rrggbb one (sum of the channels). */
+function colorDistanceOf(c: readonly number[], hex: string): number {
+  const [r, g, b] = parseHex(hex);
+  return Math.abs(c[0] - r) + Math.abs(c[1] - g) + Math.abs(c[2] - b);
+}
+
 /** Share of the pixels of two crops of the same size that clearly differ. */
 function differs(a: Pixels, b: Pixels): number {
   let n = 0;
@@ -410,6 +417,26 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     const sinT = Math.sin(t);
     within = (px0, py0) => Math.abs(-(px0 - cx) * sinT + (py0 - cy) * cos) <= halfH;
   }
+  /**
+   * The background rebuilt from around the box (`smooth`) only where the
+   * letters and their outline are; the drawing elsewhere stays. The whole
+   * box rebuilt showed as a square patch over a window, a kettle, a strand
+   * of hair.
+   */
+  const onLetters = (smooth: Pixels): Pixels | null => {
+    const inkTone = [...ink.tones].sort((a, b) => colorDistanceOf(b, bg.fill) - colorDistanceOf(a, bg.fill))[0];
+    const mask = toneMask(px, area, inkTone, Math.max(2, Math.round(fontSize * scale * 0.22)), within);
+    if (!mask) return null;
+    const blended = new Uint8ClampedArray(smooth.data);
+    for (let p = 0; p < mask.length; p++) {
+      if (mask[p]) continue;
+      const i = ((area.y + Math.floor(p / area.w)) * px.width + area.x + (p % area.w)) * 4;
+      blended[p * 4] = px.data[i];
+      blended[p * 4 + 1] = px.data[i + 1];
+      blended[p * 4 + 2] = px.data[i + 2];
+    }
+    return { data: blended, width: smooth.width, height: smooth.height };
+  };
   try {
     const margin = Math.max(1.5, fontSize * scale * 0.08);
     const line = fontSize * scale * 1.3;
@@ -436,13 +463,19 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     // rebuilt from around is then cleaner.
     if (repaired && left <= 0.2) {
       const smooth = smoothFill(px, area, within);
-      if (smooth && smooth.grain < 6 && differs(repaired, smooth) > 0.06) repaired = smooth;
+      if (smooth && smooth.grain < 6 && differs(repaired, smooth) > 0.06) repaired = onLetters(smooth) ?? smooth;
     }
     if (left > 0.2) {
       const lines = scaled.h / Math.max(1, fontSize * scale * 1.2);
       // A box as big as a panel (the model framed the whole drawing): the original stays.
       if (lines > 7 || scaled.w > px.width * 0.85) return look;
-      const smooth = smoothFill(px, area, within);
+      let smooth: Pixels | null = smoothFill(px, area, within);
+      // Rebuilt only where the letters and their outline are, unless
+      // letters then show through.
+      if (smooth) {
+        const kept = onLetters(smooth);
+        if (kept && lettersLeft(px, kept, area, scaled, line) <= Math.min(0.2, lettersLeft(px, smooth, area, scaled, line) + 0.05)) smooth = kept;
+      }
       if (smooth && lettersLeft(px, smooth, area, scaled, line) < left) repaired = smooth;
       else if (left > 0.45) {
         look.outline = true;

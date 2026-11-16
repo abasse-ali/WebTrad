@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, cleanPaper, contrastColor, luminance, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToText, innerBox, letterHeight, letterHeightByEdges, paperShape, plainAround, plainPaper, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
+import { cleanBubble, cleanPaper, contrastColor, luminance, detectAllBubbles, enclosingBubble, boxSkew, boxSlant, findTextBlocks, fitShift, growToLetters, growToText, innerBox, letterHeight, letterHeightByEdges, paperShape, plainAround, plainPaper, maskedCrop, meanLuminance, regionFill, snapToText, type BubbleRegion, type Pixels } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -874,12 +874,11 @@ export async function visionPage(
     // A block of lettering found on the page already spans its lines: not
     // spread sideways (over hair beside it: the tilted band of the erase was
     // then too thin, and the last line stayed).
-    // Level lines, or on plain paper (no tilted band to keep thin, no hair
-    // to spread over): the ends of lines the block left out are taken
-    // ("To be continue|d", the "T" and "G" of the longest line of a bubble
-    // stayed beside the translation).
+    // On plain paper (no hair to spread over): the ends of lines the block
+    // left out are taken ("To be continue|d" stayed beside the translation).
     const isBlock = t.block && Math.abs(t.block.x - t.box.x) < 1 && Math.abs(t.block.w - t.box.w) < 1;
-    const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h }, !isBlock || plainAround(px, s) || Math.abs(boxSkew(px, s)) < 3);
+    const onPaper = isBlock && plainPaper(px, s, letterHeight(px, s) || s.h * 0.5) !== null;
+    const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h }, !isBlock || onPaper);
     t.box.x = g.x / scale;
     t.box.y = g.y / scale;
     t.box.w = g.w / scale;
@@ -1099,6 +1098,13 @@ export async function visionPage(
         if (widest > box.w * 0.9) paperRows = { y: room.y / scale, step: room.step / scale, x, inset };
       }
     }
+    // Lettering on the artwork: the whole letters the box cuts, and those
+    // right beside them, are taken off (the first "O" and the dots of a
+    // tilted "OWW, MY BACK…" stayed beside the translation).
+    if (!paperFill && !area && !vertical) {
+      const g = growToLetters(px, scaled, fontSize * LETTERS_TO_FONT * scale);
+      Object.assign(box, { x: g.x / scale, y: g.y / scale, w: g.w / scale, h: g.h / scale });
+    }
     const look = lookOfText(px, box, scale, fontSize, Boolean(area) || paper, rotation);
     if (paperFill) {
       // Erased like the inside of a bubble: the letters and their soft
@@ -1106,7 +1112,14 @@ export async function visionPage(
       try {
         const pad = Math.max(3, fontSize * scale * 0.3);
         const hex = '#' + paperFill.map((v) => v.toString(16).padStart(2, '0')).join('');
-        const cleaned = cleanPaper(px, { x: scaled.x - pad, y: scaled.y - pad, w: scaled.w + pad * 2, h: scaled.h + pad * 2 }, hex, fontSize * scale * 1.8);
+        // On paper the ends of the longest lines may stick out of the box
+        // (the "T" and "G" of "THOUGHT OF TOUCHING" stayed beside the French).
+        const g = growToText(px, scaled, true);
+        const x0 = Math.min(scaled.x, g.x) - pad;
+        const y0 = Math.min(scaled.y, g.y) - pad;
+        const x1 = Math.max(scaled.x + scaled.w, g.x + g.w) + pad;
+        const y1 = Math.max(scaled.y + scaled.h, g.y + g.h) + pad;
+        const cleaned = cleanPaper(px, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, hex, fontSize * scale * 1.8);
         look.patch = pixelsToCanvas(cleaned.pixels).toDataURL('image/jpeg', 0.92);
         look.patchBox = { x: cleaned.x / scale, y: cleaned.y / scale, w: cleaned.pixels.width / scale, h: cleaned.pixels.height / scale };
         look.fill = hex;
@@ -1174,8 +1187,19 @@ export function bubbleShape(region: BubbleRegion, scale: number, top: number, bo
   let first = -1;
   for (let r = 0; r < region.h; r += step) {
     const y = (region.y + r) / scale;
-    const minX = region.spans[r * 2];
-    const maxX = region.spans[r * 2 + 1];
+    // The narrowest of the rows this one stands for: the spikes of a shouted
+    // bubble's rim point inward between the rows kept, and the lines of the
+    // translation ran onto their tips.
+    let minX = region.spans[r * 2];
+    let maxX = region.spans[r * 2 + 1];
+    for (let rr = Math.max(0, r - Math.floor(step / 2)); rr <= Math.min(region.h - 1, r + Math.ceil(step / 2)); rr++) {
+      const a = region.spans[rr * 2];
+      const b = region.spans[rr * 2 + 1];
+      if (a < 0 || minX < 0) continue;
+      minX = Math.max(minX, a);
+      maxX = Math.min(maxX, b);
+    }
+    if (maxX < minX) minX = -1;
     const inBand = y >= top + inset * 0.6 && y <= bottom - inset * 0.6;
     let left = minX / scale + inset;
     let right = maxX / scale - inset;
@@ -1238,7 +1262,25 @@ export function bubbleShape(region: BubbleRegion, scale: number, top: number, bo
     if (m && m[0] < 140) rim = '#' + m.slice(1).map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
   }
   const whole = top <= region.y / scale + 1 && bottom >= (region.y + region.h) / scale - 1;
-  return { y: Math.round((region.y + first) / scale), step: step / scale, x: rows.flat(), inset, rim, whole };
+  // The top and bottom of the bubble's body: rows at least a third as wide
+  // as its widest one (not the tip of its tail).
+  let widest = 0;
+  for (let r = 0; r < region.h; r++) if (region.spans[r * 2] >= 0) widest = Math.max(widest, region.spans[r * 2 + 1] - region.spans[r * 2]);
+  const inBody = (r: number) => region.spans[r * 2] >= 0 && region.spans[r * 2 + 1] - region.spans[r * 2] >= widest / 3;
+  let r0 = 0;
+  while (r0 < region.h - 1 && !inBody(r0)) r0++;
+  let r1 = region.h - 1;
+  while (r1 > r0 && !inBody(r1)) r1--;
+  const body: number[] = [];
+  let last: [number, number] | null = null;
+  for (let r = r0; r <= r1; r += step) {
+    if (body.length >= 400) break;
+    const row: [number, number] | null = region.spans[r * 2] >= 0 ? [region.spans[r * 2], region.spans[r * 2 + 1]] : last;
+    if (!row) continue;
+    last = row;
+    body.push(Math.round(row[0] / scale), Math.round(row[1] / scale));
+  }
+  return { y: Math.round((region.y + first) / scale), step: step / scale, x: rows.flat(), inset, rim, whole, body, bodyY: Math.round((region.y + r0) / scale) };
 }
 
 /** The speaker fields a bubble keeps (only those the model gave). */
@@ -1863,7 +1905,13 @@ let ocrQueue: Promise<unknown> = Promise.resolve();
 const PROOFREAD_BATCH = 60;
 
 /** Proofreads the translations of some pages of a chapter and saves the fixes. */
-export async function proofreadChapter(chapter: Chapter, pageIds: string[], signal: AbortSignal): Promise<number> {
+export async function proofreadChapter(
+  chapter: Chapter,
+  pageIds: string[],
+  signal: AbortSignal,
+  /** Proofread in the background while pages are still translated: no progress shown. */
+  quiet = false,
+): Promise<number> {
   const pages = (await getPages(chapter.id)).filter((p) => pageIds.includes(p.id) && p.status === 'done').sort((a, b) => a.index - b.index);
   const lines: { page: string; bubble: string; id: number; original: string; text: string; speaker?: string; gender?: string }[] = [];
   for (const p of pages) {
@@ -1936,7 +1984,7 @@ export async function proofreadChapter(chapter: Chapter, pageIds: string[], sign
   for (let k = 0; k < lines.length; k += PROOFREAD_BATCH) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const batch = lines.slice(k, k + PROOFREAD_BATCH);
-    setJob(chapter.id, { message: `Relecture des traductions… ${Math.min(lines.length, k + batch.length)}/${lines.length}` });
+    if (!quiet) setJob(chapter.id, { message: `Relecture des traductions… ${Math.min(lines.length, k + batch.length)}/${lines.length}` });
     const fixes = await ask(batch);
     if (fixes.size === 0) continue;
     const byPage = new Map<string, Map<string, string>>();
@@ -2149,6 +2197,32 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
       await refreshStats(chapterId);
       return 'next';
     };
+    // The translations read again by the AI as the chapter goes (typos and
+    // words left untranslated, which the reading of one image lets through):
+    // a batch as soon as enough lines are done in a row, the rest at the
+    // end. Done only at the end, a chapter read or exported meanwhile kept
+    // its mistakes ("JE CRYAIS", fixed half a minute after the export).
+    const proofreads = !opts.proofreadOnly && (visionEnabled() || st.provider === 'llm');
+    const proofed = new Set<string>();
+    let proofing: Promise<unknown> = Promise.resolve();
+    const proofreadSoFar = async (last: boolean): Promise<number> => {
+      const ids = new Set(todo.map((p) => p.id));
+      const fresh = (await getPages(chapterId)).filter((p) => ids.has(p.id) && !proofed.has(p.id)).sort((a, b) => a.index - b.index);
+      const batch: string[] = [];
+      let lines = 0;
+      for (const p of fresh) {
+        // In reading order, up to the first page not done yet.
+        if (p.status !== 'done' && p.status !== 'error') {
+          if (last) continue;
+          break;
+        }
+        batch.push(p.id);
+        lines += p.bubbles.filter((b) => b.translation.trim() && b.seam !== 'prev').length;
+      }
+      if (batch.length === 0 || (!last && lines < PROOFREAD_BATCH)) return 0;
+      batch.forEach((id) => proofed.add(id));
+      return proofreadChapter(chapter, batch, controller.signal, !last);
+    };
     const startedAt = Date.now();
     const worker = async (n: number) => {
       while (nextPage < units.length && !controller.signal.aborted && !stopped) {
@@ -2157,16 +2231,21 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         if (n > 0 && lastRateLimitAt() >= startedAt) return;
         const unit = units[nextPage++];
         if ((await doUnit(unit)) === 'stop') return;
+        if (proofreads && nextPage < units.length)
+          proofing = proofing.then(() =>
+            proofreadSoFar(false).catch((err) => {
+              if ((err as Error).name !== 'AbortError') logWarn('job', `Relecture en cours de route non faite : ${(err as Error).message.slice(0, 120)}`);
+            }),
+          );
       }
     };
     if (opts.proofreadOnly) done = todo.length;
     else await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, (_, n) => worker(n)));
-    // The translations of the pages done read again by the AI: typos and
-    // words left untranslated, which the reading of one image lets through.
+    await proofing;
     if (done > 0 && !controller.signal.aborted && !stopped && (visionEnabled() || st.provider === 'llm')) {
       setJob(chapterId, { phase: 'translate', pageIndex: null, message: 'Relecture des traductions…' });
       try {
-        const fixed = await proofreadChapter(chapter, todo.map((p) => p.id), controller.signal);
+        const fixed = opts.proofreadOnly ? await proofreadChapter(chapter, todo.map((p) => p.id), controller.signal) : await proofreadSoFar(true);
         setJob(chapterId, { message: opts.proofreadOnly ? `Relecture faite : ${fixed} correction(s)` : undefined });
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
