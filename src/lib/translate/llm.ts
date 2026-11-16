@@ -805,6 +805,8 @@ export async function visionTranslate(
   size?: { width: number; height: number },
   /** Lines translated just before (previous pages), for names, tone and the story so far. */
   context?: string,
+  /** How the comic is read, when it is not a webtoon ("manga": right to left). */
+  layout?: 'webtoon' | 'manga' | 'comic',
 ): Promise<{ bubbles: VisionBubble[]; sourceLanguage?: string }> {
   const order = boxOrderOf(llm);
   const answer = await chat(
@@ -820,6 +822,11 @@ export async function visionTranslate(
               (source === 'auto'
                 ? `Detect the source language. Translate into ${englishName(target)}.`
                 : `Source language: ${englishName(source)}. Translate into ${englishName(target)}.`) +
+              (layout === 'manga'
+                ? '\nThis is a manga: panels and bubbles are read from right to left, then top to bottom. List the texts in that order.'
+                : layout === 'comic'
+                  ? '\nThis is a comic: panels and bubbles are read from left to right, then top to bottom.'
+                  : '') +
               (context
                 ? `\nStory so far (the last bubbles before this image, original → translation). Use it for the context, names, form of address and tone; do not include these lines in your answer:\n${context}`
                 : ''),

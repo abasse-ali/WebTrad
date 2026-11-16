@@ -36,10 +36,11 @@ export function App() {
     );
   }
 
-  const tab = route.name === 'new' ? 'new' : route.name === 'settings' || route.name === 'log' ? 'settings' : 'library';
+  // Adding goes through the library's "+ Add" (and its sheet); the full
+  // import screen stays reachable from there.
+  const tab = route.name === 'settings' || route.name === 'log' ? 'settings' : 'library';
   const tabs = [
     { id: 'library', href: '#/', icon: 'library', label: t('nav.library') },
-    { id: 'new', href: '#/new', icon: 'plus', label: t('nav.new') },
     { id: 'settings', href: '#/settings', icon: 'settings', label: t('nav.settings') },
   ] as const;
 

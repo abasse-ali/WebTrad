@@ -514,6 +514,7 @@ export async function createChapter(input: {
   origin?: string;
   nextUrl?: string;
   coverBlob?: Blob;
+  layout?: Chapter['layout'];
 }): Promise<Chapter> {
   const chapterId = uid();
   const pages: Page[] = [];
@@ -552,6 +553,7 @@ export async function createChapter(input: {
     seriesCover: input.coverBlob ? await makeCover(input.coverBlob).catch(() => undefined) : undefined,
     origin: input.origin,
     nextUrl: input.nextUrl,
+    layout: input.layout,
   };
   const known = await seriesCoverOf(chapter.title).catch(() => undefined);
   if (known?.chosen || (known && !chapter.seriesCover)) {

@@ -10,6 +10,7 @@ import { importFromBrowser, isNativeApp } from './native';
 import { logError, logInfo } from './log';
 import { startChapter } from './pipeline';
 import { getSettings } from './settings';
+import type { Chapter } from './types';
 import { warmUpTranslator } from './translate';
 import { navigate } from '../router';
 
@@ -93,10 +94,18 @@ export function browserLabels(t: (key: MessageKey) => string): Record<string, st
  * Imports the chapter at `url` and opens it in the reader. Must be called
  * from a tap: the browser's translator may need it to download its model.
  */
-export async function quickImport(url: string): Promise<void> {
+export interface QuickOptions {
+  /** Title typed by the reader (else the one of the page). */
+  title?: string;
+  targetLang?: string;
+  layout?: Chapter['layout'];
+}
+
+export async function quickImport(url: string, options: QuickOptions = {}): Promise<void> {
   const settings = getSettings();
+  const targetLang = options.targetLang ?? settings.targetLang;
   const t = (key: MessageKey, vars?: Record<string, string | number>) => translate(settings.uiLang, key, vars);
-  warmUpTranslator(settings.sourceLang, settings.targetLang);
+  warmUpTranslator(settings.sourceLang, targetLang);
   controller?.abort();
   const own = new AbortController();
   controller = own;
@@ -127,10 +136,11 @@ export async function quickImport(url: string): Promise<void> {
     if (found.images.length === 0) throw new Error(t('new.noImages'));
     set({ url, message: t('common.loading') });
     const chapter = await createChapter({
-      title: found.title || guessTitle(url),
+      title: options.title?.trim() || found.title || guessTitle(url),
       images: found.images,
       sourceLang: settings.sourceLang,
-      targetLang: settings.targetLang,
+      targetLang,
+      layout: options.layout,
       origin: found.page ?? (isImageUrl(url) ? undefined : url),
       nextUrl: found.nextUrl,
       coverBlob: found.coverBlob,

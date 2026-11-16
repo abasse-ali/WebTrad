@@ -249,7 +249,7 @@ export async function visionPage(
       const slice = slices[i];
       try {
         results[i] = await withRetries(
-          () => visionTranslate(slice.image, aiSource(chapter), chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context),
+          () => visionTranslate(slice.image, aiSource(chapter), chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context, chapter.layout),
           signal,
           undefined,
           opts.group ? 0 : 1,
@@ -526,7 +526,7 @@ export async function visionPage(
     try {
       const slice = { ...makeSlice(top, h), rescue: group };
       const answer = await withRetries(
-        () => visionTranslate(slice.image, aiSource(chapter), chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context),
+        () => visionTranslate(slice.image, aiSource(chapter), chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context, chapter.layout),
         signal,
       );
       slices.push(slice);
@@ -1298,7 +1298,7 @@ async function stitchSeam(page: Page, bitmap: DecodedImage, chapter: Chapter, si
       const image = canvas.toDataURL('image/jpeg', 0.88);
       const size = { width: canvas.width, height: canvas.height };
       canvas.width = canvas.height = 0;
-      const answer = await withRetries(() => visionTranslate(image, aiSource(chapter), chapter.targetLang, signal, undefined, size, context), signal);
+      const answer = await withRetries(() => visionTranslate(image, aiSource(chapter), chapter.targetLang, signal, undefined, size, context, chapter.layout), signal);
       const items = answer.bubbles.filter((f) => f.translation.trim() && !sameText(f.text, f.translation) && !isSoundEffect(f.text) && !isWatermark(f.text));
       if (items.length === 0) continue;
       const original = items.map((f) => f.text).join(' ');
