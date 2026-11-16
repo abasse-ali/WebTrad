@@ -9,6 +9,7 @@ import {
   textSkew,
   inpaintText,
   maskedCrop,
+  smoothFill,
   sampleBackground,
   sampleInk,
   type BubbleRegion,
@@ -336,6 +337,18 @@ export function lettersLeft(px: Pixels, repaired: Pixels, area: Box, box: Box, b
   return worst;
 }
 
+/** Share of the pixels of two crops of the same size that clearly differ. */
+function differs(a: Pixels, b: Pixels): number {
+  let n = 0;
+  const total = Math.min(a.data.length, b.data.length) / 4;
+  for (let p = 0; p < total; p++) {
+    const i = p * 4;
+    const d = Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
+    if (d > 54) n++;
+  }
+  return n / Math.max(1, total);
+}
+
 export interface TextLook {
   fill: string;
   outline: boolean;
@@ -414,15 +427,28 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
     if (repaired && within && lettersLeft(px, repaired, area, scaled, line) > 0.35) {
       repaired = inpaintText(px, area, ink.tones, margin) ?? repaired;
     }
-    if (repaired && lettersLeft(px, repaired, area, scaled, line) > 0.45) {
-      // A plain band only over a few lines of lettering: a box as big as a
-      // panel (the model framed the whole drawing) became a beige card
-      // hiding it, with one word on it. The original then stays.
+    // Letters still readable (screen tones, grainy shading, white letters
+    // on a light drawing): the background rebuilt from around the box, its
+    // gradient and its grain, instead of a plain grey card.
+    const left = repaired ? lettersLeft(px, repaired, area, scaled, line) : 1;
+    // Soft halos left where outlined letters were, on a smooth background
+    // (white blotches on skin): no sharp edge, yet readable. The background
+    // rebuilt from around is then cleaner.
+    if (repaired && left <= 0.2) {
+      const smooth = smoothFill(px, area, within);
+      if (smooth && smooth.grain < 6 && differs(repaired, smooth) > 0.06) repaired = smooth;
+    }
+    if (left > 0.2) {
       const lines = scaled.h / Math.max(1, fontSize * scale * 1.2);
+      // A box as big as a panel (the model framed the whole drawing): the original stays.
       if (lines > 7 || scaled.w > px.width * 0.85) return look;
-      look.outline = true;
-      look.covered = true;
-      return look;
+      const smooth = smoothFill(px, area, within);
+      if (smooth && lettersLeft(px, smooth, area, scaled, line) < left) repaired = smooth;
+      else if (left > 0.45) {
+        look.outline = true;
+        look.covered = true;
+        return look;
+      }
     }
     if (repaired) {
       look.patch = pixelsToCanvas(repaired).toDataURL('image/jpeg', 0.92);
