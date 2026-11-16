@@ -1502,7 +1502,11 @@ export function letterHeight(px: Pixels, box: Box, tinted = false): number {
   if (runs.length === 0) return 0;
   const longest = Math.max(...runs);
   const whole = runs.filter((r, k) => !edgeRuns[k] || r >= longest * 0.6);
-  const pool = whole.length > 0 ? whole : runs;
+  let pool = whole.length > 0 ? whole : runs;
+  // Bits of punctuation alone on their rows (an apostrophe, the dot of an
+  // italic "!") are not lines of letters.
+  const median = [...pool].sort((a, b) => a - b)[Math.floor(pool.length / 2)];
+  if (pool.some((r) => r >= median * 0.5)) pool = pool.filter((r) => r >= median * 0.5);
   pool.sort((a, b) => a - b);
   return pool[Math.floor((pool.length - 1) * 0.25)];
 }
