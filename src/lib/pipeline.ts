@@ -179,7 +179,7 @@ const LETTERS_TO_FONT = 0.8;
 const VISION_PARALLEL = 3;
 
 /** AI vision mode: the page is cut in slices, each read and translated by one request. */
-async function visionPage(
+export async function visionPage(
   bitmap: DecodedImage,
   chapter: Chapter,
   signal: AbortSignal,
@@ -195,16 +195,21 @@ async function visionPage(
   const px = bitmapPixels(bitmap, scale);
   const regions = detectAllBubbles(px);
 
-  const slices: { top: number; h: number; image: string; width: number; height: number }[] = [];
-  for (let top = 0; top < H; top += sliceH - overlap) {
-    const h = Math.min(sliceH, H - top);
+  type Slice = { top: number; h: number; image: string; width: number; height: number; rescue?: Box[] };
+  const makeSlice = (top: number, h: number): Slice => {
     const k = Math.min(1, VISION_MAX_SIDE / Math.max(W, h));
     const canvas = createCanvas(W * k, h * k);
     const c = context2d(canvas);
     c.imageSmoothingQuality = 'high';
     c.drawImage(bitmap.source, 0, top, W, h, 0, 0, canvas.width, canvas.height);
-    slices.push({ top, h, image: canvas.toDataURL('image/jpeg', 0.88), width: canvas.width, height: canvas.height });
+    const slice = { top, h, image: canvas.toDataURL('image/jpeg', 0.88), width: canvas.width, height: canvas.height };
     canvas.width = canvas.height = 0;
+    return slice;
+  };
+  const slices: Slice[] = [];
+  for (let top = 0; top < H; top += sliceH - overlap) {
+    const h = Math.min(sliceH, H - top);
+    slices.push(makeSlice(top, h));
     if (top + h >= H) break;
   }
 
@@ -278,9 +283,14 @@ async function visionPage(
     shaped.push(e);
     return e;
   };
-  for (const [i, { top, h }] of slices.entries()) {
-    const ownTop = top === 0 ? 0 : top + overlap / 2;
-    const ownBottom = top + h >= H ? H : top + h - overlap / 2;
+  // Every box the model drew, wherever it went (sound effects and texts left
+  // as drawn included): lettering under none of them was not read at all.
+  const seen: Box[] = [];
+  const chat: Box[] = [];
+  const placeSlice = (i: number) => {
+    const { top, h, rescue } = slices[i];
+    const ownTop = rescue || top === 0 ? top : top + overlap / 2;
+    const ownBottom = rescue ? top + h : top + h >= H ? H : top + h - overlap / 2;
     const rawBox = (b: [number, number, number, number]): Box => {
       const [y0, x0, y1, x1] = b;
       return { x: (x0 / 1000) * W, y: top + (y0 / 1000) * h, w: ((x1 - x0) / 1000) * W, h: ((y1 - y0) / 1000) * h };
@@ -291,7 +301,7 @@ async function visionPage(
       .filter((r) => withInk(r) && (r.y + r.h / 2) / scale >= top && (r.y + r.h / 2) / scale < top + h)
       .map((r) => ({ x: r.x / scale, y: r.y / scale, w: r.w / scale, h: r.h / scale }));
     const dialogue = results[i].bubbles
-      .filter((f) => f.translation.trim() && !isDrawnEffect(f.text) && !isWatermark(f.text))
+      .filter((f) => f.translation.trim() && !isDrawnEffect(f.text) && !isWatermark(f.text) && !isScreenChat(f.text))
       .map((f) => rawBox(f.box));
     // The places where texts really are: the bubbles, and the blocks of
     // lettering (a little enlarged: a model's box is never tight). A box
@@ -338,6 +348,7 @@ async function visionPage(
     const typical = ys.length > 0 ? Math.max(...ys.map((p) => Math.abs(shiftY(p.at))), ...xs.map((p) => Math.abs(shiftX(p.at)))) : 0;
     if (typical > 4) logInfo('ocr', `Cadres de l’IA recalés sur le texte (jusqu’à ${Math.round(typical)} px)`, { morceau: i + 1, mesures: ys.length });
     for (const f of results[i].bubbles) {
+      seen.push(rawBox(f.box), toPage(f.box));
       // Untranslatable sound effects ("HUFF" → "HUFF"): the drawn lettering stays.
       if (!f.translation.trim() || sameText(f.text, f.translation)) continue;
       // Nothing to translate in "…?" or "!!": the drawn marks stay as they are.
@@ -361,16 +372,99 @@ async function visionPage(
       // shape is dialogue: its bubble is looked for before it is left out.
       if (!region && isDrawnEffect(f.text)) {
         if (box.h > W * 0.06) continue;
-        region = shapedBubble(box);
+        // The lettering under it, when found: a short cry ("WHAT...?!") in a
+        // bubble joined to a longer one is no longer compared with the ink
+        // of both, and left in English.
+        const under = pageBlocks.find((b) => overlapShare(b, box) > 0.3);
+        region = shapedBubble(box, under);
         if (!region) continue;
       }
       // Website watermarks are not translated, even over a bubble.
       if (isWatermark(f.text)) continue;
       // Chat lines on a drawn screen stay as drawn: too small to letter over.
-      if (isScreenChat(f.text)) continue;
+      if (isScreenChat(f.text)) {
+        chat.push(box);
+        continue;
+      }
       // The series' logo, drawn on the artwork, keeps its title.
       if (!region && isSeriesTitle(f.text, series)) continue;
+      // A second look at lettering the model missed: only texts on it.
+      const cx = box.x + box.w / 2;
+      // (The same text exactly: "WHAT...?!" is not "HEY! WHAT THE HELL…".)
+      const letters = (t: string) => t.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+      if (rescue && found.some((t) => letters(t.f.text) === letters(f.text))) continue;
+      if (rescue && !rescue.some((b) => overlapShare(b, box) > 0.3 || (cx >= b.x - b.w * 0.3 && cx <= b.x + b.w * 1.3 && cy >= b.y - b.h && cy <= b.y + b.h * 2))) continue;
       found.push({ f, box, region });
+    }
+  };
+  for (let i = 0; i < slices.length; i++) placeSlice(i);
+  // The other lines of that chat, read without their "OO:" (the model drops
+  // it at times), are left as drawn too: outside any bubble, among its lines.
+  if (chat.length > 0) {
+    const nearChat = (b: Box) =>
+      chat.some((c) => {
+        const line = Math.max(c.h, b.h);
+        const overlapX = Math.min(c.x + c.w, b.x + b.w) - Math.max(c.x, b.x);
+        return overlapX > 0 && b.y + b.h > c.y - line * 2.5 && b.y < c.y + c.h + line * 2.5;
+      });
+    for (let k = found.length - 1; k >= 0; k--) if (!found[k].region && nearChat(found[k].box)) found.splice(k, 1);
+  }
+  // Lettering in a bubble that no box of the model came near: the model
+  // skipped it (two spiky bubbles drawn joined, left in English). The strip
+  // around it is sent once more, alone, and only its texts are kept.
+  // Lettering is dark ink on white paper, with few tones between them; the
+  // folds of a white shirt, found as "blocks" too, are mostly grey shading.
+  const printedInk = (b: Box) => {
+    let dark = 0;
+    let mid = 0;
+    let all = 0;
+    const x0 = Math.max(0, Math.floor(b.x));
+    const y0 = Math.max(0, Math.floor(b.y));
+    const x1 = Math.min(px.width, Math.ceil(b.x + b.w));
+    const y1 = Math.min(px.height, Math.ceil(b.y + b.h));
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        const o = (y * px.width + x) * 4;
+        const l = 0.299 * px.data[o] + 0.587 * px.data[o + 1] + 0.114 * px.data[o + 2];
+        all++;
+        if (l < 90) dark++;
+        else if (l <= 225) mid++;
+      }
+    return all > 0 && dark / all >= 0.08 && mid / all <= 0.25;
+  };
+  const missed = pageBlocks.filter((b) => {
+    if (b.h > W * 0.25 || b.w < W * 0.05) return false;
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    if (seen.some((t) => overlapShare(b, t) > 0.2 || (cx >= t.x - t.w * 0.3 && cx <= t.x + t.w * 1.3 && cy >= t.y - t.h * 0.5 && cy <= t.y + t.h * 1.5))) return false;
+    const seed = { x: b.x * scale, y: b.y * scale, w: b.w * scale, h: b.h * scale };
+    if (!printedInk(seed)) return false;
+    const r = inRegion(cx, cy);
+    return r ? withInk(r) : enclosingBubble(px, seed) !== null;
+  });
+  if (missed.length > 0 && !signal.aborted) {
+    missed.sort((a, b) => a.y - b.y);
+    const group = missed.filter((b) => b.y + b.h <= missed[0].y + sliceH * 0.7);
+    const y0 = Math.min(...group.map((b) => b.y));
+    const y1 = Math.max(...group.map((b) => b.y + b.h));
+    const pad = Math.max(W * 0.35, (W * 0.9 - (y1 - y0)) / 2);
+    const top = Math.max(0, Math.round(y0 - pad));
+    const h = Math.min(H, Math.round(y1 + pad)) - top;
+    logInfo('ocr', `Lettrage oublié par l’IA : nouvelle lecture de ce passage`, { blocs: group.length, haut: Math.round(y0) });
+    try {
+      const slice = { ...makeSlice(top, h), rescue: group };
+      const answer = await withRetries(
+        () => visionTranslate(slice.image, aiSource(chapter), chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context),
+        signal,
+      );
+      slices.push(slice);
+      results.push(answer);
+      const before = found.length;
+      placeSlice(slices.length - 1);
+      if (found.length === before) logInfo('ocr', 'Nouvelle lecture sans texte de plus');
+    } catch (err) {
+      if (signal.aborted || (err instanceof TranslateError && err.fatal)) throw err;
+      logWarn('ocr', `Nouvelle lecture impossible : ${(err as Error).message.slice(0, 120)}`);
     }
   }
   // Lettering found on the page itself. A box that lies on no lettering

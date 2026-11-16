@@ -28,8 +28,9 @@ const centreX = (b: Box) => b.x + b.w / 2;
  * are one white shape, and requiring one text per shape made a page of
  * correct boxes look wrong, so every box of the page was stretched away.
  */
-function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: number; error: number } {
+function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: number; error: number; target: number[] } {
   let matched = 0;
+  const target: number[] = [];
   let error = 0;
   // Two texts at most per shape (two bubbles drawn joined). Without a limit,
   // squeezing the twenty lines of a game chat into one big bubble "explained"
@@ -48,14 +49,17 @@ function score(items: Box[], bubbles: Box[], a: number, b: number): { matched: n
         best = j;
       }
     }
+    target.push(best);
     if (best >= 0) {
       held[best]++;
       matched++;
       error += bestD;
     }
   }
-  return { matched, error };
+  return { matched, error, target };
 }
+
+const strip = ({ a, b, matched }: Mapping): Mapping => ({ a, b, matched });
 
 export function alignToBubbles(items: Box[], bubbles: Box[]): Mapping {
   const identity = { a: 1, b: 0, ...score(items, bubbles, 1, 0) };
@@ -84,6 +88,12 @@ export function alignToBubbles(items: Box[], bubbles: Box[]): Mapping {
     }
   // Only a clear gain, confirmed by two boxes at least (one box alone could
   // be a sign moved into a bubble), and most of the boxes.
-  if (best.matched > identity.matched && best.matched >= Math.max(2, Math.ceil(items.length * 0.5))) return best;
-  return identity;
+  // A box the model put in a bubble, moved out of it, is a loss: the
+  // mapping must explain more boxes than it takes away. (Two texts, one
+  // well placed in a dotted bubble: a shift of 557 px put both on white
+  // shapes, the bubble's text on a shirt below it.)
+  const lost = identity.target.filter((t, k) => t >= 0 && best.target[k] !== t).length;
+  const gain = best.matched - identity.matched;
+  if (gain > lost && best.matched >= Math.max(2, Math.ceil(items.length * 0.5))) return strip(best);
+  return strip(identity);
 }
