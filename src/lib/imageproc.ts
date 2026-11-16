@@ -975,6 +975,27 @@ export function inpaintText(
     }
     mask = next;
   }
+  return fillHole(px, { x: x0, y: y0, w, h }, mask, margin, grow);
+}
+
+/**
+ * The pixels of `mask` (1, in the pixels of `box`) filled from the drawing
+ * right around them: smoothly, layer by layer, and along the edges of the
+ * drawing that cross them. Everything else stays as drawn. Null when the
+ * hole is (nearly) the whole box: nothing to fill it from.
+ */
+export function fillHole(px: Pixels, box: Box, holeMask: Uint8Array, margin: number, grow = Math.max(1, Math.min(6, Math.round(margin)))): Pixels | null {
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const w = Math.min(px.width, Math.round(box.x + box.w)) - x0;
+  const h = Math.min(px.height, Math.round(box.y + box.h)) - y0;
+  if (w < 4 || h < 4 || holeMask.length !== w * h) return null;
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const start = ((y0 + y) * px.width + x0) * 4;
+    out.set(px.data.subarray(start, start + w * 4), y * w * 4);
+  }
+  const mask = holeMask.slice();
   let masked = 0;
   for (let p = 0; p < mask.length; p++) masked += mask[p];
   if (masked === 0 || masked > mask.length * 0.75) return null;
@@ -1986,9 +2007,9 @@ export function cleanPaper(px: Pixels, rect: Box, fill: string, maxGlyph: number
   const letters = mask.map((v) => (v === 1 ? 1 : 0));
   keepLines(letters, w, h, maxGlyph);
   // What stays: the marks that go on past the box and the long strokes,
-  // with their soft edge. Everything else is paper: painted over whole,
-  // not letter by letter (the faint grey edges of the letters, spread by
-  // the page's compression, stayed as a ghost of the English).
+  // with their soft edge. The paper around the letters is painted over
+  // whole, not letter by letter (the faint grey edges of the letters,
+  // spread by the page's compression, stayed as a ghost of the English).
   const keep = new Uint8Array(w * h);
   for (let p = 0; p < mask.length; p++) if (mask[p] === 3 || (mask[p] === 1 && !letters[p])) keep[p] = 1;
   for (let pass = 0; pass < 2; pass++) {
@@ -2000,11 +2021,23 @@ export function cleanPaper(px: Pixels, rect: Box, fill: string, maxGlyph: number
         if ((x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w])) keep[p] = 1;
       }
   }
+  // Only around the letters (half a letter): the paper further away, its
+  // grain and its marks, stays as it is.
+  const near = letters.slice();
+  for (let pass = 0; pass < Math.max(3, Math.round(maxGlyph / 3.6)); pass++) {
+    const was = near.slice();
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (was[p]) continue;
+        if ((x > 0 && was[p - 1]) || (x < w - 1 && was[p + 1]) || (y > 0 && was[p - w]) || (y < h - 1 && was[p + w])) near[p] = 1;
+      }
+  }
   // The paper as it is around the box (a light gradient, a tint), not one flat colour.
   const paper = smoothFill(px, { x: x0, y: y0, w, h });
   const flat = paper && paper.width === w && paper.height === h ? paper.data : null;
   for (let p = 0; p < keep.length; p++) {
-    if (keep[p]) continue;
+    if (keep[p] || !near[p]) continue;
     out[p * 4] = flat ? flat[p * 4] : color[0];
     out[p * 4 + 1] = flat ? flat[p * 4 + 1] : color[1];
     out[p * 4 + 2] = flat ? flat[p * 4 + 2] : color[2];
