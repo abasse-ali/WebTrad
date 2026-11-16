@@ -317,6 +317,18 @@ export function SettingsPage() {
             </label>
           </div>
           <p className="muted small">{t('settings.llm.keyNote')}</p>
+          <label className="field">
+            <span>{t('settings.llm.proofModel')}</span>
+            <input
+              value={s.llm.proofModel ?? ''}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              placeholder={preset.model || s.llm.model}
+              onChange={(e) => updateSettings({ llm: { ...s.llm, proofModel: e.target.value } })}
+            />
+          </label>
+          <p className="muted small">{t('settings.llm.proofNote')}</p>
           <div className="row gap">
             <button className="btn" onClick={runTest} disabled={testing || !s.llm.baseUrl}>
               <Icon name="check" size={16} /> {t('common.test')}

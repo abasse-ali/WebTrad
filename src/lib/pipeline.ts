@@ -394,7 +394,15 @@ export async function visionPage(
       // A sentence sent back untranslated (the model copied the English): it
       // is translated as text afterwards instead of being taken for a sound
       // effect and left out (a whole page stayed in English).
-      if (f.translation.trim() && sameText(f.text, f.translation) && f.text.trim().split(/\s+/).length >= 3 && !isDrawnEffect(f.text)) {
+      // So is a line in a bubble sent back the same or with no translation
+      // ("O-OKAY…", "BON APPETIT…", "WOW… NICE!", a whole sentence left
+      // out): it was dropped silently, stayed in English, and was never
+      // proofread nor read again.
+      const words = f.text.trim().split(/\s+/).filter((w) => /\p{L}{2,}/u.test(w)).length;
+      const centre = toPage(f.box);
+      const inBubble = inRegion(centre.x + centre.w / 2, centre.y + centre.h / 2) !== undefined;
+      const notTranslated = !f.translation.trim() || sameText(f.text, f.translation);
+      if (notTranslated && !isDrawnEffect(f.text) && !isWatermark(f.text) && (words >= 3 || (words >= 1 && inBubble))) {
         f.translation = '';
         untranslated.push(f);
       }
@@ -533,9 +541,13 @@ export async function visionPage(
   }
   if (untranslated.length > 0 && !signal.aborted) {
     try {
+      // Lettering in Latin letters in a chapter said to be Korean or Japanese
+      // (the model reported the language of a drawn effect): English.
+      const latin = untranslated.every((f) => !/[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Cyrillic}\p{Script=Thai}]/u.test(f.text));
+      const cjk = ['ko', 'ja', 'zh', 'zh-Hans', 'zh-Hant', 'ru', 'th'].includes(chapter.sourceLang);
       const { translations } = await translateTexts(
         untranslated.map((f) => f.text),
-        chapter.sourceLang !== AUTO ? chapter.sourceLang : 'en',
+        chapter.sourceLang !== AUTO && !(latin && cjk) ? chapter.sourceLang : 'en',
         chapter.targetLang,
         signal,
       );
@@ -788,7 +800,7 @@ export async function visionPage(
   // capitals, so are its short lines ("I'm…"), and they are lettered alike.
   const cased = kept.filter((t) => /\p{Lu}|\p{Ll}/u.test(t.f.text));
   const capitals = cased.filter((t) => t.f.text === t.f.text.toLocaleUpperCase()).length;
-  const pageInCaps = cased.length >= 3 && capitals / cased.length >= 0.6;
+  const pageInCaps = cased.length >= 2 && capitals / cased.length >= 0.6;
 
   // Texts outside bubbles (signs, screens, chats) are put back on their
   // letters, so the repaired background covers the original instead of
@@ -962,6 +974,7 @@ export async function visionPage(
         color: look.color,
         patch,
         patchBox,
+        caps: pageInCaps || undefined,
       });
       continue;
     }
@@ -1668,25 +1681,48 @@ const PROOFREAD_BATCH = 60;
 /** Proofreads the translations of some pages of a chapter and saves the fixes. */
 export async function proofreadChapter(chapter: Chapter, pageIds: string[], signal: AbortSignal): Promise<number> {
   const pages = (await getPages(chapter.id)).filter((p) => pageIds.includes(p.id) && p.status === 'done').sort((a, b) => a.index - b.index);
-  const lines: { page: string; bubble: string; id: number; original: string; text: string }[] = [];
+  const lines: { page: string; bubble: string; id: number; original: string; text: string; speaker?: string; gender?: string }[] = [];
   for (const p of pages) {
     for (const b of p.bubbles) {
       // A line the reader wrote stays theirs.
       // The end of a cut bubble follows its start (fixed with it below).
       if (b.hidden || b.edited || b.seam === 'prev' || !b.original.trim() || !/\p{L}/u.test(b.translation)) continue;
-      lines.push({ page: p.id, bubble: b.id, id: lines.length + 1, original: b.original, text: b.translation });
+      lines.push({
+        page: p.id,
+        bubble: b.id,
+        id: lines.length + 1,
+        original: b.original,
+        text: b.translation,
+        speaker: b.speaker && !/^(narrator|sign)$/i.test(b.speaker) ? b.speaker : undefined,
+        gender: b.gender,
+      });
     }
   }
   let fixed = 0;
   let skipped = 0;
+  // The provider's recommended model proofreads (text only, a few requests
+  // a chapter): a small vision model chosen for speed wrote "j'ai faut",
+  // "nu" for a woman, "ma matinée d'après", and let them through again.
+  const main = getSettings().llm;
+  const preset = LLM_PRESETS.find((x) => x.id === main.preset);
+  let llm = { ...main, model: main.proofModel?.trim() || preset?.model || main.model };
+  if (llm.model !== main.model) logInfo('job', `Relecture par ${llm.model}`);
   // A batch the provider refuses (the content filter on an explicit scene,
   // an answer cut short): halved and asked again, so that one scene does not
   // keep the whole chapter from being proofread.
   const ask = async (batch: typeof lines): Promise<Map<number, string>> => {
     try {
-      return await withRetries(() => proofreadTexts(batch, chapter.targetLang, signal), signal, [4000]);
+      return await withRetries(() => proofreadTexts(batch, chapter.targetLang, signal, llm), signal, [4000]);
     } catch (err) {
-      if (signal.aborted || (err instanceof TranslateError && err.fatal)) throw err;
+      if (signal.aborted) throw err;
+      // The proofreading model is not on this account (or keeps failing):
+      // the main model proofreads instead.
+      if (llm.model !== main.model && (err instanceof TranslateError ? err.fatal || !err.retryable || /HTTP 4\d\d/.test(err.message) : true) && !/HTTP 429/.test((err as Error).message) && !(err as Error).message.startsWith(CONTENT_REFUSED)) {
+        logWarn('job', `Relecture : ${llm.model} indisponible (${(err as Error).message.slice(0, 80)}), relecture par ${main.model}`);
+        llm = main;
+        return ask(batch);
+      }
+      if (err instanceof TranslateError && err.fatal) throw err;
       if (batch.length <= 6) {
         skipped += batch.length;
         logWarn('job', `Relecture : ${batch.length} ligne(s) non relue(s) : ${(err as Error).message.slice(0, 120)}`);

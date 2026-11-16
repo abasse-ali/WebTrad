@@ -581,13 +581,15 @@ export function llmEngine(llm: LlmSettings = getSettings().llm): TranslationEngi
 
 // --- Proofreading: the translations of a chapter read again, text only ------
 
-const SYSTEM_PROOFREAD = `You are the proofreader of a scanlation team. You receive the translated lines of a comic chapter, in reading order, each with its original text.
-Fix only real mistakes in the translation:
-- spelling mistakes, typos and words that do not exist ("sorde" → "sourde");
-- words left in the source language that a reader of the target language would not understand (English slang such as "cooties" → "microbes"); names, nicknames, sound effects and words commonly used as they are stay;
-- wrong grammar or agreement (gender, plural, conjugation), using the original and the lines around for who speaks to whom;
-- a translation that clearly says something else than its original.
-Keep everything else exactly as it is: tone, slang, swear words, length, punctuation, typography and letter case. Do not rephrase lines that are already correct.
+const SYSTEM_PROOFREAD = `You are the proofreader of a professional scanlation team. You receive the translated lines of a comic chapter, in reading order, each with its original text and, when known, who says it ("speaker", "gender").
+Read the lines together, as a conversation, and fix every real mistake of the translation:
+- spelling mistakes, typos, words that do not exist or are misused ("j'ai faut me faire prendre" → "j'ai failli me faire prendre", "ressents-je" → "ressens-je", "exité" → "excité");
+- agreement with the speaker's gender when they speak of themselves ("je suis sorti" said by a woman → "je suis sortie", "nu" → "nue"), and with the person spoken to or spoken of, as the lines around tell;
+- a line wholly or partly left in the source language, translated ("O-OKAY…" → "D-D'ACCORD…"); names, nicknames, honorifics (noona, unnie) and sound effects stay;
+- English turns of phrase translated word for word, put as a native speaker would say them ("that was close" → "c'était moins une", "morning after" (the pill) → "pilule du lendemain", "of all people" → "en plus", "good timing" → "pile au bon moment");
+- a translation that says something else than its original, or the opposite (a negation lost, the wrong person: "can't wait to be a daddy, huh?!" said to him → "t'as hâte d'être papa, hein ?!");
+- a word repeated by mistake, stray characters, missing French typography (a space before ? ! : ;).
+Keep everything else as it is: tone, slang, swear words, about the same length, line breaks are not needed, the letter case of the line. Do not rephrase a line that is already correct and natural.
 Answer with JSON only: {"fixes":[{"id":<id>,"text":"<corrected translation>"}]} listing only the lines you changed; {"fixes":[]} when all are correct.`;
 
 /**
@@ -595,7 +597,7 @@ Answer with JSON only: {"fixes":[{"id":<id>,"text":"<corrected translation>"}]} 
  * chapter): the corrected translation of each line that had a mistake.
  */
 export async function proofreadTexts(
-  items: { id: number; original: string; text: string }[],
+  items: { id: number; original: string; text: string; speaker?: string; gender?: string }[],
   target: string,
   signal?: AbortSignal,
   llm: LlmSettings = getSettings().llm,
@@ -604,7 +606,13 @@ export async function proofreadTexts(
   if (items.length === 0) return out;
   const payload = {
     target_language: englishName(target),
-    lines: items.map((i) => ({ id: i.id, original: i.original, translation: i.text })),
+    lines: items.map((i) => ({
+      id: i.id,
+      ...(i.speaker ? { speaker: i.speaker } : {}),
+      ...(i.gender ? { gender: i.gender } : {}),
+      original: i.original,
+      translation: i.text,
+    })),
   };
   const answer = await chat(
     llm,
