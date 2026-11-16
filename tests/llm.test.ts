@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fatalReason, learnLimit, listModels, paceRequest, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
+import { fatalReason, knownLimit, learnLimit, listModels, paceRequest, parseJsonAnswer, visionTranslate } from '../src/lib/translate/llm';
 
 const nvidia = { preset: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', apiKey: 'nvapi-test', model: 'qwen/qwen3.5-397b-a17b' };
 const gemini = { preset: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: 'k', model: 'gemini-flash-latest' };
@@ -191,5 +191,36 @@ describe('paceRequest', () => {
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     for (let i = 0; i < 40; i++) await paceRequest(host);
     vi.useRealTimers();
+  });
+});
+
+describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 3)', () => {
+  it('spaces NVIDIA requests under its limit from the start', () => {
+    expect(knownLimit('integrate.api.nvidia.com')).toBe(30);
+    expect(knownLimit('openrouter.ai')).toBeUndefined();
+  });
+
+  it('does not sink the limit on a refusal right after the pause', async () => {
+    vi.useFakeTimers();
+    const host = 'pace-sink.test';
+    for (let i = 0; i < 25; i++) await paceRequest(host);
+    learnLimit(host); // 25 seen: 20 a minute
+    await vi.advanceTimersByTimeAsync(61_000);
+    for (let i = 0; i < 2; i++) await paceRequest(host);
+    learnLimit(host); // 2 seen: still 20, not 8
+    for (let i = 0; i < 17; i++) await paceRequest(host);
+    vi.useRealTimers();
+  });
+
+  it('reads a translation answer with bare quotes inside a text', () => {
+    const answer = '{"translations":[{"id":1,"text":"Dis "salut" !"},{"id":2,"text":"Ok."}]}';
+    const parsed = parseJsonAnswer<{ translations: { id: number; text: string }[] }>(answer);
+    expect(parsed.translations.map((t) => t.text)).toEqual(['Dis "salut" !', 'Ok.']);
+  });
+
+  it('salvages the complete translations of a cut answer', () => {
+    const answer = '{"translations":[{"id":1,"text":"Bonjour."},{"id":2,"text":"Je suis ren';
+    const parsed = parseJsonAnswer<{ translations: { id: number; text: string }[] }>(answer);
+    expect(parsed.translations).toEqual([{ id: 1, text: 'Bonjour.' }]);
   });
 });
