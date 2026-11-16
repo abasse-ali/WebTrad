@@ -174,22 +174,28 @@ describe('paceRequest', () => {
     vi.useRealTimers();
   });
 
-  it('never learns a limit under 8 per minute, and lifts it after quiet minutes', async () => {
+  it('never learns a limit under 8 per minute, spaces requests evenly, lifts it slowly', async () => {
     vi.useFakeTimers();
     const host = 'pace-grow.test';
     for (let i = 0; i < 3; i++) await paceRequest(host);
     learnLimit(host);
-    // 3 seen, but the floor is 8: five more go at once.
-    for (let i = 0; i < 5; i++) await paceRequest(host);
+    // 3 seen, but the floor is 8: one every 7.5 s, not five at once.
     let started = false;
-    const ninth = paceRequest(host).then(() => (started = true));
+    const next = paceRequest(host).then(() => (started = true));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(started).toBe(false);
     await vi.advanceTimersByTimeAsync(60_000);
-    await ninth;
-    // Half an hour without a refusal: the limit is gone, 40 go at once.
-    await vi.advanceTimersByTimeAsync(30 * 60_000);
-    for (let i = 0; i < 40; i++) await paceRequest(host);
+    await next;
+    // Twenty quiet minutes: one more a minute every two minutes, so 18 a
+    // minute, a request every 3.4 s.
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    const t0 = Date.now();
+    for (let i = 0; i < 3; i++) {
+      const p = paceRequest(host);
+      await vi.advanceTimersByTimeAsync(4_000);
+      await p;
+    }
+    expect(Date.now() - t0).toBeLessThanOrEqual(12_100);
     vi.useRealTimers();
   });
 });
@@ -206,9 +212,17 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
     for (let i = 0; i < 25; i++) await paceRequest(host);
     learnLimit(host); // 25 seen: 20 a minute
     await vi.advanceTimersByTimeAsync(61_000);
-    for (let i = 0; i < 2; i++) await paceRequest(host);
-    learnLimit(host); // 2 seen: still 20, not 8
-    for (let i = 0; i < 17; i++) await paceRequest(host);
+    for (let i = 0; i < 2; i++) {
+      const p = paceRequest(host);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await p;
+    }
+    learnLimit(host); // 2 seen: still 20, not 8 (a request every 3 s)
+    const t0 = Date.now();
+    const p = paceRequest(host);
+    await vi.advanceTimersByTimeAsync(3_100);
+    await p;
+    expect(Date.now() - t0).toBeLessThanOrEqual(3_100);
     vi.useRealTimers();
   });
 
