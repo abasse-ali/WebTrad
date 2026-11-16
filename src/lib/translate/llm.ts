@@ -269,7 +269,9 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   if (res.status < 200 || res.status >= 300) {
     logError('ia', `${method} ${path} → HTTP ${res.status} : ${res.text.slice(0, 160)}`, meta);
     // An image the provider's content filter refuses: asking again changes nothing.
-    if (isContentRefusal(res.text)) throw new TranslateError(`${CONTENT_REFUSED} (HTTP ${res.status})`, 'llm', false);
+    // Not when the filter itself is down for a moment ("content safety screening is
+    // temporarily unavailable", HTTP 503): that is asked again, like any outage.
+    if (res.status < 500 && isContentRefusal(res.text)) throw new TranslateError(`${CONTENT_REFUSED} (HTTP ${res.status})`, 'llm', false);
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
   limitedStreak.delete(host);

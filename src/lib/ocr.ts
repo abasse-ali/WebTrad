@@ -415,6 +415,11 @@ export function lookOfText(px: Pixels, box: Box, scale: number, fontSize: number
       repaired = inpaintText(px, area, ink.tones, margin) ?? repaired;
     }
     if (repaired && lettersLeft(px, repaired, area, scaled, line) > 0.45) {
+      // A plain band only over a few lines of lettering: a box as big as a
+      // panel (the model framed the whole drawing) became a beige card
+      // hiding it, with one word on it. The original then stays.
+      const lines = scaled.h / Math.max(1, fontSize * scale * 1.2);
+      if (lines > 7 || scaled.w > px.width * 0.85) return look;
       look.outline = true;
       look.covered = true;
       return look;
