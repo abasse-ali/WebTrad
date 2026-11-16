@@ -820,6 +820,35 @@ export function smoothFill(px: Pixels, box: Box, within?: (x: number, y: number)
 }
 
 /**
+ * The letters of `tone` inside `box`, grown by `grow` pixels (their outline
+ * and soft edge): 1 where they are, in the box's own pixels.
+ */
+export function toneMask(px: Pixels, box: Box, tone: readonly number[], grow: number, within?: (x: number, y: number) => boolean): Uint8Array | null {
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const w = Math.min(px.width, Math.round(box.x + box.w)) - x0;
+  const h = Math.min(px.height, Math.round(box.y + box.h)) - y0;
+  if (w < 4 || h < 4) return null;
+  let mask = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      if (within && !within(x0 + x, y0 + y)) continue;
+      if (colorDistance(px.data, ((y0 + y) * px.width + x0 + x) * 4, tone) < 120) mask[y * w + x] = 1;
+    }
+  for (let pass = 0; pass < grow; pass++) {
+    const next = mask.slice();
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (mask[p]) continue;
+        if ((x > 0 && mask[p - 1]) || (x < w - 1 && mask[p + 1]) || (y > 0 && mask[p - w]) || (y < h - 1 && mask[p + w])) next[p] = 1;
+      }
+    mask = next;
+  }
+  return mask;
+}
+
+/**
  * Removes lettering drawn over artwork: pixels close to the ink colours are
  * masked (plus a margin for anti-aliasing) and filled from their surroundings,
  * layer by layer from the edge of each letter inwards. Returns the repaired
@@ -852,7 +881,29 @@ export function inpaintText(
   let mask = new Uint8Array(w * h);
   for (let p = 0; p < mask.length; p++) {
     if (within && !within(x0 + (p % w), y0 + Math.floor(p / w))) continue;
-    if (tones.some((c) => colorDistance(out, p * 4, c) < 120)) mask[p] = 1;
+    if (colorDistance(out, p * 4, tones[0]) < 120) mask[p] = 1;
+  }
+  // The outline's colour only right around the strokes: white outlines on a
+  // light drawing took the window, the kettle, the whole light background,
+  // rebuilt as a patchwork of squares.
+  if (tones.length > 1) {
+    const reach = Math.max(2, Math.round(margin * 2.5));
+    let near = mask.slice();
+    for (let pass = 0; pass < reach; pass++) {
+      const next = near.slice();
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+          const p = y * w + x;
+          if (near[p]) continue;
+          if ((x > 0 && near[p - 1]) || (x < w - 1 && near[p + 1]) || (y > 0 && near[p - w]) || (y < h - 1 && near[p + w])) next[p] = 1;
+        }
+      near = next;
+    }
+    for (let p = 0; p < mask.length; p++) {
+      if (mask[p] || !near[p]) continue;
+      if (within && !within(x0 + (p % w), y0 + Math.floor(p / w))) continue;
+      if (tones.slice(1).some((c) => colorDistance(out, p * 4, c) < 120)) mask[p] = 1;
+    }
   }
   if (maxGlyph) keepLines(mask, w, h, maxGlyph);
   // Grow the mask over the blurred rim of the letters.
@@ -905,8 +956,11 @@ export function inpaintText(
     for (const p of filled) mask[p] = 0;
     masked -= filled.length;
   }
-  // Soften the filled area so the layers do not show.
-  for (let pass = 0; pass < 2; pass++) {
+  // Soften the filled area so the layers do not show: more for thick
+  // letters, whose holes, filled from all sides, showed as a patchwork of
+  // squares on a blurred background.
+  const passes = Math.max(2, Math.min(8, Math.round(grow * 1.5)));
+  for (let pass = 0; pass < passes; pass++) {
     const src = out.slice();
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
@@ -1885,6 +1939,90 @@ export function paperShape(
   const spans: [number, number][] = [];
   for (let y = top; y <= bottom; y += step) spans.push(rows.get(y) ?? [cx, cx]);
   return { y: top, step, spans };
+}
+
+/**
+ * A box over lettering drawn on the artwork, grown to the whole letters it
+ * cuts and to the letters right beside them: the marks of ink about the size
+ * of a letter (their dark outline) that cross the box or lie within about
+ * half a letter of those taken. A tilted shout ("OWW, MY BACK…") kept the
+ * first "O", the "Y" and the dots outside the model's box, beside the
+ * translation. Long marks (hair, the drawing's lines) are not letters and
+ * stop it. `box` and `letter` in the pixels of `px`.
+ */
+export function growToLetters(px: Pixels, box: Box, letter: number): Box {
+  const { data, width: W, height: H } = px;
+  const reach = Math.max(3, Math.round(letter * 0.5));
+  const wx0 = Math.max(0, Math.floor(box.x - reach * 3));
+  const wy0 = Math.max(0, Math.floor(box.y - reach * 2));
+  const wx1 = Math.min(W, Math.ceil(box.x + box.w + reach * 3));
+  const wy1 = Math.min(H, Math.ceil(box.y + box.h + reach * 2));
+  const w = wx1 - wx0;
+  const h = wy1 - wy0;
+  if (w < 4 || h < 4) return box;
+  const dark = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = ((wy0 + y) * W + (wx0 + x)) * 4;
+      if (luminance(data, i) < 70) dark[y * w + x] = 1;
+    }
+  const seen = new Uint8Array(w * h);
+  const marks: Box[] = [];
+  const stack: number[] = [];
+  for (let start = 0; start < dark.length; start++) {
+    if (!dark[start] || seen[start]) continue;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length) {
+      const p = stack.pop()!;
+      const x = p % w;
+      const y = (p - x) / w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const q = yy * w + xx;
+          if (dark[q] && !seen[q]) {
+            seen[q] = 1;
+            stack.push(q);
+          }
+        }
+    }
+    // Letter-sized, and not cut by the window (it would go on: the drawing).
+    const mw = x1 - x0 + 1;
+    const mh = y1 - y0 + 1;
+    if (x0 === 0 || y0 === 0 || x1 === w - 1 || y1 === h - 1) continue;
+    if (mh > letter * 1.8 || mw > letter * 3 || (mw < 2 && mh < 2)) continue;
+    marks.push({ x: wx0 + x0, y: wy0 + y0, w: mw, h: mh });
+  }
+  const gap = (a: Box, b: Box) => Math.max(0, Math.max(a.x, b.x) - Math.min(a.x + a.w, b.x + b.w), Math.max(a.y, b.y) - Math.min(a.y + a.h, b.y + b.h));
+  let u = { ...box };
+  const taken = new Set<number>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [k, m] of marks.entries()) {
+      if (taken.has(k)) continue;
+      // Crossing the box, or right beside the letters already taken.
+      if (gap(m, box) > 0 && gap(m, u) > reach) continue;
+      taken.add(k);
+      const nx0 = Math.min(u.x, m.x);
+      const ny0 = Math.min(u.y, m.y);
+      u = { x: nx0, y: ny0, w: Math.max(u.x + u.w, m.x + m.w) - nx0, h: Math.max(u.y + u.h, m.y + m.h) - ny0 };
+      grew = true;
+    }
+  }
+  // Never far past the box: a row of small marks (a pattern) is not a text.
+  const x0 = Math.max(u.x, box.x - reach * 3);
+  const y0 = Math.max(u.y, box.y - reach * 2);
+  const x1 = Math.min(u.x + u.w, box.x + box.w + reach * 3);
+  const y1 = Math.min(u.y + u.h, box.y + box.h + reach * 2);
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 /** Average brightness of a box of `px` (0 dark – 255 white). */

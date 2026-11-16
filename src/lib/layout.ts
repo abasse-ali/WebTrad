@@ -66,6 +66,25 @@ type Measure = (s: string) => number;
 const CLOSING = /^[!?:;»)\]}…,.%]+$/u;
 const OPENING = /^[«(\[{¿¡]+$/u;
 
+/**
+ * Marks a piece of word that follows the previous unit without a space: a
+ * long compound word may go to the next line after its hyphen
+ * ("REGARDE-" / "MOI."), as French lettering does, instead of the whole
+ * bubble being lettered tiny to hold it on one line.
+ */
+const GLUE = '\u2060';
+
+/** `line` and `unit` put together on one line (a glued unit takes no space). */
+function joinUnit(line: string, unit: string, sep: string): string {
+  if (!line) return unit.replace(GLUE, '');
+  return unit.startsWith(GLUE) ? line + unit.slice(1) : line + sep + unit;
+}
+
+/** A line as drawn: without the glue marks. */
+function drawn(line: string): string {
+  return line.split(GLUE).join('').trim();
+}
+
 function segments(text: string, lang: string, noSpaces: boolean): string[] {
   if (!noSpaces) {
     // Keep French-style detached punctuation (« vas-tu ? ») with its word.
@@ -75,7 +94,10 @@ function segments(text: string, lang: string, noSpaces: boolean): string[] {
       if (CLOSING.test(token) && out.length) out[out.length - 1] += '\u00a0' + token;
       else if (OPENING.test(token)) pendingOpen += token + '\u00a0';
       else {
-        out.push(pendingOpen + token);
+        // A long compound word may break after its hyphen, between parts
+        // of three letters or more ("PEUT-|ÊTRE", not "QU'EST-|CE").
+        const parts = token.replace(/[^\p{L}]/gu, '').length >= 9 ? token.split(/(?<=\p{L}{3}-)(?=\p{L}{3})/u) : [token];
+        out.push(pendingOpen + parts[0], ...parts.slice(1).map((p) => GLUE + p));
         pendingOpen = '';
       }
     }
@@ -112,13 +134,14 @@ export function wrapText(
   const lines: string[] = [];
   for (const paragraph of text.split(/\n+/)) {
     let line = '';
-    for (const unit of segments(paragraph, lang, noSpaces)) {
-      const candidate = line ? line + sep + unit : unit;
-      if (measure(candidate.trim()) <= maxWidth) {
+    for (const raw of segments(paragraph, lang, noSpaces)) {
+      const candidate = joinUnit(line, raw, sep);
+      if (measure(drawn(candidate)) <= maxWidth) {
         line = candidate;
         continue;
       }
-      if (line.trim()) lines.push(line.trim());
+      if (drawn(line)) lines.push(drawn(line));
+      const unit = raw.replace(GLUE, '');
       if (measure(unit) <= maxWidth) {
         line = unit;
         continue;
@@ -135,7 +158,7 @@ export function wrapText(
         line += ch;
       }
     }
-    if (line.trim()) lines.push(line.trim());
+    if (drawn(line)) lines.push(drawn(line));
   }
   return lines;
 }
@@ -219,6 +242,10 @@ export function growable(shape: NonNullable<Bubble['shape']>, text: Box): boolea
   }
   const sorted = [...widths].sort((a, b) => a - b);
   const typical = sorted[Math.floor(rows * 0.75)];
+  // A box (a narration box, a square bubble): drawn again bigger, its
+  // corners came out cut, a polygon over the panel. Its text gets smaller.
+  const widest = sorted[rows - 1];
+  if (widths.filter((w) => w >= widest * 0.96).length >= rows * 0.7) return false;
   for (let i = 1; i < rows; i++) {
     // The sides of a round bubble move little from one row to the next.
     const jump = Math.max(Math.abs(shape.x[i * 2] - shape.x[i * 2 - 2]), Math.abs(shape.x[i * 2 + 1] - shape.x[i * 2 - 1]));
@@ -270,17 +297,38 @@ export function grownShape(
     left.push([rimL, y]);
     right.push([rimR, y]);
   }
-  // Closed at the top and the bottom by the rows past the first and last ones.
-  const pad = inset * k;
-  if (left.length) {
-    left.unshift([left[0][0] + pad, left[0][1] - pad]);
-    right.unshift([right[0][0] - pad, right[0][1] - pad]);
-    const lb = left[left.length - 1];
-    const rb = right[right.length - 1];
-    left.push([lb[0] + pad, lb[1] + pad]);
-    right.push([rb[0] - pad, rb[1] + pad]);
+  // The outline: the bubble's own body drawn bigger around the same centre
+  // (from the rows kept for text alone, its top and bottom stopped short and
+  // bits of the old outline stayed visible), closed by low rounded caps.
+  const rimW = Math.max(2, page.width * 0.004);
+  let outer: [number, number][][] = [left, right];
+  if (shape.body && shape.bodyY !== undefined && shape.body.length >= 6) {
+    const bl: [number, number][] = [];
+    const br: [number, number][] = [];
+    for (let i = 0; i < shape.body.length / 2; i++) {
+      const y = Math.min(page.height, Math.max(0, cy + (shape.bodyY + i * shape.step - cy) * k));
+      bl.push([Math.max(0, cx + (shape.body[i * 2] - cx) * k - rimW / 2), y]);
+      br.push([Math.min(page.width, cx + (shape.body[i * 2 + 1] - cx) * k + rimW / 2), y]);
+    }
+    outer = [bl, br];
   }
-  const outline = [...left, ...right.reverse()].flatMap(([px, py]) => [Math.round(px), Math.round(Math.max(0, Math.min(page.height, py)))]);
+  const [ol, or] = outer;
+  const caps: { top: [number, number][]; bottom: [number, number][] } = { top: [], bottom: [] };
+  if (ol.length) {
+    const l0 = ol[0];
+    const r0 = or[0];
+    const lb = ol[ol.length - 1];
+    const rb = or[or.length - 1];
+    const n = 10;
+    const riseT = Math.max(inset * k, (r0[0] - l0[0]) * 0.18);
+    const riseB = Math.max(inset * k, (rb[0] - lb[0]) * 0.18);
+    for (let i = 1; i < n; i++) {
+      const t = (Math.PI * i) / n;
+      caps.top.push([(l0[0] + r0[0]) / 2 + ((r0[0] - l0[0]) / 2) * Math.cos(t), l0[1] - riseT * Math.sin(t)]);
+      caps.bottom.push([(lb[0] + rb[0]) / 2 - ((rb[0] - lb[0]) / 2) * Math.cos(t), lb[1] + riseB * Math.sin(t)]);
+    }
+  }
+  const outline = [...ol, ...caps.bottom, ...[...or].reverse(), ...caps.top].flatMap(([px, py]) => [Math.round(px), Math.round(Math.max(0, Math.min(page.height, py)))]);
   const y0 = cy + (shape.y - cy) * k;
   return { shape: { ...shape, y: Math.round(y0), step: shape.step * k, x }, outline };
 }
@@ -343,25 +391,27 @@ export function fitToShape(
       const out: string[] = [];
       let line = '';
       let k = 0;
-      const join = (a: string, b: string) => (fromBottom ? b + sep + a : a + sep + b);
+      // From the bottom a unit goes before the line: glued, the line's
+      // first unit takes no space after it.
+      const join = (a: string, b: string) => (fromBottom ? (a.startsWith(GLUE) ? b + a.slice(1) : b + sep + a) : joinUnit(a, b, sep));
       for (const u of seq) {
         if (u === '\n') {
-          out.push(line.trim());
+          out.push(drawn(line));
           line = '';
           if (++k >= n) return null;
           continue;
         }
         const candidate = line ? join(line, u) : u;
-        if (measure(candidate.trim()) <= width(k)) {
+        if (measure(drawn(candidate)) <= width(k)) {
           line = candidate;
           continue;
         }
         if (!line) return null;
-        out.push(line.trim());
-        if (++k >= n || measure(u) > width(k)) return null;
+        out.push(drawn(line));
+        if (++k >= n || measure(drawn(u)) > width(k)) return null;
         line = u;
       }
-      if (line.trim()) out.push(line.trim());
+      if (drawn(line)) out.push(drawn(line));
       if (out.length !== n) return null;
       return fromBottom ? out.reverse() : out;
     };
@@ -643,13 +693,31 @@ export function outlineColor(color: string): string {
  * Paints translated bubbles on a canvas that already holds the original page.
  * `patches` holds the decoded repaired artwork of the layouts that have one.
  */
+function drawOutline(c: CanvasRenderingContext2D, fill: string, outline: NonNullable<BubbleLayout['bubbleOutline']>): void {
+  const p = outline.points;
+  c.save();
+  c.beginPath();
+  c.moveTo(p[0], p[1]);
+  for (let i = 2; i < p.length; i += 2) c.lineTo(p[i], p[i + 1]);
+  c.closePath();
+  c.fillStyle = fill;
+  c.fill();
+  c.lineJoin = 'round';
+  c.lineWidth = outline.width;
+  c.strokeStyle = outline.rim;
+  c.stroke();
+  c.restore();
+}
+
 export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[], patches?: Map<string, CanvasImageSource>): void {
   for (const l of layouts) {
     const patch = l.patch ? patches?.get(l.patch) : undefined;
-    if (patch) {
-      c.drawImage(patch, l.erase.x, l.erase.y, l.erase.w, l.erase.h);
-      continue;
-    }
+    if (patch) c.drawImage(patch, l.erase.x, l.erase.y, l.erase.w, l.erase.h);
+    // The bubble drawn bigger for a long translation, over the repaired
+    // lettering too: left out of exported pages, their text ran out of the
+    // bubble (the reader drew it).
+    if (patch && l.bubbleOutline) drawOutline(c, l.fill, l.bubbleOutline);
+    if (patch) continue;
     c.save();
     c.fillStyle = l.fill;
     if (l.eraseRotation) {
@@ -666,21 +734,7 @@ export function drawLayouts(c: CanvasRenderingContext2D, layouts: BubbleLayout[]
     roundRect(c, l.erase, l.radius);
     c.fill();
     c.restore();
-    if (l.bubbleOutline) {
-      const p = l.bubbleOutline.points;
-      c.save();
-      c.beginPath();
-      c.moveTo(p[0], p[1]);
-      for (let i = 2; i < p.length; i += 2) c.lineTo(p[i], p[i + 1]);
-      c.closePath();
-      c.fillStyle = l.fill;
-      c.fill();
-      c.lineJoin = 'round';
-      c.lineWidth = l.bubbleOutline.width;
-      c.strokeStyle = l.bubbleOutline.rim;
-      c.stroke();
-      c.restore();
-    }
+    if (l.bubbleOutline) drawOutline(c, l.fill, l.bubbleOutline);
   }
   for (const l of layouts) {
     c.save();

@@ -80,6 +80,13 @@ export interface Bubble {
     rim?: string;
     /** The whole bubble (not one lobe of two bubbles drawn joined): it may be drawn bigger. */
     whole?: boolean;
+    /**
+     * The bubble's body, its tail left out: left and right of its inside
+     * (page pixels) from `bodyY` down, rows `step` apart. Drawn bigger
+     * around the text's centre when a long translation needs room.
+     */
+    body?: number[];
+    bodyY?: number;
   };
   /** Alignment of the original lines (centred when undefined). */
   align?: 'left' | 'right';
