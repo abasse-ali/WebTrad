@@ -421,7 +421,7 @@ const SFX_WORDS = new Set(
     'bam pow wham kaboom boom thwip whiz zing ping ting tink chime ring vroom screech skid tremor quake ' +
     'whistle twirl swirl spin whirl twist flick fling flip wave ' +
     'smile grin giggle chuckle snicker smirk sparkle glare pause dun rummage fumble brush scrub bow ' +
-    'fwip shlup gasp startle flinch tremble doom du dum dump badum thud lean squeak eeek eek'
+    'fwip shlup gasp startle flinch tremble doom du dum dump badum thud lean squeak eeek eek tada taa daa duun'
   ).split(' '),
 );
 
@@ -492,5 +492,28 @@ export function isSoundEffect(text: string): boolean {
   if (words.length === 0 || words.length > 3) return false;
   const squeeze = (w: string) => w.replace(/(.)\1+/g, '$1');
   const known = new Set([...SFX_WORDS].map(squeeze));
-  return words.every((w) => /^\p{L}+$/u.test(w) && (SFX_WORDS.has(w) || known.has(squeeze(w))));
+  const isKnown = (w: string) => /^\p{L}+$/u.test(w) && (SFX_WORDS.has(w) || known.has(squeeze(w)));
+  if (words.every(isKnown)) return true;
+  // Syllables joined by a hyphen are one effect ("TA-DA" is "tada").
+  const joined = text.toLowerCase().replace(/[!?.…~♥♡*]+/g, '').replace(/\s*-\s*/g, '').trim();
+  return /^\p{L}+$/u.test(joined) && isKnown(joined);
+}
+
+/** Symbols that lettering uses (hearts, notes, stars): kept in a translation. */
+const LETTERING_SYMBOLS = /[♡♥❤♪♫☆★]/u;
+
+/**
+ * A translation sent by the model, made ready to be lettered: on one line
+ * (its own line breaks followed the English lettering, not the French: "UN"
+ * alone on a line, a block too tall for its bubble that ran over its rim),
+ * without the emoji it added (a French flag at the end of lines). The
+ * lettering's own symbols stay (a heart), so do emoji of the original.
+ */
+export function tidyTranslation(translation: string, original = ''): string {
+  return translation
+    .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, '')
+    .replace(/\p{Extended_Pictographic}\uFE0F?/gu, (m) => (LETTERING_SYMBOLS.test(m) || original.includes(m.replace(/\uFE0F/u, '')) ? m : ''))
+    .replace(/\s*\n\s*/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 }

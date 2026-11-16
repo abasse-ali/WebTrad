@@ -301,8 +301,12 @@ export function fitToShape(
 ): { lines: string[]; left: number[]; right: number[]; top: number; lineH: number } | null {
   const lh = size * LINE_HEIGHT;
   const rows = shape.x.length / 2;
-  const first = shape.y;
-  const last = shape.y + (rows - 1) * shape.step;
+  // Some air between the lines and the rim, as a letterer leaves: the
+  // text touched the spikes of shouted bubbles at the top and the bottom.
+  const airY = lh * 0.4;
+  const airX = size * 0.25;
+  const first = shape.y + airY;
+  const last = shape.y + (rows - 1) * shape.step - airY;
   const units = text
     .split(/\n+/)
     .flatMap((p, i) => (i > 0 ? ['\n', ...segments(p, lang, noSpaces)] : segments(p, lang, noSpaces)));
@@ -310,11 +314,11 @@ export function fitToShape(
   const room = (y0: number, y1: number): [number, number] | null => {
     let l = -Infinity;
     let r = Infinity;
-    const i0 = Math.max(0, Math.floor((y0 - first) / shape.step));
-    const i1 = Math.min(rows - 1, Math.ceil((y1 - first) / shape.step));
+    const i0 = Math.max(0, Math.floor((y0 - shape.y) / shape.step));
+    const i1 = Math.min(rows - 1, Math.ceil((y1 - shape.y) / shape.step));
     for (let i = i0; i <= i1; i++) {
-      l = Math.max(l, shape.x[i * 2]);
-      r = Math.min(r, shape.x[i * 2 + 1]);
+      l = Math.max(l, shape.x[i * 2] + airX);
+      r = Math.min(r, shape.x[i * 2 + 1] - airX);
     }
     return r > l ? [l, r] : null;
   };
@@ -457,7 +461,10 @@ export function layoutBubble(b: Bubble, page: { width: number; height: number },
   // Latin letters look smaller than CJK ones at the same pixel size.
   // Lettering on the artwork keeps its size: a short translation of a
   // small handwritten line grew to fill its box and looked shouted.
-  const ratio = b.area ? (capsSource ? SIZE_RATIO_CAPS : SIZE_RATIO) : 1.05;
+  // A bubble known by its shape only (no inner box found) is a bubble too:
+  // held to the size of the original, its French came out a quarter smaller
+  // than the English, in a bubble with room to spare.
+  const ratio = b.area || b.shape ? (capsSource ? SIZE_RATIO_CAPS : SIZE_RATIO) : 1.05;
   const maxSize = Math.max(8, original * ratio * scale);
   const minSize = Math.max(6, Math.min(original * 0.4, 12));
   let size = minSize;

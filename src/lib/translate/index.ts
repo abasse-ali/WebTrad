@@ -55,22 +55,30 @@ export async function translateTexts(
     for (const engine of engineChain(provider)) {
       const pairKey = `${engine.id}|${source}|${target}`;
       if (disabled.has(pairKey)) continue;
-      const start = performance.now();
-      try {
-        const out = await engine.translate({ texts: missing, source, target, signal });
-        logInfo('translate', `Traduction de ${missing.length} texte(s) par ${engine.id}`, { de: source, vers: target, ms: since(start) });
-        missing.forEach((t, i) => {
-          if (out[i]) cache.set(keyOf(t), out[i]);
-        });
-        engineUsed = engine.id;
-        done = true;
-        break;
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') throw err;
-        errors.push((err as Error).message);
-        logWarn('translate', `${engine.id} a échoué : ${(err as Error).message}`, { de: source, vers: target, ms: since(start) });
-        if (err instanceof TranslateError && !err.retryable) disabled.add(pairKey);
+      for (let attempt = 0; ; attempt++) {
+        const start = performance.now();
+        try {
+          const out = await engine.translate({ texts: missing, source, target, signal });
+          logInfo('translate', `Traduction de ${missing.length} texte(s) par ${engine.id}`, { de: source, vers: target, ms: since(start) });
+          missing.forEach((t, i) => {
+            if (out[i]) cache.set(keyOf(t), out[i]);
+          });
+          engineUsed = engine.id;
+          done = true;
+          break;
+        } catch (err) {
+          if ((err as Error).name === 'AbortError') throw err;
+          // The AI refused for going too fast: asked again once its pause is
+          // over (the next request waits for it), instead of handing the line
+          // to a word-for-word translator ("Ack!" became "Ouf !").
+          if (engine.id === 'llm' && /HTTP 429/.test((err as Error).message) && attempt < 3) continue;
+          errors.push((err as Error).message);
+          logWarn('translate', `${engine.id} a échoué : ${(err as Error).message}`, { de: source, vers: target, ms: since(start) });
+          if (err instanceof TranslateError && !err.retryable) disabled.add(pairKey);
+          break;
+        }
       }
+      if (done) break;
     }
     if (!done) throw new TranslateError(errors.join(' · ') || 'No translation engine available', 'all');
   }

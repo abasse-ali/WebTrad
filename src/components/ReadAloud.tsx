@@ -3,6 +3,7 @@ import type { MessageKey } from '../i18n';
 import { useT } from '../i18n';
 import { castOf, isNarrator, resetVoices, updateMember } from '../lib/cast';
 import { logInfo } from '../lib/log';
+import { isRunning } from '../lib/pipeline';
 import { getSettings, updateSettings, useSettings } from '../lib/settings';
 import { ensureSpeakers, needsSpeakers, readable } from '../lib/speakers';
 import type { Bubble, Chapter, Page } from '../lib/types';
@@ -25,6 +26,8 @@ import { Icon } from './Icon';
 const RATES = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6];
 /** Silence between two bubbles (ms). */
 const GAP_MS = 280;
+/** How long a page without text stays at the reading place before the next one. */
+const PICTURE_MS = 1500;
 
 type Position = { page: number; item: number };
 
@@ -84,6 +87,14 @@ export function ReadAloud({ chapter, pages, onClose }: { chapter: Chapter; pages
     return top + b.h * k > 0 && top < window.innerHeight;
   };
 
+  /** A page without a bubble to read: its middle at the reading place. */
+  const showPage = (p: Page) => {
+    const r = document.getElementById(`page-${p.index}`)?.getBoundingClientRect();
+    if (!r) return;
+    setNow(null);
+    window.scrollTo({ top: window.scrollY + r.top + r.height / 2 - window.innerHeight * 0.42, behavior: 'smooth' });
+  };
+
   const scrollTo = (p: Page, b: Bubble) => {
     const r = document.getElementById(`page-${p.index}`)?.getBoundingClientRect();
     if (!r) return;
@@ -109,9 +120,17 @@ export function ReadAloud({ chapter, pages, onClose }: { chapter: Chapter; pages
     let { page, item } = pos.current ?? fromScreen();
     while (page < pagesRef.current.length) {
       let p = pagesRef.current[page];
-      // A page still being translated: its turn comes once it is done.
-      while (p.status !== 'done' && p.status !== 'error') {
+      // A page still being translated: its turn comes once it is done. Not
+      // when nothing translates it (the chapter stopped): reading went no
+      // further, waiting for it forever.
+      let shown = false;
+      while (p.status !== 'done' && p.status !== 'error' && isRunning(chapter.id)) {
         setStatus(t('reader.voice.waiting', { page: p.index + 1 }));
+        // The page waited for is on screen.
+        if (!shown) {
+          shown = true;
+          showPage(p);
+        }
         await new Promise((r) => setTimeout(r, 1000));
         if (signal.aborted) return;
         p = pagesRef.current[page];
@@ -130,6 +149,14 @@ export function ReadAloud({ chapter, pages, onClose }: { chapter: Chapter; pages
       const next = pagesRef.current[page + 1];
       if (next && next.status === 'done' && needsSpeakers(next)) void ensureSpeakers(next, chapter).catch(() => undefined);
       const items = readable(p.bubbles, chapter.layout);
+      // A page without text: shown for a moment as the reading goes on to
+      // the next one (it stayed on the last bubble read, as if stuck).
+      if (items.length === 0 && p.status === 'done') {
+        pos.current = { page, item: 0 };
+        showPage(p);
+        await new Promise((r) => setTimeout(r, PICTURE_MS));
+        if (signal.aborted) return;
+      }
       for (; item < items.length; item++) {
         pos.current = { page, item };
         const b = items[item];
