@@ -15,7 +15,7 @@ import { logError, logInfo, logWarn, since } from './log';
 import { LLM_PRESETS, getSettings } from './settings';
 import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
-import { CONTENT_REFUSED, lastRateLimitAt, visionTranslate } from './translate/llm';
+import { CONTENT_REFUSED, lastRateLimitAt, proofreadTexts, visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
 import { isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
 import { seriesOf } from './series';
@@ -1412,6 +1412,8 @@ export interface StartOptions {
   pageIds?: string[];
   /** Only translate again, keep the detected bubbles. */
   translateOnly?: boolean;
+  /** Only proofread the translations of the pages. */
+  proofreadOnly?: boolean;
 }
 
 export function isRunning(chapterId: string): boolean {
@@ -1459,6 +1461,51 @@ export function resumeInterrupted(): Promise<void> {
 let ocrQueue: Promise<unknown> = Promise.resolve();
 
 /** Processes a chapter in the background (one chapter at a time). */
+/** Lines proofread per request: the context of a few pages, an answer kept short. */
+const PROOFREAD_BATCH = 60;
+
+/** Proofreads the translations of some pages of a chapter and saves the fixes. */
+export async function proofreadChapter(chapter: Chapter, pageIds: string[], signal: AbortSignal): Promise<number> {
+  const pages = (await getPages(chapter.id)).filter((p) => pageIds.includes(p.id) && p.status === 'done').sort((a, b) => a.index - b.index);
+  const lines: { page: string; bubble: string; id: number; original: string; text: string }[] = [];
+  for (const p of pages) {
+    for (const b of p.bubbles) {
+      // A line the reader wrote stays theirs.
+      if (b.hidden || b.edited || !b.original.trim() || !/\p{L}/u.test(b.translation)) continue;
+      lines.push({ page: p.id, bubble: b.id, id: lines.length + 1, original: b.original, text: b.translation });
+    }
+  }
+  let fixed = 0;
+  for (let k = 0; k < lines.length; k += PROOFREAD_BATCH) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const batch = lines.slice(k, k + PROOFREAD_BATCH);
+    const fixes = await withRetries(() => proofreadTexts(batch, chapter.targetLang, signal), signal, [4000]);
+    if (fixes.size === 0) continue;
+    const byPage = new Map<string, Map<string, string>>();
+    for (const l of batch) {
+      const t = fixes.get(l.id);
+      if (!t) continue;
+      if (!byPage.has(l.page)) byPage.set(l.page, new Map());
+      byPage.get(l.page)!.set(l.bubble, t);
+      logInfo('job', `Relu : « ${l.text.slice(0, 50)} » → « ${t.slice(0, 50)} »`);
+    }
+    for (const [pageId, changes] of byPage) {
+      // Saved on the latest copy of the page (the reader may have edited it meanwhile).
+      const fresh = await getPage(pageId);
+      if (!fresh) continue;
+      const bubbles = fresh.bubbles.map((b) => {
+        const t = changes.get(b.id);
+        if (!t || b.edited) return b;
+        fixed++;
+        return { ...b, translation: t };
+      });
+      await patchPage(pageId, { bubbles });
+    }
+  }
+  logInfo('job', `Relecture de « ${chapter.title} » : ${fixed} correction(s) sur ${lines.length} ligne(s)`);
+  return fixed;
+}
+
 export function startChapter(chapterId: string, opts: StartOptions = {}): Promise<void> {
   if (isRunning(chapterId)) return Promise.resolve();
   const controller = new AbortController();
@@ -1551,7 +1598,19 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         if ((await doPage(page)) === 'stop') return;
       }
     };
-    await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, (_, n) => worker(n)));
+    if (opts.proofreadOnly) done = todo.length;
+    else await Promise.all(Array.from({ length: Math.min(parallel, todo.length) }, (_, n) => worker(n)));
+    // The translations of the pages done read again by the AI: typos and
+    // words left untranslated, which the reading of one image lets through.
+    if (done > 0 && !controller.signal.aborted && !stopped && (visionEnabled() || st.provider === 'llm')) {
+      setJob(chapterId, { phase: 'translate', pageIndex: null, message: 'Relecture des traductions…' });
+      try {
+        await proofreadChapter(chapter, todo.map((p) => p.id), controller.signal);
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') logWarn('job', `Relecture non faite : ${(err as Error).message.slice(0, 120)}`);
+      }
+      setJob(chapterId, { message: undefined });
+    }
     await refreshStats(chapterId);
     logInfo('job', `Fin de « ${chapter.title} » : ${done} page(s) faite(s), ${failed} en erreur${controller.signal.aborted || stopped ? ', arrêté' : ''}`, {
       ms: since(jobStart),

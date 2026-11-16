@@ -427,6 +427,12 @@ export function Reader({ id }: { id: string }) {
     void startChapter(id, { pageIds: pages.filter((p) => p.bubbles.length > 0).map((p) => p.id), translateOnly: true });
   };
 
+  const proofreadAll = () => {
+    setMenuOpen(false);
+    if (!pages) return;
+    void startChapter(id, { pageIds: pages.filter((p) => p.status === 'done' && p.bubbles.length > 0).map((p) => p.id), proofreadOnly: true });
+  };
+
   const reanalyseAll = async () => {
     setMenuOpen(false);
     if (!pages || !window.confirm(t('reader.reanalyseConfirm'))) return;
@@ -588,6 +594,9 @@ export function Reader({ id }: { id: string }) {
                 </button>
                 <button role="menuitem" onClick={retranslateAll} disabled={running}>
                   <Icon name="refresh" size={16} /> {t('reader.retranslate')}
+                </button>
+                <button role="menuitem" onClick={proofreadAll} disabled={running}>
+                  <Icon name="check" size={16} /> {t('reader.proofread')}
                 </button>
                 <button role="menuitem" onClick={reanalyseAll}>
                   <Icon name="sparkles" size={16} /> {t('reader.reanalyse')}
