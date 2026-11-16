@@ -76,7 +76,13 @@ async function playPageSilence(): Promise<void> {
     // has to be guessed. Asking iOS whether "another app" plays was wrong:
     // the page's own sound, played by WebKit outside the app, counted as
     // one (a video was said to be playing when nothing was).
-    if (session.type !== 'ambient') session.type = 'ambient';
+    // WebKit refuses the change while iOS holds the audio ("The object is
+    // in an invalid state"): the silence plays anyway.
+    try {
+      if (session.type !== 'ambient') session.type = 'ambient';
+    } catch {
+      /* kept as it is */
+    }
   } else if (await otherAudioPlaying()) {
     // Older iOS: the page's sound would take the place of the other one.
     logInfo('app', 'Son d’une autre appli en cours : la traduction ne le coupe pas');
@@ -136,7 +142,11 @@ function backgroundWork(on: boolean): void {
     // Back to the usual audio once the work is done (reading aloud is then
     // heard even with the ring switch on silent).
     const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
-    if (session && session.type === 'ambient') session.type = 'auto';
+    try {
+      if (session && session.type === 'ambient') session.type = 'auto';
+    } catch {
+      /* kept as it is */
+    }
   }
 }
 

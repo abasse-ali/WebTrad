@@ -1732,8 +1732,18 @@ async function processChunk(chunk: Chunk, chapter: Chapter, signal: AbortSignal)
   const start = performance.now();
   const first = segments[0].page;
   const last = segments[segments.length - 1].page;
-  const context = await storySoFar(chapter, first.index);
+  // A stretch with no lettering at all (artwork only: no bubble holding ink,
+  // no block of letters): not sent to the AI. A third of the passages of a
+  // chapter were such, each a request out of the 4 or 5 a minute NVIDIA
+  // takes, for "0 texte(s)".
   let all: Bubble[];
+  if (!hasLettering(joined)) {
+    joined.close();
+    const pagesText = first.index === last.index ? `Page ${first.index + 1}` : `Pages ${first.index + 1} à ${last.index + 1}`;
+    logInfo('ocr', `${pagesText} : passage sans texte, pas envoyé à l’IA`, { taille: `${W}×${H}`, ms: since(start) });
+    return new Map(segments.map((sg) => [sg.page.id, []]));
+  }
+  const context = await storySoFar(chapter, first.index);
   try {
     all = await visionPage(joined, chapter, signal, context, { group: true });
   } finally {
@@ -1764,6 +1774,22 @@ async function processChunk(chunk: Chunk, chapter: Chapter, signal: AbortSignal)
     ms: since(start),
   });
   return per;
+}
+
+/**
+ * Whether an image holds any lettering: a block of letters, or a bubble
+ * with ink in it. Only an image with neither is skipped, so a doubt always
+ * goes to the AI.
+ */
+export function hasLettering(image: DecodedImage): boolean {
+  try {
+    const scale = Math.min(1, Math.sqrt(4_000_000 / (image.width * image.height)));
+    const px = bitmapPixels(image, scale);
+    if (findTextBlocks(px).length > 0) return true;
+    return detectAllBubbles(px).some((r) => maskedCrop(px, r).ink !== null);
+  } catch {
+    return true;
+  }
 }
 
 /** A bubble moved up or down (page coordinates), with everything placed on the page. */
@@ -1971,7 +1997,10 @@ export async function proofreadChapter(
       if (signal.aborted) throw err;
       // The proofreading model is not on this account (or keeps failing):
       // the main model proofreads instead.
-      if (llm.model !== main.model && (err instanceof TranslateError ? err.fatal || !err.retryable || /HTTP 4\d\d/.test(err.message) : true) && !/HTTP 429/.test((err as Error).message) && !(err as Error).message.startsWith(CONTENT_REFUSED)) {
+      // An answer that never comes counts too: deepseek-v4.1-flash timed out
+      // at 60 s on every batch, halved and asked again, a quarter of an hour.
+      const silent = /unreachable|expir|timed? ?out|no complete answer/i.test((err as Error).message);
+      if (llm.model !== main.model && (silent || (err instanceof TranslateError ? err.fatal || !err.retryable || /HTTP 4\d\d/.test(err.message) : true)) && !/HTTP 429/.test((err as Error).message) && !(err as Error).message.startsWith(CONTENT_REFUSED)) {
         // A model chosen for the account and since retired: the next best one.
         if (picked && !main.proofModel?.trim()) {
           gone.add(llm.model);
