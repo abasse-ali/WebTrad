@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { getChapter, getPage, getPages, patchChapter, patchPage, resetStalePages, uid } from './db';
 import { bitmapPixels, context2d, createCanvas, decodeImage, pixelsToCanvas, type DecodedImage } from './image';
-import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, findTextBlocks, fitShift, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
+import { cleanBubble, contrastColor, detectAllBubbles, enclosingBubble, findTextBlocks, fitShift, growToText, innerBox, letterHeight, maskedCrop, meanLuminance, regionFill, snapToText } from './imageproc';
 import { otherTabIsProcessing, setProcessing } from './keepalive';
 import {
   detectPageLanguage,
@@ -15,7 +15,7 @@ import { logError, logInfo, logWarn, since } from './log';
 import { LLM_PRESETS, getSettings } from './settings';
 import { normaliseCase, type Box } from './text';
 import { translateTexts } from './translate';
-import { visionTranslate } from './translate/llm';
+import { CONTENT_REFUSED, visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
 import { isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
 import { seriesOf } from './series';
@@ -504,11 +504,20 @@ export async function visionPage(
   }
   let lastY = -Infinity;
   for (const t of loose.sort((a, b) => a.box.y - b.box.y)) {
+    // The same text already placed (read twice by overlapping slices): the
+    // copy is not moved onto another bubble's lettering, it goes.
+    if (found.some((o) => o !== t && !loose.includes(o) && similarText(o.f.text, t.f.text))) {
+      found.splice(found.indexOf(t), 1);
+      continue;
+    }
     const cy = t.box.y + t.box.h / 2;
     let best = -1;
     let bestD = Infinity;
     for (const [j, b] of blocks.entries()) {
       if (taken.has(j)) continue;
+      // Lettering in a bubble that already has its text is that text's.
+      const held = inRegion(b.x + b.w / 2, b.y + b.h / 2);
+      if (held && found.some((o) => o !== t && o.region === held)) continue;
       const by = b.y + b.h / 2;
       const d = Math.abs(by - cy);
       const overlapX = Math.min(b.x + b.w, t.box.x + t.box.w + W * 0.15) - Math.max(b.x, t.box.x - W * 0.15);
@@ -628,6 +637,9 @@ export async function visionPage(
       } else groups.push({ ...b });
     }
     if (groups.length !== 2) continue;
+    // A group on another text's place (a white page taken for one shape)
+    // would letter a half over that text.
+    if (groups.some((g) => found.some((o) => o !== t && overlapShare(g, o.box) > 0.2))) continue;
     const parts = splitAtSentence(t.f.translation, (groups[0].w * groups[0].h) / (groups[0].w * groups[0].h + groups[1].w * groups[1].h));
     const texts = splitAtSentence(t.f.text, (groups[0].w * groups[0].h) / (groups[0].w * groups[0].h + groups[1].w * groups[1].h));
     if (!parts || !texts) continue;
@@ -679,8 +691,12 @@ export async function visionPage(
   const outside = kept.filter((t) => !t.region);
   for (const t of outside) {
     const s = snapToText(px, { x: t.box.x * scale, y: t.box.y * scale, w: t.box.w * scale, h: t.box.h * scale });
-    t.box.x = s.x / scale;
-    t.box.y = s.y / scale;
+    // Then over the lines of the same text the box left out (they stayed
+    // visible under the translation).
+    const g = growToText(px, { x: s.x, y: s.y, w: s.w, h: s.h });
+    t.box.x = g.x / scale;
+    t.box.y = g.y / scale;
+    t.box.h = g.h / scale;
   }
   // A translation over the wrong place is worse than none: the original
   // stays as drawn when the text landed on a bubble that has its own text,
@@ -1111,9 +1127,22 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
   const start = performance.now();
   const where = { page: page.index + 1, taille: `${bitmap.width}×${bitmap.height}` };
   try {
+    let refused = false;
     if (useVision) {
       const context = await storySoFar(chapter, page.index);
-      let bubbles = await visionPage(bitmap, chapter, signal, context);
+      let bubbles: Bubble[];
+      try {
+        bubbles = await visionPage(bitmap, chapter, signal, context);
+      } catch (err) {
+        // The provider's content filter refuses this image: the page is read
+        // on the device instead and only its texts are sent to translate,
+        // rather than staying in English.
+        if (!(err instanceof TranslateError) || !err.message.startsWith(CONTENT_REFUSED)) throw err;
+        logWarn('ocr', `Page ${page.index + 1} refusée par le filtre de contenu de l’IA : lecture sur l’appareil à la place`, where);
+        refused = true;
+        bubbles = [];
+      }
+      if (!refused) {
       try {
         bubbles = await stitchSeam(page, bitmap, chapter, signal, bubbles, context);
       } catch (err) {
@@ -1131,6 +1160,7 @@ async function processPage(page: Page, chapter: Chapter, signal: AbortSignal): P
       await patchPage(page.id, { bubbles, status: 'done', stalled: 0 });
       rememberSpeakers(chapter.title, bubbles);
       return 'llm';
+      }
     }
     const detected = await ocrPage(bitmap, chapter.sourceLang, { minConfidence: settings.minConfidence, signal });
     logInfo('ocr', `Page ${page.index + 1} lue (OCR local) : ${detected.length} texte(s)`, { ...where, langue: chapter.sourceLang, ms: since(start) });

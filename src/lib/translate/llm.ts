@@ -81,6 +81,14 @@ export function rateLimitWait(body: string, now = Date.now()): number {
  * hours), the key is refused, or the model is gone. The chapter stops on
  * them instead of putting every page in error, one request after another.
  */
+/** Message of a request refused by the provider's content filter. */
+export const CONTENT_REFUSED = 'Refused by the content filter of the AI provider';
+
+/** A provider's content filter refused the request ("input rejected by content safety screening"). */
+export function isContentRefusal(text: string): boolean {
+  return /content[ _-]?(safety|filter|policy|moderation)|safety (screening|system|filter)|moderation|flagged|inappropriate content|prohibited content/i.test(text);
+}
+
 export function fatalReason(status: number, body: string): string | undefined {
   if (status === 429 && /per[-_ ]day|daily/i.test(body))
     return 'Quota gratuit du jour épuisé chez ce fournisseur : reprenez demain, ou choisissez un autre fournisseur (par exemple NVIDIA) dans Réglages.';
@@ -223,6 +231,8 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   }
   if (res.status < 200 || res.status >= 300) {
     logError('ia', `${method} ${path} → HTTP ${res.status} : ${res.text.slice(0, 160)}`, meta);
+    // An image the provider's content filter refuses: asking again changes nothing.
+    if (isContentRefusal(res.text)) throw new TranslateError(`${CONTENT_REFUSED} (HTTP ${res.status})`, 'llm', false);
     throw new TranslateError(`AI endpoint HTTP ${res.status} ${res.text.slice(0, 300)}`, 'llm', res.status === 429 || res.status >= 500);
   }
   if (/^\s*(data:|event:|:)/.test(res.text)) {
@@ -376,11 +386,15 @@ export async function chat(llm: LlmSettings, messages: ChatMessage[], signal?: A
     // instead of one silent wait that ends in a timeout.
     { model: llm.model.trim(), temperature: 0.2, messages, stream: true, ...noThinking(llm) },
     signal,
-  ).catch((err: Error) => {
-    // A provider that refuses the option: asked again without it, and never again.
-    if (!/HTTP 4(00|22)/.test(err.message) || !Object.keys(noThinking(llm)).length) throw err;
+  ).catch(async (err: Error) => {
+    // A provider that refuses the option: asked again without it, and never
+    // again once that works. Not for a refusal of the content itself: a page
+    // NVIDIA's filter rejected turned the option off, and every page after it
+    // took a minute again.
+    if (!/HTTP 4(00|22)/.test(err.message) || err.message.startsWith(CONTENT_REFUSED) || !Object.keys(noThinking(llm)).length) throw err;
+    const answer = await request(llm, 'POST', '/chat/completions', { model: llm.model.trim(), temperature: 0.2, messages, stream: true }, signal);
     thinkingOptionRefused.add(baseOf(llm));
-    return request(llm, 'POST', '/chat/completions', { model: llm.model.trim(), temperature: 0.2, messages, stream: true }, signal);
+    return answer;
   })) as { choices?: { message?: { content?: string | { text?: string }[] } }[] };
   const content = data.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
