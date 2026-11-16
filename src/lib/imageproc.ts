@@ -951,6 +951,75 @@ export function regionFill(px: Pixels, region: BubbleRegion): string {
 }
 
 /**
+ * Grows a text box over the lines of lettering just above or below it. A
+ * model's box over text drawn on the artwork (white letters with a black
+ * outline on a grey drawing) sometimes holds only its first lines: the
+ * last ones stayed visible under the translation. A row next to the box
+ * belongs to the text when it has about as many letter edges as the rows
+ * inside; a gap of more than a line ends it. At most the box's height
+ * is added on each side. `box` is in the pixels of `px`.
+ */
+export function growToText(px: Pixels, box: Box): Box {
+  const { data, width: W, height: H } = px;
+  const x0 = Math.max(0, Math.round(box.x));
+  const x1 = Math.min(W - 1, Math.round(box.x + box.w));
+  const y0 = Math.max(0, Math.round(box.y));
+  const y1 = Math.min(H, Math.round(box.y + box.h));
+  if (x1 - x0 < 4 || y1 - y0 < 4) return box;
+  const rowEdges = (y: number) => {
+    let n = 0;
+    for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      if (Math.abs(luminance(data, i) - luminance(data, i + 4)) > 48) n++;
+    }
+    return n;
+  };
+  const inside: number[] = [];
+  for (let y = y0; y < y1; y++) inside.push(rowEdges(y));
+  const lettered = inside.filter((n) => n > 0).sort((a, b) => a - b);
+  if (lettered.length < 3) return box;
+  // Rows of letters inside: the upper half of the rows that have edges.
+  const typical = lettered[Math.floor(lettered.length * 0.6)];
+  const min = Math.max(2, typical * 0.35);
+  // The largest gap between lines inside the box: a line spacing.
+  let gapIn = 0;
+  let run = 0;
+  let lines = 0;
+  let letterRows = 0;
+  let prev = false;
+  for (const n of inside) {
+    const on = n >= min;
+    if (on) letterRows++;
+    if (on && !prev) lines++;
+    prev = on;
+    run = on ? 0 : run + 1;
+    gapIn = Math.max(gapIn, run);
+  }
+  // A box over one line tells no spacing: about a letter's height then.
+  const lineH = letterRows / Math.max(1, lines);
+  const maxGap = Math.max(4, Math.round(lines > 1 ? Math.min(gapIn * 1.5 + 2, box.h * 0.3) : lineH));
+  // Up to the box's height, or about three more lines for a box over one line.
+  const reach = Math.round(Math.max(box.h, lineH * 4));
+  const extend = (from: number, step: number, limit: number) => {
+    let last = from - step;
+    let gap = 0;
+    for (let y = from, k = 0; y >= 0 && y < H && k < limit; y += step, k++) {
+      if (rowEdges(y) >= min) {
+        last = y;
+        gap = 0;
+      } else if (++gap > maxGap) break;
+    }
+    return last;
+  };
+  const bottom = extend(y1, 1, reach) + 1;
+  const top = extend(y0 - 1, -1, reach);
+  if (bottom <= y1 && top >= y0 - 1) return box;
+  const ny0 = Math.min(y0, top);
+  const ny1 = Math.max(y1, bottom);
+  return { x: box.x, y: ny0, w: box.w, h: ny1 - ny0 };
+}
+
+/**
  * Moves a text box onto the lettering it is meant to cover. Vision models
  * often place boxes of signs, screens and game chats a line too high or
  * too low: the translation then sat next to the original, which stayed

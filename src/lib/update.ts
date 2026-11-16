@@ -123,8 +123,11 @@ async function applyIfIdle(): Promise<void> {
 async function cleanOld(keep: string): Promise<void> {
   try {
     const { files } = await Filesystem.readdir({ path: 'ota', directory: Directory.Library });
+    const folder = (p?: string) => p?.match(/\/ota\/([^/]+)\/?$/)?.[1];
+    // The running code, and a download waiting to be started.
+    const kept = [folder(keep), folder(read<Ready>(READY_KEY)?.path)];
     for (const f of files) {
-      if (!keep.endsWith(`/ota/${f.name}`)) await Filesystem.rmdir({ path: `ota/${f.name}`, directory: Directory.Library, recursive: true });
+      if (!kept.includes(f.name)) await Filesystem.rmdir({ path: `ota/${f.name}`, directory: Directory.Library, recursive: true });
     }
   } catch {
     /* no folder yet */
@@ -140,12 +143,17 @@ export function startUpdates(): void {
       if (!fromUpdate) {
         // The installed app's own code: it tells what the app can run.
         write(BINARY_KEY, NATIVE_LEVEL);
-      } else if (read<string>(TO_KEEP_KEY) === path) {
-        // The new code started fine: kept for the next launches.
+      } else {
+        // Downloaded code that started and drew the app: kept for the next
+        // launches. (The path given back by the web view is not always
+        // written like the one it was given, "/private/var/…" for
+        // "/var/…": comparing them kept the new code from ever being kept,
+        // and a restart fell back to the app's own old code.)
         await WebView.persistServerBasePath();
+        if (read<string>(TO_KEEP_KEY)) logInfo('app', `Version ${__WEB_BUILD__} installée`);
         write(TO_KEEP_KEY, undefined);
-        logInfo('app', `Version ${__WEB_BUILD__} installée`);
       }
+      // Only once the running code is kept: the other downloads go.
       await cleanOld(path);
       // A version downloaded earlier: taken now, at launch, before any reading.
       await applyIfIdle();

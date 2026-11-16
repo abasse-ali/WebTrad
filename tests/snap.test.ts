@@ -100,3 +100,28 @@ describe('detectAllBubbles and whispered bubbles', () => {
     expect(found.some((r) => r.x < 120 && r.x + r.w > 280 && r.y < 140 && r.y + r.h > 160)).toBe(true);
   });
 });
+
+describe('growToText', () => {
+  it('covers the lines of a text the box left out, not the drawing beyond', async () => {
+    const { growToText } = await import('../src/lib/imageproc');
+    const W = 300;
+    const H = 300;
+    const data = new Uint8ClampedArray(W * H * 4).fill(120);
+    // Three lines of letters (vertical strokes) at rows 50, 80 and 110, 16 px tall.
+    for (const top of [50, 80, 110])
+      for (let y = top; y < top + 16; y++)
+        for (let x = 40; x < 240; x++) {
+          if (x % 6 < 2) {
+            const i = (y * W + x) * 4;
+            data[i] = data[i + 1] = data[i + 2] = 250;
+          }
+        }
+    const px = { width: W, height: H, data };
+    const out = growToText(px, { x: 40, y: 48, w: 200, h: 20 });
+    expect(out.y).toBeLessThanOrEqual(50);
+    expect(out.y + out.h).toBeGreaterThanOrEqual(124);
+    expect(out.y + out.h).toBeLessThan(140);
+    // A box on plain grey stays as it is.
+    expect(growToText(px, { x: 40, y: 200, w: 200, h: 20 })).toEqual({ x: 40, y: 200, w: 200, h: 20 });
+  });
+});
