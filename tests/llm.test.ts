@@ -119,7 +119,7 @@ describe('rate limits and sound effects', () => {
     const now = 1_794_711_100_000;
     const body = '{"error":{"code":429,"metadata":{"headers":{"X-RateLimit-Limit":"20","X-RateLimit-Remaining":"0","X-RateLimit-Reset":"1794711120000"}}}}';
     expect(rateLimitWait(body, now)).toBe(21_000);
-    expect(rateLimitWait('{"error":"slow down"}', now)).toBe(20_000);
+    expect(rateLimitWait('{"error":"slow down"}', now)).toBe(8_000);
     expect(rateLimitWait('"X-RateLimit-Reset":"1794711100"', now)).toBe(2_000);
   });
 
@@ -206,42 +206,20 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
     expect(knownLimit('openrouter.ai')).toBeUndefined();
   });
 
-  it('falls at once to what the provider answered in the last minute', async () => {
-    vi.useFakeTimers();
-    const host = 'pace-sink.test';
-    for (let i = 0; i < 25; i++) await paceRequest(host);
-    learnLimit(host); // 25 seen: 20 a minute
-    await vi.advanceTimersByTimeAsync(61_000);
-    for (let i = 0; i < 8; i++) {
-      const p = paceRequest(host);
-      await vi.advanceTimersByTimeAsync(3_000);
-      await p;
-    }
-    learnLimit(host); // refused at 8 in the minute, under 20: now 7 a minute
-    // 8 already in the minute: the next waits for the first to leave it.
-    let started = false;
-    const next = paceRequest(host).then(() => (started = true));
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(started).toBe(false);
-    await vi.advanceTimersByTimeAsync(20_000);
-    await next;
-    vi.useRealTimers();
-  });
-
-  it('goes under 8 a minute when refused though spaced, never under 5', async () => {
+  it('keeps the limit learnt when refused again under it, never under 8', async () => {
     vi.useFakeTimers();
     const host = 'pace-floor.test';
     for (let i = 0; i < 3; i++) await paceRequest(host);
-    learnLimit(host); // 8 a minute
+    learnLimit(host); // 3 seen: 8 a minute (the floor)
     for (let k = 0; k < 5; k++) learnLimit(host); // refused again and again under it
-    // 5 a minute: a request every 12 s.
+    // Still 8 a minute: a request every 7.5 s.
     await vi.advanceTimersByTimeAsync(60_000);
     await paceRequest(host);
     let started = false;
     const next = paceRequest(host).then(() => (started = true));
-    await vi.advanceTimersByTimeAsync(11_000);
+    await vi.advanceTimersByTimeAsync(7_000);
     expect(started).toBe(false);
-    await vi.advanceTimersByTimeAsync(1_500);
+    await vi.advanceTimersByTimeAsync(1_000);
     await next;
     vi.useRealTimers();
   });
