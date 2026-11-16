@@ -143,8 +143,9 @@ function aiSource(chapter: Chapter): string {
  * Free AI tiers time out or answer "busy" (429, 5xx) now and then: a slice
  * is tried again twice, after a pause, before the page is marked in error.
  */
-async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits = [4000, 15000]): Promise<T> {
+export async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits = [4000, 15000], timeoutRetries = 1): Promise<T> {
   let limited = 0;
+  let timeouts = 0;
   for (let attempt = 0; ; attempt++) {
     try {
       return await run();
@@ -154,7 +155,11 @@ async function withRetries<T>(run: () => Promise<T>, signal: AbortSignal, waits 
       // to reset (see llm.ts) and is tried again, up to 8 times.
       const rateLimited = /HTTP 429/.test((err as Error).message);
       if (rateLimited) limited++;
-      const giveUp = rateLimited ? limited > 8 : attempt - limited >= waits.length;
+      // No answer at all: the same image sent again hung the same way (three
+      // times 3 minutes for two pages read in 8 s once sent one by one).
+      const timedOut = /no complete answer/.test((err as Error).message);
+      if (timedOut) timeouts++;
+      const giveUp = rateLimited ? limited > 8 : attempt - limited >= waits.length || timeouts > timeoutRetries;
       if ((err as Error).name === 'AbortError' || !retryable || giveUp) throw err;
       const wait = rateLimited ? 0 : waits[attempt - limited];
       if (!rateLimited) logWarn('ia', `Nouvel essai dans ${wait / 1000} s : ${(err as Error).message.slice(0, 120)}`, { essai: attempt + 2 });
@@ -202,6 +207,8 @@ export async function visionPage(
   chapter: Chapter,
   signal: AbortSignal,
   context?: string,
+  /** Several pages read together: an image left unanswered is not sent again (the pages are read one by one instead). */
+  opts: { group?: boolean } = {},
 ): Promise<Bubble[]> {
   const W = bitmap.width;
   const H = bitmap.height;
@@ -244,6 +251,8 @@ export async function visionPage(
         results[i] = await withRetries(
           () => visionTranslate(slice.image, aiSource(chapter), chapter.targetLang, signal, undefined, { width: slice.width, height: slice.height }, context),
           signal,
+          undefined,
+          opts.group ? 0 : 1,
         );
       } catch (err) {
         // A model that keeps answering gibberish for one slice: the rest of
@@ -1438,7 +1447,7 @@ async function processGroup(group: Page[], chapter: Chapter, signal: AbortSignal
     const context = await storySoFar(chapter, first.index);
     let all: Bubble[];
     try {
-      all = await visionPage(joined, chapter, signal, context);
+      all = await visionPage(joined, chapter, signal, context, { group: true });
     } finally {
       joined.close();
     }

@@ -206,7 +206,7 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
     expect(knownLimit('openrouter.ai')).toBeUndefined();
   });
 
-  it('does not sink the limit on a refusal right after the pause', async () => {
+  it('lowers the limit by one only on a refusal right after the pause', async () => {
     vi.useFakeTimers();
     const host = 'pace-sink.test';
     for (let i = 0; i < 25; i++) await paceRequest(host);
@@ -217,12 +217,30 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
       await vi.advanceTimersByTimeAsync(3_000);
       await p;
     }
-    learnLimit(host); // 2 seen: still 20, not 8 (a request every 3 s)
+    learnLimit(host); // 2 seen: 19, not 8 (a request every 3.2 s)
     const t0 = Date.now();
     const p = paceRequest(host);
-    await vi.advanceTimersByTimeAsync(3_100);
+    await vi.advanceTimersByTimeAsync(3_300);
     await p;
-    expect(Date.now() - t0).toBeLessThanOrEqual(3_100);
+    expect(Date.now() - t0).toBeLessThanOrEqual(3_300);
+    vi.useRealTimers();
+  });
+
+  it('goes under 8 a minute when refused though spaced, never under 5', async () => {
+    vi.useFakeTimers();
+    const host = 'pace-floor.test';
+    for (let i = 0; i < 3; i++) await paceRequest(host);
+    learnLimit(host); // 8 a minute
+    for (let k = 0; k < 5; k++) learnLimit(host); // refused again and again under it
+    // 5 a minute: a request every 12 s.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await paceRequest(host);
+    let started = false;
+    const next = paceRequest(host).then(() => (started = true));
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(started).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_500);
+    await next;
     vi.useRealTimers();
   });
 
