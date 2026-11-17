@@ -15,7 +15,8 @@ import { logError, logInfo, logWarn, since } from './log';
 import { LLM_PRESETS, getSettings } from './settings';
 import { normaliseCase, tidyTranslation, type Box } from './text';
 import { translateTexts } from './translate';
-import { CONTENT_REFUSED, forgetProofModel, lastRateLimitAt, proofModelFor, proofreadTexts, visionTranslate } from './translate/llm';
+import { CONTENT_REFUSED, forgetProofModel, isDailyQuota, lastRateLimitAt, llmEngine, proofModelFor, proofreadTexts, visionTranslate } from './translate/llm';
+import { resumeAfterQuota, switchToBackup } from './backup';
 import { TranslateError } from './translate/types';
 import { looksLikeSpeech, isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
 import { seriesOf } from './series';
@@ -177,6 +178,37 @@ function sameText(a: string, b: string): boolean {
   // Accents apart: "PC Cafe" → "PC Café" is the same sign, left as drawn.
   const norm = (t: string) => t.normalize('NFD').replace(/\p{M}+/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
   return norm(a) !== '' && norm(a) === norm(b);
+}
+
+/**
+ * A few lines the vision model sent back untranslated, translated by the
+ * provider's text model (the proofreading one) when there is one: NVIDIA
+ * counts its limit per model, and each such request took a turn of the
+ * vision model (a wait of 13 s, three or four times a chapter). Undefined
+ * when there is none, or it does not answer in 25 s: the main model then
+ * translates them.
+ */
+async function translateAside(texts: string[], source: string, target: string, signal: AbortSignal): Promise<string[] | undefined> {
+  const main = getSettings().llm;
+  const model = main.proofModel?.trim() || (await proofModelFor(main).catch(() => undefined));
+  if (!model || model === main.model) return undefined;
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  signal.addEventListener('abort', stop, { once: true });
+  const timer = setTimeout(stop, 25_000);
+  const start = performance.now();
+  try {
+    const out = await llmEngine({ ...main, model }).translate({ texts, source, target, signal: controller.signal });
+    logInfo('translate', `Traduction de ${texts.length} texte(s) par ${model}`, { de: source, vers: target, ms: since(start) });
+    return out;
+  } catch (err) {
+    if (signal.aborted) throw err;
+    logWarn('translate', `Traduction à part par ${model} impossible, faite par ${main.model} : ${(err as Error).message.slice(0, 100)}`);
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', stop);
+  }
 }
 
 /** Tallest slice sent to the AI, in page widths; past it the page is cut. */
@@ -584,12 +616,9 @@ export async function visionPage(
       // (the model reported the language of a drawn effect): English.
       const latin = untranslated.every((f) => !/[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Cyrillic}\p{Script=Thai}]/u.test(f.text));
       const cjk = ['ko', 'ja', 'zh', 'zh-Hans', 'zh-Hant', 'ru', 'th'].includes(chapter.sourceLang);
-      const { translations } = await translateTexts(
-        untranslated.map((f) => f.text),
-        chapter.sourceLang !== AUTO && !(latin && cjk) ? chapter.sourceLang : 'en',
-        chapter.targetLang,
-        signal,
-      );
+      const texts = untranslated.map((f) => f.text);
+      const source = chapter.sourceLang !== AUTO && !(latin && cjk) ? chapter.sourceLang : 'en';
+      const translations = (await translateAside(texts, source, chapter.targetLang, signal)) ?? (await translateTexts(texts, source, chapter.targetLang, signal)).translations;
       untranslated.forEach((f, k) => (f.translation = tidyTranslation(translations[k] ?? '', f.text)));
       logInfo('ocr', `${untranslated.length} texte(s) rendu(s) non traduit(s) par l’IA : traduit(s) à part`);
     } catch (err) {
@@ -1666,13 +1695,37 @@ export function rowBusy(px: Pixels): Uint16Array {
 const CHUNK_RATIO = 2.6;
 
 /**
+ * Rows of a page a stretch must not be cut through: its lettering and its
+ * bubbles holding ink, with some room around them (a bubble's rim, its
+ * tail). Bubbles are found on `small`, the page scaled down, if given.
+ */
+export function guardRows(px: Pixels, small: Pixels = px): Uint8Array {
+  const H = px.height;
+  const out = new Uint8Array(H);
+  const mark = (y0: number, y1: number) => {
+    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(H, Math.ceil(y1)); y++) out[y] = 1;
+  };
+  const room = px.width * 0.05;
+  for (const b of findTextBlocks(px)) {
+    const m = Math.max(room, b.h * 0.5);
+    mark(b.y - m, b.y + b.h + m);
+  }
+  const k = small.width / px.width;
+  for (const r of detectAllBubbles(small)) {
+    if (maskedCrop(small, r).ink === null) continue;
+    mark(r.y / k - room, (r.y + r.h) / k + room);
+  }
+  return out;
+}
+
+/**
  * Where to cut the strip of `pages` (all of width `W`, with the busy rows of
  * each): in the middle of bands of empty rows taller than a line spacing (a
  * gap between two lines of one text is not one), each stretch as tall as
  * allowed. Without such a band, a stretch up to four widths (read in two
  * overlapping slices), else a cut at the quietest row.
  */
-export function planChunks(pages: { page: Page; busy: Uint16Array }[], W: number): Chunk[] {
+export function planChunks(pages: { page: Page; busy: Uint16Array; guard?: Uint8Array }[], W: number): Chunk[] {
   const starts: number[] = [];
   let total = 0;
   for (const p of pages) {
@@ -1684,6 +1737,10 @@ export function planChunks(pages: { page: Page; busy: Uint16Array }[], W: number
     while (i > 0 && starts[i] > y) i--;
     return pages[i].busy[y - starts[i]] ?? 0;
   };
+  // Rows of the strip lying on lettering or a bubble (see guardRows).
+  const guarded = new Uint8Array(total);
+  const known = pages.every((p) => p.guard);
+  if (known) pages.forEach((p, i) => guarded.set(p.guard!.subarray(0, p.busy.length), starts[i]));
   const band = Math.max(12, Math.round(W * 0.03));
   const cuts: number[] = [];
   let run = -1;
@@ -1710,6 +1767,20 @@ export function planChunks(pages: { page: Page; busy: Uint16Array }[], W: number
     const lo = s + W * 0.8;
     const hi = s + W * CHUNK_RATIO;
     let cut = [...cuts].reverse().find((c) => c > lo && c <= hi);
+    // No gutter in reach (a tall panel): cut through its drawing, at the
+    // quietest row with no lettering or bubble near it, rather than stretch
+    // the passage up to the next gutter. Read in two slices, that one took
+    // two requests (one passage in six, each request one of the 4 or 5 a
+    // minute NVIDIA takes); the slices cut the panel all the same.
+    // As low as it can be (the shorter the passage, the more passages), at
+    // the quietest row of the last clear rows.
+    if (cut === undefined && known) {
+      let last = -1;
+      for (let y = Math.round(hi); y >= s + W * 1.3 && last < 0; y--) if (!guarded[y]) last = y;
+      let best = last;
+      for (let y = last; y >= Math.max(s + W * 1.3, last - W * 0.25); y--) if (!guarded[y] && busyAt(y) < busyAt(best)) best = y;
+      if (best > 0) cut = best;
+    }
     if (cut === undefined) cut = cuts.find((c) => c > hi && c <= s + W * GROUP_STRETCH_RATIO);
     if (cut === undefined) {
       // No empty band: the quietest row of the last part of the stretch.
@@ -1736,14 +1807,21 @@ async function decodePage(p: Page): Promise<DecodedImage> {
   }
 }
 
-/** The busy rows of each page (each decoded once). */
-async function stripProfiles(pages: Page[], signal: AbortSignal): Promise<Uint16Array[]> {
-  const out: Uint16Array[] = [];
+/** The busy rows of each page, and the rows not to cut through (each page decoded once). */
+async function stripProfiles(pages: Page[], signal: AbortSignal): Promise<{ busy: Uint16Array; guard?: Uint8Array }[]> {
+  const out: { busy: Uint16Array; guard?: Uint8Array }[] = [];
   for (const p of pages) {
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const bitmap = await decodePage(p);
     try {
-      out.push(rowBusy(bitmapPixels(bitmap)));
+      const px = bitmapPixels(bitmap);
+      let guard: Uint8Array | undefined;
+      try {
+        guard = guardRows(px, bitmapPixels(bitmap, 0.5));
+      } catch {
+        // Not known: such a stretch goes to the next gutter, as before.
+      }
+      out.push({ busy: rowBusy(px), guard });
     } finally {
       bitmap.close();
     }
@@ -2128,6 +2206,8 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
     const todo = pages.filter((p) => (opts.pageIds ? opts.pageIds.includes(p.id) : p.status !== 'done'));
     setJob(chapterId, { total: todo.length });
     const jobStart = performance.now();
+    // The provider whose quota of the day ran out, taken back once renewed.
+    resumeAfterQuota();
     const st = getSettings();
     logInfo('job', `Traitement de « ${chapter.title} » : ${todo.length} page(s)${opts.translateOnly ? ' (retraduction)' : ''}`, {
       de: chapter.sourceLang,
@@ -2183,8 +2263,8 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
             planned.push({ page: run[0] });
             continue;
           }
-          const busy = await stripProfiles(run, controller.signal);
-          for (const chunk of planChunks(run.map((page, i) => ({ page, busy: busy[i] })), run[0].width)) planned.push({ chunk });
+          const profiles = await stripProfiles(run, controller.signal);
+          for (const chunk of planChunks(run.map((page, i) => ({ page, ...profiles[i] })), run[0].width)) planned.push({ chunk });
         }
         units = planned;
         for (const u of units) {
@@ -2205,6 +2285,18 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
       }
       setJob(chapterId, { message: undefined });
     }
+    // The free quota of the day spent: another provider set up in Réglages
+    // goes on with the chapter (see backup.ts). Each provider takes over
+    // once at most, so this always ends.
+    const takeOver = (err: unknown): boolean => {
+      if (!isDailyQuota(err) || controller.signal.aborted) return false;
+      const before = getSettings().llm.preset;
+      const label = switchToBackup();
+      if (!label) return false;
+      if (getSettings().llm.preset !== before)
+        logWarn('job', `Quota gratuit du jour épuisé chez ${LLM_PRESETS.find((p) => p.id === before)?.label ?? before} : la traduction continue avec ${label}`, { modèle: getSettings().llm.model });
+      return true;
+    };
     const doUnit = async (unit: Unit): Promise<'next' | 'stop'> => {
       if ('page' in unit) return doPage(unit.page);
       const pages = unit.chunk.segments.map((sg) => sg.page).filter((p) => !solo.has(p.id));
@@ -2229,6 +2321,7 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
           return 'stop';
         }
         if (err instanceof TranslateError && err.fatal) {
+          if (takeOver(err)) return doUnit(unit);
           for (const p of pages) await patchPage(p.id, { status: 'pending', error: undefined });
           logError('job', `Traduction arrêtée à la page ${pages[0].index + 1} : ${(err as Error).message}`, { chapitre: chapter.title });
           setJob(chapterId, { message: (err as Error).message });
@@ -2269,6 +2362,7 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         }
         const message = (err as Error).message || String(err);
         if (err instanceof TranslateError && err.fatal) {
+          if (takeOver(err)) return doPage(page);
           // The next pages would be refused the same way: they wait, untouched.
           await patchPage(page.id, { status: page.bubbles.length ? 'done' : 'pending', error: undefined });
           logError('job', `Traduction arrêtée à la page ${page.index + 1} : ${message}`, { chapitre: chapter.title });

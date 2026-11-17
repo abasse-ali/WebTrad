@@ -103,9 +103,30 @@ export function isContentRefusal(text: string): boolean {
   return /content[ _-]?(safety|filter|policy|moderation)|safety (screening|system|filter)|moderation|flagged|inappropriate content|prohibited content/i.test(text);
 }
 
+/** Start of the message of a request refused because the day's free quota is spent. */
+export const DAILY_QUOTA = 'Quota gratuit du jour épuisé';
+
+/** Whether an error is the provider's refusal for a day's free quota spent. */
+export function isDailyQuota(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith(DAILY_QUOTA);
+}
+
+/** Addresses of the providers whose free quota of the day ran out, and when. */
+const quotaSpentAt = new Map<string, number>();
+
+/** The day's quota of the provider at `base` is spent (its refusal said so). */
+export function noteQuotaSpent(base: string, at = Date.now()): void {
+  quotaSpentAt.set(base.trim().replace(/\/+$/, ''), at);
+}
+
+/** When the day's quota of the provider at `base` was found spent (0 if not in this session). */
+export function quotaSpentSince(base: string): number {
+  return quotaSpentAt.get(base.trim().replace(/\/+$/, '')) ?? 0;
+}
+
 export function fatalReason(status: number, body: string): string | undefined {
   if (status === 429 && /per[-_ ]day|daily/i.test(body))
-    return 'Quota gratuit du jour épuisé chez ce fournisseur : reprenez demain, ou choisissez un autre fournisseur (par exemple NVIDIA) dans Réglages.';
+    return `${DAILY_QUOTA} chez ce fournisseur : reprenez demain, ou choisissez un autre fournisseur (par exemple NVIDIA) dans Réglages.`;
   if (status === 401 || (status === 403 && !/region/i.test(body)))
     return 'Clé API absente ou refusée par le fournisseur : vérifiez-la dans Réglages.';
   if (status === 403) return 'Ce modèle n’est pas disponible dans votre région : choisissez-en un autre dans Réglages.';
@@ -129,6 +150,8 @@ const learntLimit = new Map<string, { limit: number; at: number; refusedAt: numb
 const PACE_KEY = 'webtrad.rateLimits.v2';
 /** Never spaced more than this (requests a minute): a key slowed by the provider still goes on. */
 const MIN_LIMIT = 4;
+/** Requests spaced this much more than the learnt limit asks (see paceRequest). */
+const PACE_MARGIN = 1.08;
 
 function saveLimits(): void {
   try {
@@ -215,7 +238,11 @@ export async function paceRequest(host: string, signal?: AbortSignal): Promise<v
     const now = Date.now();
     // Evenly spaced, not in bursts: the provider refused the third of three
     // requests sent in the same second, though far under its limit a minute.
-    const gap = limit && learntLimit.has(host) ? 60_000 / limit : 0;
+    // And a little slower than the limit: sent every 15.0 s at 4 a minute,
+    // NVIDIA refused about one request in five (22 refusals in a chapter of
+    // 27 minutes, a minute apart: each refusal counted in its minute had the
+    // request a minute later refused in turn), each a lost turn and a pause.
+    const gap = limit && learntLimit.has(host) ? (60_000 / limit) * PACE_MARGIN : 0;
     const last = list[list.length - 1] ?? -Infinity;
     if (!limit || (list.length < limit && now - last >= gap)) {
       list.push(now);
@@ -312,6 +339,7 @@ async function request(llm: LlmSettings, method: 'GET' | 'POST', path: string, b
   const meta = { fournisseur: host, modèle: model, statut: res.status, ms: since(start), images: images || undefined, octets: res.text.length };
   if (path === '/chat/completions') countRequest(host, res.status === 429 ? 'limited' : res.status >= 200 && res.status < 300 ? 'ok' : 'failed');
   const fatal = fatalReason(res.status, res.text);
+  if (fatal?.startsWith(DAILY_QUOTA)) noteQuotaSpent(baseOf(llm));
   if (fatal) {
     logError('ia', `${method} ${path} → HTTP ${res.status} : ${fatal}`, meta);
     throw new TranslateError(`${fatal} (HTTP ${res.status})`, 'llm', false, true);
