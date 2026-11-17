@@ -214,10 +214,20 @@ async function translateAside(texts: string[], source: string, target: string, s
 /** Tallest slice sent to the AI, in page widths; past it the page is cut. */
 const SLICE_MAX_RATIO = 2.65;
 
+/**
+ * How many times taller than usual the passages read by the AI are (the
+ * "Passages longs" setting): twice, and a chapter takes half the requests,
+ * the letters sent as big as before in an image twice as tall. NVIDIA takes
+ * 4 requests a minute, whatever their size.
+ */
+export function passageScale(): number {
+  return getSettings().longPassages ? 2 : 1;
+}
+
 /** Height of the slices a page is cut in, and how much they overlap (page pixels). */
-export function sliceLayout(W: number, H: number): { sliceH: number; overlap: number; count: number } {
-  if (H <= W * SLICE_MAX_RATIO) return { sliceH: H, overlap: 0, count: 1 };
-  const target = W * 2.2;
+export function sliceLayout(W: number, H: number, k = 1): { sliceH: number; overlap: number; count: number } {
+  if (H <= W * SLICE_MAX_RATIO * k) return { sliceH: H, overlap: 0, count: 1 };
+  const target = W * 2.2 * k;
   const overlap = Math.round(target * 0.12);
   const count = Math.ceil((H - overlap) / (target - overlap));
   const sliceH = Math.ceil((H + overlap * (count - 1)) / count);
@@ -249,14 +259,15 @@ export async function visionPage(
   // images well). A page a little taller than one slice is read whole, and a
   // longer one is cut in slices of equal height: an 800×1828 page was read in
   // two requests, the second one a strip of blank paper.
-  const { sliceH, overlap } = sliceLayout(W, H);
+  const long = passageScale();
+  const { sliceH, overlap } = sliceLayout(W, H, long);
   const scale = Math.min(1, Math.sqrt(12_000_000 / (W * H)));
   const px = bitmapPixels(bitmap, scale);
   const regions = detectAllBubbles(px);
 
   type Slice = { top: number; h: number; image: string; width: number; height: number; rescue?: Box[] };
   const makeSlice = (top: number, h: number): Slice => {
-    const k = Math.min(1, VISION_MAX_SIDE / Math.max(W, h));
+    const k = Math.min(1, (VISION_MAX_SIDE * long) / Math.max(W, h));
     const canvas = createCanvas(W * k, h * k);
     const c = context2d(canvas);
     c.imageSmoothingQuality = 'high';
@@ -1725,7 +1736,7 @@ export function guardRows(px: Pixels, small: Pixels = px): Uint8Array {
  * allowed. Without such a band, a stretch up to four widths (read in two
  * overlapping slices), else a cut at the quietest row.
  */
-export function planChunks(pages: { page: Page; busy: Uint16Array; guard?: Uint8Array }[], W: number): Chunk[] {
+export function planChunks(pages: { page: Page; busy: Uint16Array; guard?: Uint8Array }[], W: number, k = 1): Chunk[] {
   const starts: number[] = [];
   let total = 0;
   for (const p of pages) {
@@ -1763,9 +1774,9 @@ export function planChunks(pages: { page: Page; busy: Uint16Array; guard?: Uint8
     return { segments, width: W, height: b - a };
   };
   let s = 0;
-  while (total - s > W * GROUP_MAX_RATIO) {
+  while (total - s > W * GROUP_MAX_RATIO * k) {
     const lo = s + W * 0.8;
-    const hi = s + W * CHUNK_RATIO;
+    const hi = s + W * CHUNK_RATIO * k;
     let cut = [...cuts].reverse().find((c) => c > lo && c <= hi);
     // No gutter in reach (a tall panel): cut through its drawing, at the
     // quietest row with no lettering or bubble near it, rather than stretch
@@ -1776,16 +1787,16 @@ export function planChunks(pages: { page: Page; busy: Uint16Array; guard?: Uint8
     // the quietest row of the last clear rows.
     if (cut === undefined && known) {
       let last = -1;
-      for (let y = Math.round(hi); y >= s + W * 1.3 && last < 0; y--) if (!guarded[y]) last = y;
+      for (let y = Math.round(hi); y >= s + W * 1.3 * k && last < 0; y--) if (!guarded[y]) last = y;
       let best = last;
-      for (let y = last; y >= Math.max(s + W * 1.3, last - W * 0.25); y--) if (!guarded[y] && busyAt(y) < busyAt(best)) best = y;
+      for (let y = last; y >= Math.max(s + W * 1.3 * k, last - W * 0.25); y--) if (!guarded[y] && busyAt(y) < busyAt(best)) best = y;
       if (best > 0) cut = best;
     }
-    if (cut === undefined) cut = cuts.find((c) => c > hi && c <= s + W * GROUP_STRETCH_RATIO);
+    if (cut === undefined) cut = cuts.find((c) => c > hi && c <= s + W * GROUP_STRETCH_RATIO * k);
     if (cut === undefined) {
       // No empty band: the quietest row of the last part of the stretch.
       let best = Math.round(hi);
-      for (let y = Math.round(s + W * 1.8); y <= hi; y++) if (busyAt(y) < busyAt(best)) best = y;
+      for (let y = Math.round(s + W * 1.8 * k); y <= hi; y++) if (busyAt(y) < busyAt(best)) best = y;
       cut = best;
     }
     chunks.push(make(s, cut));
@@ -2259,12 +2270,12 @@ export function startChapter(chapterId: string, opts: StartOptions = {}): Promis
         const planned: Unit[] = [];
         for (const run of runs) {
           // One page of an ordinary height: read as it is (with its neighbours joined if a bubble crosses).
-          if (run.length === 1 && run[0].height <= run[0].width * GROUP_MAX_RATIO) {
+          if (run.length === 1 && run[0].height <= run[0].width * GROUP_MAX_RATIO * passageScale()) {
             planned.push({ page: run[0] });
             continue;
           }
           const profiles = await stripProfiles(run, controller.signal);
-          for (const chunk of planChunks(run.map((page, i) => ({ page, ...profiles[i] })), run[0].width)) planned.push({ chunk });
+          for (const chunk of planChunks(run.map((page, i) => ({ page, ...profiles[i] })), run[0].width, passageScale())) planned.push({ chunk });
         }
         units = planned;
         for (const u of units) {

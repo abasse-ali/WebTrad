@@ -92,3 +92,27 @@ describe('the free quota of the day spent', () => {
     expect(getSettings().llm.preset).toBe('gemini');
   });
 });
+
+describe('long passages (the "Passages longs" setting)', () => {
+  const W = 800;
+  it('reads a page up to twice as tall in one request', () => {
+    expect(sliceLayout(W, 2800).count).toBe(2);
+    expect(sliceLayout(W, 2800, 2).count).toBe(1);
+    expect(sliceLayout(W, 4200, 2).count).toBe(1);
+    expect(sliceLayout(W, 4300, 2).count).toBe(2);
+  });
+  it('cuts the strip in passages twice as tall: half as many', () => {
+    // A gutter every 700 rows, 12 pages of 1045.
+    const pages = Array.from({ length: 12 }, (_, index) => {
+      const busy = new Uint16Array(1045).fill(30);
+      const start = index * 1045;
+      for (let y = 0; y < 1045; y++) if ((start + y) % 700 < 30) busy[y] = 0;
+      return { page: { id: `p${index}`, index, width: W, height: 1045 } as Page, busy };
+    });
+    const short = planChunks(pages, W);
+    const long = planChunks(pages, W, 2);
+    for (const c of long) expect(c.height).toBeLessThanOrEqual(W * 5.3);
+    expect(long.length).toBeLessThanOrEqual(Math.ceil(short.length / 2) + 1);
+    expect(long.reduce((h, c) => h + c.height, 0)).toBe(12 * 1045);
+  });
+});

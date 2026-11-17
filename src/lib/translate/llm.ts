@@ -976,7 +976,8 @@ export async function visionTranslate(
       },
     ],
     signal,
-    VISION_MAX_TOKENS,
+    // Passages twice as tall hold up to twice the texts.
+    getSettings().longPassages ? VISION_MAX_TOKENS * 1.5 : VISION_MAX_TOKENS,
   );
   const parsed = parseJsonAnswer<{ bubbles?: unknown[]; source_language?: string } | unknown[]>(answer);
   const list = Array.isArray(parsed) ? parsed : (parsed.bubbles ?? []);
