@@ -32,3 +32,15 @@ describe('more drawn cries and effects', () => {
     expect(isDrawnEffect('SMILE AT ME')).toBe(false);
   });
 });
+
+describe('looksLikeSpeech (Family with Benefits, chapter 7)', () => {
+  it('knows big lines of speech from sound effects', async () => {
+    const { looksLikeSpeech } = await import('../src/lib/text');
+    expect(looksLikeSpeech("I'M CUMMING!")).toBe(true);
+    expect(looksLikeSpeech('YEEEEEEES!♡')).toBe(true);
+    expect(looksLikeSpeech('THWOP')).toBe(false);
+    expect(looksLikeSpeech('DUN')).toBe(false);
+    expect(looksLikeSpeech('HAAA...')).toBe(false);
+    expect(looksLikeSpeech('SHUDDER♥')).toBe(false);
+  });
+});

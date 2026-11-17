@@ -421,9 +421,27 @@ const SFX_WORDS = new Set(
     'bam pow wham kaboom boom thwip whiz zing ping ting tink chime ring vroom screech skid tremor quake ' +
     'whistle twirl swirl spin whirl twist flick fling flip wave ' +
     'smile grin giggle chuckle snicker smirk sparkle glare pause dun rummage fumble brush scrub bow ' +
-    'fwip shlup gasp startle flinch tremble doom du dum dump badum thud lean squeak eeek eek tada taa daa duun'
+    'fwip fwop thwop shlup gasp startle flinch tremble doom du dum dump badum thud lean squeak eeek eek tada taa daa duun'
   ).split(' '),
 );
+
+/** Words of speech: a text holding one is dialogue, however big it is drawn. */
+const SPEECH_WORDS = new Set(
+  ('i me my you your yes no not don\'t can\'t won\'t stop please more cumming coming going love want need ' +
+    'it this that what why who we he she they is are am was do did have will so too again help wait').split(' '),
+);
+
+/**
+ * A text that is speech, not a sound effect, even when lettered huge
+ * outside any bubble: a word with an apostrophe ("I'M CUMMING!"), or a word
+ * of speech, stretched letters squeezed ("YEEEEEEES!" is "yes"). Such lines
+ * were left in English as giant sound effects.
+ */
+export function looksLikeSpeech(text: string): boolean {
+  const words = text.toLowerCase().replace(/[’]/g, "'").match(/[\p{L}']+/gu) ?? [];
+  const squeeze = (w: string) => w.replace(/(.)\1+/g, '$1');
+  return words.some((w) => /\p{L}'\p{L}/u.test(w) || SPEECH_WORDS.has(w) || SPEECH_WORDS.has(squeeze(w)));
+}
 
 /** Cries and breaths: dialogue inside a bubble, drawn sound effects outside one. */
 const CRY_WORDS = new Set(
