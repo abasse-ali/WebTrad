@@ -177,6 +177,8 @@ export interface Settings {
   background: boolean;
   /** iPhone app: the volume buttons turn the pages in the reader. */
   volumeButtons?: boolean;
+  /** How far one press of a volume button scrolls. */
+  volumeStep?: 'short' | 'medium' | 'long';
   /** Automatic scrolling in the reader: speed level (1 = slowest). */
   scrollSpeed: number;
   /** Reading aloud: speed of the voices (1 = normal). */

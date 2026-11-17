@@ -17,6 +17,7 @@ import type { Box } from '../lib/text';
 import type { Bubble, Chapter, Page, ReaderMode } from '../lib/types';
 import { navigate } from '../router';
 import { SPEED_LEVELS, clampSpeed, useAutoScroll } from '../lib/autoscroll';
+import { VOLUME_STEPS, glideBy } from '../lib/glide';
 import { BubbleSheet } from './BubbleSheet';
 import { Modal as Sheet } from './AddSheet';
 import { UsageMeter } from './UsageMeter';
@@ -233,15 +234,17 @@ export function Reader({ id }: { id: string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [setMode, changeSpeed]);
 
-  // iPhone app: the volume buttons turn the pages (down: further, up: back),
-  // a screen at a time. Not while reading aloud, when they are the volume,
+  // iPhone app: the volume buttons turn the pages (down: further, up: back). Not while reading aloud, when they are the volume,
   // nor while a bubble is being edited.
   const volumePages = isNativeApp() && settings.volumeButtons !== false && !voiceOn && !editing;
   useEffect(() => {
     if (!volumePages) return;
     return volumeButtonsTurnPages((direction) => {
-      const step = Math.round(window.innerHeight * 0.85);
-      window.scrollBy({ top: direction === 'down' ? step : -step, behavior: 'smooth' });
+      // A share of the screen (a bit under half by default), glided softly:
+      // 85 % of a screen in one jerk was too much to follow.
+      const share = VOLUME_STEPS[getSettings().volumeStep ?? 'medium'] ?? VOLUME_STEPS.medium;
+      const step = Math.round(window.innerHeight * share);
+      glideBy(direction === 'down' ? step : -step);
     });
   }, [volumePages]);
 
