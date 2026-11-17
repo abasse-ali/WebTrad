@@ -3,6 +3,7 @@ import Capacitor
 import UIKit
 import WebKit
 import AVFoundation
+import MediaPlayer
 
 /**
  * In-app browser of the WebTrad iPhone app.
@@ -20,6 +21,9 @@ import AVFoundation
  *     appears when the website asks for a check the reader has to tap.
  *   download({ urls, referer }) -> { files: [{ url, path }], failed }
  *   event "progress" { done, total } while downloading
+ *   volumeButtons({ on }) -> {}: while the reader is open, the volume
+ *     buttons turn the pages instead of changing the volume
+ *   event "volumeButton" { direction: "up" | "down" } for each press
  *   keepAlive({ on }) -> {}: while a chapter is being translated, the app
  *     keeps running when the reader leaves it or locks the phone (see below).
  */
@@ -32,8 +36,102 @@ public class WebTradBrowserPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "download", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readClipboard", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "keepAlive", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "otherAudio", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "otherAudio", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "volumeButtons", returnType: CAPPluginReturnPromise)
     ]
+
+    // MARK: - Volume buttons turn the pages
+
+    /// iOS gives apps no event for the volume buttons: the system volume is
+    /// watched instead, and set back right away (through a hidden volume
+    /// view, which also keeps iOS's volume banner from showing). The volume
+    /// therefore never changes while the reader is open. Only while the app
+    /// is on screen: in the background the buttons are the volume again.
+    private var volumeView: MPVolumeView?
+    private var volumeObservation: NSKeyValueObservation?
+    private var wantVolumeButtons = false
+    private var watchingVolume = false
+    private var restingVolume: Float = 0.5
+    private var originalVolume: Float = 0.5
+    private var volumeObservers: [NSObjectProtocol] = []
+
+    @objc func volumeButtons(_ call: CAPPluginCall) {
+        let on = call.getBool("on") ?? false
+        DispatchQueue.main.async {
+            self.wantVolumeButtons = on
+            if on {
+                self.startWatchingVolume()
+                if self.volumeObservers.isEmpty {
+                    let center = NotificationCenter.default
+                    self.volumeObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                        self?.stopWatchingVolume()
+                    })
+                    self.volumeObservers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                        guard let self = self, self.wantVolumeButtons else { return }
+                        self.startWatchingVolume()
+                    })
+                }
+            } else {
+                self.stopWatchingVolume()
+                self.volumeObservers.forEach { NotificationCenter.default.removeObserver($0) }
+                self.volumeObservers.removeAll()
+            }
+            call.resolve()
+        }
+    }
+
+    private func startWatchingVolume() {
+        guard !watchingVolume, let host = bridge?.viewController?.view else { return }
+        watchingVolume = true
+        let session = AVAudioSession.sharedInstance()
+        // The volume is only reported while the app's audio session is
+        // active. Mixed with others: the reader's music goes on.
+        if !keepingAlive { try? session.setCategory(.ambient, mode: .default, options: [.mixWithOthers]) }
+        try? session.setActive(true)
+        let view = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 10, height: 10))
+        view.alpha = 0.01
+        view.isUserInteractionEnabled = false
+        host.addSubview(view)
+        volumeView = view
+        originalVolume = session.outputVolume
+        // At full or no volume a press would change nothing and be missed:
+        // the volume rests a step away from the ends while the reader is open.
+        restingVolume = min(0.9375, max(0.0625, originalVolume))
+        if restingVolume != originalVolume {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.setVolume(self.restingVolume) }
+        }
+        volumeObservation = session.observe(\.outputVolume, options: [.new]) { [weak self] session, change in
+            let value = change.newValue ?? session.outputVolume
+            DispatchQueue.main.async { self?.volumeChanged(value) }
+        }
+    }
+
+    private func volumeChanged(_ value: Float) {
+        guard watchingVolume else { return }
+        // The volume set back by the app itself.
+        if abs(value - restingVolume) < 0.01 { return }
+        notifyListeners("volumeButton", data: ["direction": value > restingVolume ? "up" : "down"])
+        setVolume(restingVolume)
+    }
+
+    private func setVolume(_ value: Float) {
+        guard let slider = volumeView?.subviews.compactMap({ $0 as? UISlider }).first else { return }
+        slider.setValue(value, animated: false)
+        slider.sendActions(for: .valueChanged)
+    }
+
+    private func stopWatchingVolume() {
+        guard watchingVolume else { return }
+        watchingVolume = false
+        volumeObservation?.invalidate()
+        volumeObservation = nil
+        // The reader's own volume back, then the hidden view goes (removed
+        // at once, iOS would skip the change).
+        setVolume(originalVolume)
+        let view = volumeView
+        volumeView = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { view?.removeFromSuperview() }
+    }
 
     // MARK: - Working in the background
 

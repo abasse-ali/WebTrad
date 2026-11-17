@@ -23,7 +23,9 @@ interface WebTradBrowserPlugin {
   readClipboard(): Promise<{ text: string }>;
   keepAlive(options: { on: boolean }): Promise<void>;
   otherAudio(): Promise<{ playing: boolean }>;
+  volumeButtons(options: { on: boolean }): Promise<void>;
   addListener(event: 'progress', listener: (e: { done: number; total: number }) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'volumeButton', listener: (e: { direction: 'up' | 'down' }) => void): Promise<PluginListenerHandle>;
 }
 
 const WebTradBrowser = registerPlugin<WebTradBrowserPlugin>('WebTradBrowser');
@@ -162,4 +164,35 @@ export async function otherAudioPlaying(): Promise<boolean> {
     /* older app build: assume nothing plays */
     return false;
   }
+}
+
+/**
+ * iPhone app: the volume buttons turn the pages while `on` (the volume
+ * itself does not change). Returns a function that stops it. Nothing
+ * happens with an app installed before this feature (its native code has
+ * no such method): the buttons stay the volume.
+ */
+export function volumeButtonsTurnPages(onPress: (direction: 'up' | 'down') => void): () => void {
+  if (!isNativeApp()) return () => undefined;
+  let stopped = false;
+  let handle: PluginListenerHandle | undefined;
+  void (async () => {
+    try {
+      handle = await WebTradBrowser.addListener('volumeButton', (e) => onPress(e.direction));
+      if (stopped) {
+        void handle.remove();
+        return;
+      }
+      await WebTradBrowser.volumeButtons({ on: true });
+      logInfo('app', 'Boutons de volume : ils font défiler les pages du lecteur');
+    } catch {
+      /* older app build: the buttons stay the volume */
+      void handle?.remove();
+    }
+  })();
+  return () => {
+    stopped = true;
+    void handle?.remove();
+    void WebTradBrowser.volumeButtons({ on: false }).catch(() => undefined);
+  };
 }
