@@ -163,6 +163,15 @@ export function SettingsPage() {
             </span>
           </label>
         )}
+        {isNativeApp() && (
+          <label className="check">
+            <input type="checkbox" checked={s.volumeButtons !== false} onChange={(e) => updateSettings({ volumeButtons: e.target.checked })} />
+            <span>
+              {t('settings.volumeButtons')}
+              <small className="block muted">{t('settings.volumeButtons.hint')}</small>
+            </span>
+          </label>
+        )}
         <div className="two">
           <label className="field">
             <span>{t('settings.defaultSource')}</span>

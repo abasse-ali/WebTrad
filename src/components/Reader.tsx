@@ -3,7 +3,7 @@ import { formatBytes, useT, type MessageKey } from '../i18n';
 import { useChapter, useDismiss } from '../hooks';
 import { deleteChapter, getPage, listChapters, patchChapter, patchPage, uid } from '../lib/db';
 import { downloadBlob, exportChapter, fontsReady, renderPage, safeName, type ExportFormat, type ExportMode } from '../lib/exporter';
-import { isNativeApp } from '../lib/native';
+import { isNativeApp, volumeButtonsTurnPages } from '../lib/native';
 import { clearLayoutCache, type LayoutOptions } from '../lib/layout';
 import { decodeImage } from '../lib/image';
 import { isImageUrl } from '../lib/importers';
@@ -232,6 +232,18 @@ export function Reader({ id }: { id: string }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [setMode, changeSpeed]);
+
+  // iPhone app: the volume buttons turn the pages (down: further, up: back),
+  // a screen at a time. Not while reading aloud, when they are the volume,
+  // nor while a bubble is being edited.
+  const volumePages = isNativeApp() && settings.volumeButtons !== false && !voiceOn && !editing;
+  useEffect(() => {
+    if (!volumePages) return;
+    return volumeButtonsTurnPages((direction) => {
+      const step = Math.round(window.innerHeight * 0.85);
+      window.scrollBy({ top: direction === 'down' ? step : -step, behavior: 'smooth' });
+    });
+  }, [volumePages]);
 
   // A new message brings the bar back for a moment; it must not pin it for good.
   const [attention, setAttention] = useState(false);

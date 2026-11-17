@@ -175,6 +175,8 @@ export interface Settings {
   exportMaxMB: number;
   /** iPhone app: keep translating when the app leaves the screen or the phone is locked. */
   background: boolean;
+  /** iPhone app: the volume buttons turn the pages in the reader. */
+  volumeButtons?: boolean;
   /** Automatic scrolling in the reader: speed level (1 = slowest). */
   scrollSpeed: number;
   /** Reading aloud: speed of the voices (1 = normal). */
