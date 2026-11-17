@@ -277,7 +277,73 @@ function ringLuminance(data: Uint8ClampedArray, W: number, H: number, x0: number
  * only "…?". Null when the paper is not enclosed (the page background),
  * is not plain (a white shirt, a lit wall) or holds no ink.
  */
-export function enclosingBubble(px: Pixels, seed: Box, bright = 200): BubbleRegion | null {
+/**
+ * A filled shape with its narrow necks cut: the pixels farther than `k`
+ * from its edge, the part of them touching the seed box, grown back by `k`
+ * within the shape. Null when nothing of the seed box survives.
+ */
+export function cutNecks(mask: Uint8Array, W: number, H: number, k: number, sx0: number, sy0: number, sx1: number, sy1: number): Uint8Array | null {
+  // Distance to the outside (chamfer 1/1, two passes): enough for small k.
+  const big = 1 << 15;
+  const d = new Uint16Array(W * H);
+  for (let i = 0; i < d.length; i++) d[i] = mask[i] ? big : 0;
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!d[i]) continue;
+      const up = y > 0 ? d[i - W] : 0;
+      const left = x > 0 ? d[i - 1] : 0;
+      d[i] = Math.min(d[i], up + 1, left + 1);
+    }
+  for (let y = H - 1; y >= 0; y--)
+    for (let x = W - 1; x >= 0; x--) {
+      const i = y * W + x;
+      if (!d[i]) continue;
+      const down = y < H - 1 ? d[i + W] : 0;
+      const right = x < W - 1 ? d[i + 1] : 0;
+      d[i] = Math.min(d[i], down + 1, right + 1);
+    }
+  // The core touching the seed box.
+  const core = new Uint8Array(W * H);
+  const stack: number[] = [];
+  for (let y = Math.max(0, sy0); y <= Math.min(H - 1, sy1); y++)
+    for (let x = Math.max(0, sx0); x <= Math.min(W - 1, sx1); x++) {
+      const i = y * W + x;
+      if (d[i] > k && !core[i]) {
+        core[i] = 1;
+        stack.push(i);
+      }
+    }
+  if (stack.length === 0) return null;
+  while (stack.length > 0) {
+    const i = stack.pop()!;
+    const x = i % W;
+    for (const n of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) {
+      if (n < 0 || n >= W * H || core[n] || d[n] <= k) continue;
+      core[n] = 1;
+      stack.push(n);
+    }
+  }
+  // Grown back by k (plus one) within the shape: the rim of the bubble returns.
+  const out = new Uint8Array(W * H);
+  let front: number[] = [];
+  for (let i = 0; i < core.length; i++) if (core[i]) { out[i] = 1; front.push(i); }
+  for (let step = 0; step <= k; step++) {
+    const next: number[] = [];
+    for (const i of front) {
+      const x = i % W;
+      for (const n of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) {
+        if (n < 0 || n >= W * H || out[n] || !mask[n]) continue;
+        out[n] = 1;
+        next.push(n);
+      }
+    }
+    front = next;
+  }
+  return out;
+}
+
+export function enclosingBubble(px: Pixels, seed: Box, bright = 200, cutDone = false): BubbleRegion | null {
   const { data, width: W, height: H } = px;
   // A bubble is never much taller than the page is wide: the search stays in a window.
   const reach = Math.round(W * 0.9);
@@ -319,7 +385,33 @@ export function enclosingBubble(px: Pixels, seed: Box, bright = 200): BubbleRegi
     if (wy < wh - 1 && !seen[q + W] && isBright(x, y + 1)) { seen[q + W] = 1; stack.push(q + W); }
   }
   // Paper running out of the window above or below is the page, not a bubble.
-  if ((y0 <= wy0 && wy0 > 0) || (y1 >= wy1 - 1 && wy1 < H)) return null;
+  // Nor is a shape too tall. Either may be a bubble whose outline is broken
+  // where a white patch touches it (a censor bar, a splash): the paper ran
+  // out through that narrow gap. The narrow necks are cut and the part
+  // around the lettering is kept.
+  const failed = () => (y0 <= wy0 && wy0 > 0) || (y1 >= wy1 - 1 && wy1 < H) || y1 - y0 + 1 > reach;
+  if (failed() && !cutDone) {
+    for (const k of [4, 7, 11]) {
+      const cut = cutNecks(seen, W, wh, k, sx0, sy0 - wy0, sx1, sy1 - wy0);
+      if (!cut) continue;
+      let cx0 = W, cy0 = H, cx1 = 0, cy1 = 0, carea = 0;
+      for (let q = 0; q < cut.length; q++) {
+        if (!cut[q]) continue;
+        const x = q % W;
+        const y = (q - x) / W + wy0;
+        carea++;
+        if (x < cx0) cx0 = x;
+        if (x > cx1) cx1 = x;
+        if (y < cy0) cy0 = y;
+        if (y > cy1) cy1 = y;
+      }
+      if ((cy0 <= wy0 && wy0 > 0) || (cy1 >= wy1 - 1 && wy1 < H) || cy1 - cy0 + 1 > reach) continue;
+      seen.set(cut);
+      x0 = cx0; y0 = cy0; x1 = cx1; y1 = cy1; area = carea;
+      break;
+    }
+  }
+  if (failed()) return null;
   const w = x1 - x0 + 1;
   const h = y1 - y0 + 1;
   if (h > reach || w < seed.w * 0.8 || h < seed.h * 0.8) return null;
