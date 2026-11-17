@@ -127,3 +127,28 @@ describe('letterHeight', () => {
     expect(letterHeight(pink, { x: 0, y: 0, w: 120, h: 40 }, true)).toBe(14);
   });
 });
+
+describe('enclosingBubble with a broken outline', () => {
+  // A bubble on skin-pink art, its outline broken where a white patch (a
+  // censor bar) touches it: the white of the bubble ran into the patch and
+  // up the page (Family with Benefits, chapter 7, page 37).
+  const page = image(300, 700, (x, y) => {
+    const inBubble = x > 60 && x < 240 && y > 380 && y < 600;
+    const rim = inBubble && (x < 64 || x > 236 || y < 384 || y > 596);
+    const gap = rim && y < 384 && x > 100 && x < 106;
+    if (letters(x, y, 90, 470, 120, 16)) return BLACK;
+    if (rim && !gap) return BLACK;
+    if (inBubble) return WHITE;
+    // The patch above, joined to the gap by a narrow white strip, running up the page.
+    if (x > 100 && x < 106 && y >= 200 && y <= 384) return WHITE;
+    if (x > 40 && x < 200 && y < 200) return WHITE;
+    return PINK;
+  });
+
+  it('cuts the narrow gap and finds the bubble around its lettering', () => {
+    const region = enclosingBubble(page, { x: 90, y: 470, w: 120, h: 16 });
+    expect(region).not.toBeNull();
+    expect(region!.y).toBeGreaterThan(360);
+    expect(region!.y + region!.h).toBeLessThan(610);
+  });
+});
