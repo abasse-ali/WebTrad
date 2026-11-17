@@ -153,7 +153,12 @@ export interface LlmSettings {
    * switching to another one: going back to NVIDIA or OpenRouter restores
    * its own key instead of asking for it again. Kept on the device only.
    */
-  saved?: Record<string, { apiKey: string; model: string; baseUrl: string }>;
+  saved?: Record<string, { apiKey: string; model: string; baseUrl: string; proofModel?: string }>;
+  /**
+   * The provider whose free quota of the day ran out (another saved one took
+   * over), and when it is taken back: its quota is back by then.
+   */
+  resume?: { preset: string; at: number };
 }
 
 export interface Settings {

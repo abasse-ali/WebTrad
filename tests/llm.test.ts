@@ -186,14 +186,14 @@ describe('paceRequest', () => {
       if (i < 6) noteAccepted(host);
     }
     learnLimit(host);
-    // One every 10 s, not seven at once.
+    // One every 10 s or a little more, not seven at once.
     await vi.advanceTimersByTimeAsync(60_000);
     await paceRequest(host);
     let started = false;
     const next = paceRequest(host).then(() => (started = true));
-    await vi.advanceTimersByTimeAsync(9_000);
+    await vi.advanceTimersByTimeAsync(10_200);
     expect(started).toBe(false);
-    await vi.advanceTimersByTimeAsync(1_100);
+    await vi.advanceTimersByTimeAsync(700);
     await next;
     // Twenty quiet minutes: back up to the rate refused, not past it.
     await vi.advanceTimersByTimeAsync(20 * 60_000);
@@ -203,7 +203,7 @@ describe('paceRequest', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       await p;
     }
-    expect(Date.now() - t0).toBeLessThanOrEqual(30_100);
+    expect(Date.now() - t0).toBeLessThanOrEqual(32_500);
     expect(Date.now() - t0).toBeGreaterThanOrEqual(16_000);
     vi.useRealTimers();
   });
@@ -225,14 +225,15 @@ describe('rate limits and damaged answers (Family with Benefits, chapters 1 and 
       noteAccepted(host);
     }
     for (let k = 0; k < 6; k++) learnLimit(host); // refused again and again
-    // 4 a minute: a request every 15 s.
+    // 4 a minute: a request every 16 s or so, never two within 15 s (a
+    // request every 15.0 s exactly was refused one time in five).
     await vi.advanceTimersByTimeAsync(60_000);
     await paceRequest(host);
     let started = false;
     const next = paceRequest(host).then(() => (started = true));
-    await vi.advanceTimersByTimeAsync(14_000);
+    await vi.advanceTimersByTimeAsync(15_500);
     expect(started).toBe(false);
-    await vi.advanceTimersByTimeAsync(1_100);
+    await vi.advanceTimersByTimeAsync(1_000);
     await next;
     vi.useRealTimers();
   });
