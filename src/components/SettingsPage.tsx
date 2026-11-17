@@ -350,6 +350,15 @@ export function SettingsPage() {
             />
           </label>
           <p className="muted small">{t('settings.llm.proofNote')}</p>
+          {s.ocrEngine === 'vision' && (
+            <label className="check">
+              <input type="checkbox" checked={s.longPassages === true} onChange={(e) => updateSettings({ longPassages: e.target.checked })} />
+              <span>
+                {t('settings.longPassages')}
+                <small className="block muted">{t('settings.longPassages.hint')}</small>
+              </span>
+            </label>
+          )}
           <div className="row gap">
             <button className="btn" onClick={runTest} disabled={testing || !s.llm.baseUrl}>
               <Icon name="check" size={16} /> {t('common.test')}
