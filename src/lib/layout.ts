@@ -80,12 +80,26 @@ function joinUnit(line: string, unit: string, sep: string): string {
   return unit.startsWith(GLUE) ? line + unit.slice(1) : line + sep + unit;
 }
 
+/**
+ * French typography: a space before ! ? ; : and inside « », which the
+ * model often left out (« D'EAU!! », « HEIN?! »). The space is glued to
+ * the word before when lines are cut (see segments).
+ */
+export function frenchSpacing(text: string): string {
+  return text
+    .replace(/([\p{L}\p{N}….»"')\]])([!?;]+)/gu, '$1 $2')
+    .replace(/([\p{L}\p{N}…»)])(:)(?=\s|$)/gu, '$1 $2')
+    .replace(/«(?=[^\s\u00a0\u202f])/g, '« ')
+    .replace(/([^\s\u00a0\u202f])»/g, '$1 »');
+}
+
 /** A line as drawn: without the glue marks. */
 function drawn(line: string): string {
   return line.split(GLUE).join('').trim();
 }
 
 function segments(text: string, lang: string, noSpaces: boolean): string[] {
+  if (/^fr\b/i.test(lang)) text = frenchSpacing(text);
   if (!noSpaces) {
     // Keep French-style detached punctuation (« vas-tu ? ») with its word.
     const out: string[] = [];

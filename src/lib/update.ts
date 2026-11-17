@@ -102,7 +102,7 @@ async function check(): Promise<UpdateStatus> {
   const { uri } = await Filesystem.getUri({ path: dir, directory: Directory.Library });
   const path = decodeURIComponent(uri.replace(/^file:\/\//, ''));
   write(READY_KEY, { build, path } satisfies Ready);
-  logInfo('app', `Nouvelle version ${build} téléchargée : elle s’installera au prochain démarrage`);
+  logInfo('app', `Nouvelle version ${build} téléchargée : elle s’installera dès qu’aucun chapitre ne sera en cours (appli en arrière-plan) ou au prochain démarrage`);
   return 'ready';
 }
 
@@ -177,7 +177,15 @@ export function startUpdates(): void {
     }
     const run = () => check().catch((err) => logWarn('app', `Recherche de mise à jour impossible : ${(err as Error).message}`));
     setTimeout(run, 8_000);
-    setInterval(run, 6 * 3600_000);
+    // Every hour: the app stays open in the background for hours, chapter
+    // after chapter, and kept running an old version all night.
+    setInterval(run, 3600_000);
+    // Out of sight and nothing being translated any more (the last chapter
+    // of the queue just ended): the new version is taken then, without
+    // waiting for the app to be closed and opened again.
+    setInterval(() => {
+      if (document.hidden) void applyIfIdle().catch(() => undefined);
+    }, 60_000);
     // Leaving the app with nothing being translated: a good moment to switch.
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) void applyIfIdle().catch(() => undefined);

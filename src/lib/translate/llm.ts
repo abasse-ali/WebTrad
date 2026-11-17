@@ -883,7 +883,8 @@ How to translate, like a professional scanlation team:
 - Translate the meaning, not word for word. Use the words a native speaker would really say in that situation, short enough to fit the bubble.
 - Keep each character's voice and register: rude stays rude (swear words stay swear words), polite stays polite, childish stays childish. Keep the same form of address (tu/vous, tutoiement…) between the same characters.
 - Keep names, nicknames and usernames as they are; keep the gaming, internet and fandom words that readers of the target language use as they are (teamfight, carry, rank names…), translate the others.
-- Interjections in bubbles (Ugh, Huh?, Haha, Hmm, Tch) become their usual equivalents in the target language; stuttering (I-I…) and trailing dots (…) are kept.
+- Interjections in bubbles (Ugh, Huh?, Haha, Hmm, Tch) become their usual equivalents in the target language; stuttering (I-I…, WH-WHAT, SH-SHE) is kept in the translation (in French: « M-mais… », « E-elle… »), and so are trailing dots (…).
+- English idioms and exclamations are never translated word for word (in French: "Boy, am I in trouble" is « Bon sang, je suis dans le pétrin », "Holy shit!" is « Putain de merde ! », "Remember…" said to oneself is « Je me souviens… »). No word of the original language left in the translation (in French: boyfriend → petit ami, bastard → salaud), names apart.
 - Use the typography of the target language (French: « » for quotes, a space before ? ! : ;).
 - In languages that mark gender (French…), agree words with the gender of the speaker and of the person spoken to, as drawn (a woman says « je suis rentrée », « je suis prête »).
 - Only text in the target language: no notes, no romanisation, no alternatives, no emoji or flags, no line breaks inside a translation.

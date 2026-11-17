@@ -321,8 +321,23 @@ export async function visionPage(
       const m = Math.max(4, t.h * 0.15);
       if (white && white.x <= t.x - m && white.y <= t.y - m && white.x + white.w >= t.x + t.w + m && white.y + white.h >= t.y + t.h + m) e = white;
     }
+    // The block of lettering ran past the bubble, joined to a sound effect
+    // drawn just under it ("CHSS" below a spiky bubble): its seed took in
+    // the page around and no bubble was found. The text was then erased as
+    // lettering on the drawing, the bubble's outline with it, and written
+    // tilted (chapter 8, page 57). The bubble is looked for again from the
+    // middle of the text the model read.
+    let fromBox = !block;
+    if ((!e || pageBackground(e)) && block) {
+      const mid = { x: (box.x + box.w * 0.25) * scale, y: (box.y + box.h * 0.25) * scale, w: box.w * 0.5 * scale, h: box.h * 0.5 * scale };
+      const again = enclosingBubble(px, mid);
+      if (again && !pageBackground(again)) {
+        e = again;
+        fromBox = true;
+      }
+    }
     if (!e || pageBackground(e)) return undefined;
-    if (!block) {
+    if (fromBox) {
       // No lettering was found there: only a bubble whose ink is about the size of the text read.
       const ink = maskedCrop(px, e).ink;
       const ratio = ink ? ink.w / Math.max(1, box.w * scale) : 0;
@@ -908,11 +923,10 @@ export async function visionPage(
   // lines of a game chat or of a phone screen).
   const skipped = new Set<Found>();
   for (const t of outside) {
-    const onBubble = kept.some((k) => {
-      if (!k.region) return false;
-      const r = k.region;
-      return overlapShare(t.box, { x: r.x / scale, y: r.y / scale, w: r.w / scale, h: r.h / scale }) > 0.3;
-    });
+    // On the bubble itself, not on the corner of its frame: a small line
+    // lettered beside a round thought bubble ("BUT I CAN'T AFFORD ANOTHER
+    // PLACE FOR HIM…") overlapped its frame and was left in English.
+    const onBubble = kept.some((k) => k.region && shareInShape(t.box, k.region, scale) > 0.3);
     if (onBubble) skipped.add(t);
   }
   for (const [i, a] of outside.entries()) {
@@ -1368,6 +1382,23 @@ function similarText(a: string, b: string): boolean {
   return x === y || (Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x)));
 }
 
+/** Share of a box (page pixels) lying inside a bubble's own shape (its rows, not its frame). */
+export function shareInShape(box: Box, r: BubbleRegion, scale: number): number {
+  const y0 = Math.max(0, Math.floor(box.y * scale) - r.y);
+  const y1 = Math.min(r.h, Math.ceil((box.y + box.h) * scale) - r.y);
+  const bx0 = box.x * scale;
+  const bx1 = (box.x + box.w) * scale;
+  let inside = 0;
+  for (let row = y0; row < y1; row++) {
+    const a = r.spans[row * 2];
+    const b = r.spans[row * 2 + 1];
+    if (a < 0) continue;
+    inside += Math.max(0, Math.min(b, bx1) - Math.max(a, bx0));
+  }
+  const area = box.w * scale * box.h * scale;
+  return area > 0 ? inside / area : 0;
+}
+
 /** Share of the smaller box covered by the other one. */
 function overlapShare(a: Box, b: Box): number {
   const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
@@ -1799,14 +1830,17 @@ export function hasLettering(image: DecodedImage): boolean {
 }
 
 /** A bubble moved up or down (page coordinates), with everything placed on the page. */
-function shiftBubble(b: Bubble, dy: number): Bubble {
+export function shiftBubble(b: Bubble, dy: number): Bubble {
   if (!dy) return { ...b };
   return {
     ...b,
     y: b.y + dy,
     area: b.area ? { ...b.area, y: b.area.y + dy } : undefined,
     patchBox: b.patchBox ? { ...b.patchBox, y: b.patchBox.y + dy } : undefined,
-    shape: b.shape ? { ...b.shape, y: b.shape.y + dy } : undefined,
+    // The body's own top too: left behind, the bubble drawn bigger for a long
+    // translation came out empty a panel higher, the text overflowing the
+    // real bubble below it (chapter 8, page 8).
+    shape: b.shape ? { ...b.shape, y: b.shape.y + dy, bodyY: b.shape.bodyY !== undefined ? b.shape.bodyY + dy : undefined } : undefined,
   };
 }
 
