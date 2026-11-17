@@ -17,7 +17,7 @@ import { normaliseCase, tidyTranslation, type Box } from './text';
 import { translateTexts } from './translate';
 import { CONTENT_REFUSED, forgetProofModel, lastRateLimitAt, proofModelFor, proofreadTexts, visionTranslate } from './translate/llm';
 import { TranslateError } from './translate/types';
-import { isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
+import { looksLikeSpeech, isDrawnEffect, isScreenChat, isSeriesTitle, isSoundEffect, isWatermark } from './text';
 import { seriesOf } from './series';
 import { charactersFor, rememberSpeakers } from './cast';
 import { alignToBubbles } from './align';
@@ -441,11 +441,13 @@ export async function visionPage(
       // white inside a letter was taken for a bubble). Its translation was
       // written small in a blurred patch that wiped out the drawing.
       const shortText = words <= 2 && f.text.replace(/[^\p{L}\p{N}]/gu, '').length <= 12;
-      if (shortText && box.h > W * 0.13 && (!region || f.sfx || isDrawnEffect(f.text) || isSoundEffect(f.text))) continue;
+      // Not a line of speech drawn big ("I'M CUMMING!", "YEEEEEEES!"): left in English as an effect.
+      const speech = looksLikeSpeech(f.text) && !isSoundEffect(f.text);
+      if (shortText && !speech && box.h > W * 0.13 && (!region || f.sfx || isDrawnEffect(f.text) || isSoundEffect(f.text))) continue;
       // Sound effects drawn on the artwork are not translated, even when the
       // model sends them. A cry typed small ("UGH!") in a bubble of an odd
       // shape is dialogue: its bubble is looked for before it is left out.
-      if (!region && isDrawnEffect(f.text)) {
+      if (!region && !speech && isDrawnEffect(f.text)) {
         // A known sound effect ("BRUSH", "DUN", "BOW") outside any bubble is
         // drawn: never lettered over (a white stretch of sky taken for its
         // bubble had "DUN" erased with the face beside it).
@@ -461,9 +463,13 @@ export async function visionPage(
       // a wall): drawn, left as it is ("SNORE" lettered tiny on a pillow).
       // So is what the model itself calls a sound effect.
       const wide = region ? (region.w / scale) * (region.h / scale) > box.w * box.h * 25 : true;
-      if ((isSoundEffect(f.text) || f.sfx) && wide) continue;
-      // Website watermarks are not translated, even over a bubble.
-      if (isWatermark(f.text)) continue;
+      // A known sound effect is never lettered, wherever it lies: "SHUDDER"
+      // on a pillow came out as « FRÉMISSEMENT » over a half-erased effect.
+      if (isSoundEffect(f.text) || (f.sfx && wide && !speech)) continue;
+      // Website watermarks are not translated, even over a bubble; nor are
+      // the credits of the title page ("Artist: Choi TaeYoung" came out as
+      // « Artiste : » in another font, the writer's line left in English).
+      if (isWatermark(f.text) || /^\s*(writer|artist|art|story|original(?: story)?|illustrat\w*|translat\w*|editor|proofread\w*)\s*[:：]/i.test(f.text)) continue;
       // Chat lines on a drawn screen stay as drawn: too small to letter over.
       if (isScreenChat(f.text)) {
         chat.push(box);
