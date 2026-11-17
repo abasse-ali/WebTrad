@@ -37,3 +37,14 @@ describe('Family with Benefits, chapter 8', () => {
     expect(shareInShape({ x: 30, y: 40, w: 40, h: 20 }, region, 1)).toBeGreaterThan(0.9);
   });
 });
+
+describe('volume buttons glide', () => {
+  it('eases in and out, from 0 to 1', async () => {
+    const { easeInOut, VOLUME_STEPS } = await import('../src/lib/glide');
+    expect(easeInOut(0)).toBe(0);
+    expect(easeInOut(1)).toBe(1);
+    expect(easeInOut(0.5)).toBeCloseTo(0.5);
+    expect(easeInOut(0.1)).toBeLessThan(0.1);
+    expect(VOLUME_STEPS.medium).toBeLessThan(0.5);
+  });
+});

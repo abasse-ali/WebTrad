@@ -172,6 +172,18 @@ export function SettingsPage() {
             </span>
           </label>
         )}
+        {isNativeApp() && s.volumeButtons !== false && (
+          <label className="field">
+            <span>{t('settings.volumeStep')}</span>
+            <select value={s.volumeStep ?? 'medium'} onChange={(e) => updateSettings({ volumeStep: e.target.value as 'short' | 'medium' | 'long' })}>
+              {(['short', 'medium', 'long'] as const).map((id) => (
+                <option key={id} value={id}>
+                  {t(`settings.volumeStep.${id}` as MessageKey)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="two">
           <label className="field">
             <span>{t('settings.defaultSource')}</span>
